@@ -1,0 +1,26 @@
+# Xcode 相關與編譯暫存檔
+build/
+DerivedData/
+.DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.pbproxy
+*.profraw
+
+# CocoaPods / Swift Package Manager (若有使用)
+Pods/
+.build/
+
+# macOS 系統與備份暫存檔
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.tmp.driveupload/
+
+# 隱私與敏感金鑰檔
+*.key
+*.cer
+*.p12
