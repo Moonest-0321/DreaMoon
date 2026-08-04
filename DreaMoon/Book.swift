@@ -1,26 +1,20 @@
 import Foundation
 import SwiftData
 
-// @Model 巨集告訴 SwiftData：「這是一個資料庫表格，請幫我管理它！」
-// 在 Book 類別內部新增這行：
-
-    
 @Model
 final class Book {
-    
-    // 唯一識別碼。雖然 SwiftData 內部有隱式 ID，但 PRD 規定要有 id 欄位，我們明確宣告。
     var id: UUID = UUID()
     var title: String = ""       // 書名
     var author: String = ""      // 作者
     var synopsis: String = ""    // 簡介
-    
     // PRD 提到「隨機柔和底色」，我們用 Data 儲存顏色的 RGBA 資料。
     // 設為可選 (?) 是因為新建時可能還沒算出顏色。
     var coverColorData: Data? = nil
-    
     var createdAt: Date = Date()     // 建立時間
     var updatedAt: Date = Date()     // 最後修改時間
-    
+    var currentEra: Era?
+    @Relationship(deleteRule: .cascade, inverse: \Timeline.book)
+    var timelines: [Timeline] = []
     // 【核心關聯】一本書包含很多卷 (Volume)
     // deleteRule: .cascade「級聯刪除」：書被刪，裡面的卷也自動刪。
     // inverse: 指向 Volume 的 book 屬性，雙向關聯。
@@ -49,4 +43,3 @@ final class Book {
         self.volumes = volumes
     }
 }
-

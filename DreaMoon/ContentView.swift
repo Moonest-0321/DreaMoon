@@ -1,22 +1,15 @@
 import SwiftUI
 import SwiftData
-import AppKit // 【V1.4 新增】為了在 Toolbar 處理頭像 NSImage，需要引入 AppKit
+import AppKit
 
 // MARK: - 主畫面：網格書櫃
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.updatedAt, order: .reverse) private var books: [Book]
-    
-    // 【V1.4 新增】查詢作者帳號
     @Query private var profiles: [AuthorProfile]
-    
     @State private var showingNewBookSheet = false
     @State private var searchText = ""
-    
-    // 【V1.4 新增】控制作者設定頁的彈出
     @State private var showingAuthorSettings = false
-    
-    // 【新增】用於控制刪除確認對話框的狀態
     @State private var showingDeleteAlert = false
     @State private var bookToDelete: Book?
 
@@ -31,7 +24,6 @@ struct ContentView: View {
         }
     }
 
-    // 調整網格：最小寬度 180，間距 24，讓畫面更有呼吸感
     let columns = [
         GridItem(.adaptive(minimum: 180), spacing: 24)
     ]
@@ -45,7 +37,6 @@ struct ContentView: View {
                             BookCardView(book: book)
                         }
                         .buttonStyle(.plain)
-                        // 【新增】右鍵選單：刪除
                         .contextMenu {
                             Button(role: .destructive) {
                                 bookToDelete = book
@@ -56,12 +47,11 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(24) // 增加整體內邊距
+                .padding(24)
             }
             .navigationTitle("DreaMoon")
             .searchable(text: $searchText, prompt: "搜尋書名或作者")
             .toolbar {
-                // 【V1.4 新增】左側：作者頭像/設定入口
                 ToolbarItem(placement: .navigation) {
                     Button(action: { showingAuthorSettings = true }) {
                         if let profile = profiles.first {
@@ -81,7 +71,6 @@ struct ContentView: View {
                             .frame(width: 24, height: 24)
                             .clipShape(Circle())
                         } else {
-                            // 如果還沒設定作者，顯示一個提示圖示
                             Image(systemName: "person.crop.circle.badge.plus")
                                 .font(.title3)
                         }
@@ -89,8 +78,6 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .help(profiles.first?.penName ?? "設定作者帳號")
                 }
-                
-                // 右側：新建書籍
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewBookSheet = true }) {
                         Label("新建書籍", systemImage: "plus")
@@ -100,14 +87,12 @@ struct ContentView: View {
             .sheet(isPresented: $showingNewBookSheet) {
                 NewBookSheet()
             }
-            // 【V1.4 新增】彈出作者設定頁
             .sheet(isPresented: $showingAuthorSettings) {
                 AuthorSettingsView()
             }
             .navigationDestination(for: Book.self) { book in
                 BookOverviewView(book: book)
             }
-            // 【新增】刪除確認對話框（符合 PRD：提醒無法復原）
             .alert("確認刪除", isPresented: $showingDeleteAlert, presenting: bookToDelete) { book in
                 Button("取消", role: .cancel) { }
                 Button("刪除", role: .destructive) {
@@ -120,10 +105,10 @@ struct ContentView: View {
     }
 }
 
-// MARK: - 書籍卡片視圖 (調整為豎長方形)
+// MARK: - 書籍卡片視圖
 struct BookCardView: View {
     let book: Book
-    
+
     var firstCharacter: String {
         let trimmed = book.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return String(trimmed.prefix(1))
@@ -131,7 +116,6 @@ struct BookCardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 【上半部：極簡封面】
             ZStack {
                 generatePastelColor(from: book.title)
                 Text(firstCharacter)
@@ -141,8 +125,6 @@ struct BookCardView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 170)
-            
-            // 【下半部：書腰區域】
             VStack(alignment: .leading, spacing: 8) {
                 Text(book.title)
                     .font(.headline)
@@ -207,12 +189,8 @@ struct BookCardView: View {
 struct NewBookSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
-    // 【V1.4 新增】查詢作者帳號，用來自動帶入筆名
     @Query private var profiles: [AuthorProfile]
-    
     @State private var title = ""
-    // 【V1.4 修改】改為空字串，在 onAppear 中賦值，避免初始化時讀取不到 SwiftData
     @State private var author = ""
 
     var body: some View {
@@ -222,10 +200,8 @@ struct NewBookSheet: View {
                 TextField("作者", text: $author)
             }
             .navigationTitle("新建書籍")
-            // 【V1.4 新增】畫面出現時，自動帶入筆名
             .onAppear {
                 if author.isEmpty {
-                    // 優先讀取 AuthorProfile 的筆名，若無則 fallback 到 Mac 系統使用者名稱
                     author = profiles.first?.penName ?? NSFullUserName()
                 }
             }
@@ -243,11 +219,28 @@ struct NewBookSheet: View {
         }
     }
 
+    @MainActor
     private func saveBook() {
         let newBook = Book(title: title, author: author)
         let defaultVolume = Volume(title: "第一卷", book: newBook)
         newBook.volumes.append(defaultVolume)
         modelContext.insert(newBook)
+
+        // V3：建書即預建首年號與主軸（PRD 第 7 節 bootstrap）
+        #if DEBUG
+        do {
+            try TimelineEngine.Bootstrap.ensure(for: newBook, in: modelContext)
+            let eraStart = newBook.currentEra?.startOrdinal ?? -1
+            let eraName  = newBook.currentEra?.name ?? "nil"
+            let primary  = newBook.timelines.filter(\.isPrimary).count
+            print("✅ [Bootstrap] 建書完成 → currentEra.startOrdinal=\(eraStart), name='\(eraName)', 主軸數=\(primary)")
+        } catch {
+            print("❌ [Bootstrap] 失敗：\(error)")
+        }
+        #else
+        try? TimelineEngine.Bootstrap.ensure(for: newBook, in: modelContext)
+        #endif
+
         dismiss()
     }
 }

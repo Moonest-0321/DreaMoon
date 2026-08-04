@@ -27,9 +27,7 @@ struct EditorWorkspaceView: View {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button { toggleSidebar() } label: { Label("目錄", systemImage: "sidebar.left") }.help("顯示/隱藏左欄目錄")
                         Button { showInspector.toggle() } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
-                        
                         Divider()
-                        
                         Button {
                             if let section = selectedSection {
                                 let content = ExportManager.exportSectionToTXT(section: section)
@@ -42,7 +40,6 @@ struct EditorWorkspaceView: View {
                             Label("匯出 TXT", systemImage: "square.and.arrow.up")
                         }
                         .help("匯出當前章節或整本書為 TXT")
-                        
                         Button { EpubExporter.exportBook(book: book) } label: {
                             Label("匯出 EPUB", systemImage: "book.closed")
                         }
@@ -50,11 +47,12 @@ struct EditorWorkspaceView: View {
                     }
                 }
                 .inspector(isPresented: $showInspector) {
-                    InspectorRootView(book: book).inspectorColumnWidth(min: 250, ideal: 300, max: 400)
+                    // ⬇️ V3：唯一改動——掛分段 wrapper（設定集｜時間軸）
+                    InspectorWithTimeline(book: book).inspectorColumnWidth(min: 250, ideal: 300, max: 400)
                 }
         }
     }
-    
+
     private func toggleSidebar() {
         columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
     }
@@ -64,13 +62,11 @@ struct EditorWorkspaceView: View {
 struct EditorSidebarView: View {
     let book: Book
     @Binding var selectedSection: Section?
-
     @Environment(\.modelContext) private var modelContext
 
     @State private var draggingKind: DragKind? = nil
     @State private var dropTargetSectionID: UUID? = nil
     @State private var dropTargetSectionEndVolumeID: UUID? = nil
-
     @State private var collapsedVolumeIDs: Set<UUID> = []
     @State private var renamingID: UUID? = nil
     @State private var renameBuffer: String = ""
@@ -86,21 +82,17 @@ struct EditorSidebarView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("新增卷")
-
                 Button(action: addSection) {
                     Label("新增節", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.borderless)
                 .help("新增節")
-                
                 Spacer()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(Color.appBackground) // ⚠️ 若報錯請改為 Color(NSColor.controlBackgroundColor)
-            
             Divider()
-
             List {
                 ForEach(book.volumes.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { volume in
                     volumeRow(for: volume)
@@ -144,16 +136,13 @@ struct EditorSidebarView: View {
                 .font(.caption).foregroundStyle(.secondary).frame(width: 14)
                 .contentShape(Rectangle())
                 .onTapGesture { toggleVolume(volume.id) }
-            
             if renamingID == volume.id {
                 renameEditor(commit: { newName in volume.title = newName.isEmpty ? volume.title : newName })
             } else {
                 Text(volume.title).lineLimit(1).fontWeight(.semibold)
                     .onTapGesture { startRenaming(id: volume.id, currentName: volume.title) }
             }
-            
             Spacer()
-            
             // 【新增】每個卷後面的 + 按鈕
             Button(action: { addSection(to: volume) }) {
                 Image(systemName: "plus")
@@ -179,7 +168,6 @@ struct EditorSidebarView: View {
     @ViewBuilder
     private func sectionRow(for section: Section, in volume: Volume) -> some View {
         let index = sectionIndex(for: section, in: book)
-        
         HStack(spacing: 6) {
             Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
                 .frame(width: 24, height: 22).contentShape(Rectangle())
@@ -249,14 +237,14 @@ struct EditorSidebarView: View {
         }
         .onChange(of: renameFocused) { _, focused in if !focused { commitAndClose(commit: commit) } }
     }
-    
+
     private func startRenaming(id: UUID, currentName: String) { renameBuffer = currentName; renamingID = id }
     private func commitAndClose(commit: (String) -> Void) { commit(renameBuffer); renamingID = nil; renameFocused = false }
     private func cancelRenaming() { renamingID = nil; renameFocused = false }
     private func toggleVolume(_ id: UUID) {
         if collapsedVolumeIDs.contains(id) { collapsedVolumeIDs.remove(id) } else { collapsedVolumeIDs.insert(id) }
     }
-    
+
     // MARK: 新增邏輯
     private func addVolume() {
         let next = (book.volumes.map(\.sortOrder).max() ?? -1) + 1
@@ -264,7 +252,6 @@ struct EditorSidebarView: View {
         let newVolume = Volume(title: "新卷", sortOrder: next)
         book.volumes.append(newVolume)
     }
-    
     private func addSection() {
         let targetVolume: Volume
         if let currentVolume = selectedSection?.volume {
@@ -278,7 +265,6 @@ struct EditorSidebarView: View {
         }
         addSection(to: targetVolume)
     }
-
     private func addSection(to volume: Volume) {
         let next = (volume.sections.map(\.sortOrder).max() ?? -1) + 1
         let newSection = Section(title: "新章節", sortOrder: next, volume: volume)
@@ -327,7 +313,6 @@ struct EditorSidebarView: View {
         }
         deleteTarget = nil
     }
-    
     private func findFallbackSection(for deletedSection: Section, in book: Book) -> Section? {
         let sortedVolumes = book.volumes.sorted { $0.sortOrder < $1.sortOrder }
         guard let currentVolume = deletedSection.volume else { return nil }
@@ -348,7 +333,6 @@ struct EditorSidebarView: View {
         }
         return nil
     }
-    
     private func findFallbackSectionForDeletedVolume(_ deletedVolume: Volume, in book: Book) -> Section? {
         let sortedVolumes = book.volumes.sorted { $0.sortOrder < $1.sortOrder }
         guard let volIdx = sortedVolumes.firstIndex(where: { $0.id == deletedVolume.id }) else { return nil }
@@ -377,7 +361,6 @@ struct EditorCenterView: View {
         VStack(spacing: 0) {
             if let section {
                 let index = sectionIndex(for: section, in: book)
-                
                 HStack(spacing: 4) {
                     Text("第 \(index) 節 ")
                         .font(.system(size: 24, weight: .bold))
@@ -386,7 +369,6 @@ struct EditorCenterView: View {
                         .onTapGesture {
                             titleFieldFocused = true
                         }
-                    
                     TextField("節次標題", text: Binding(
                         get: { section.title },
                         set: { section.title = $0 }
@@ -394,14 +376,11 @@ struct EditorCenterView: View {
                     .font(.system(size: 24, weight: .bold))
                     .textFieldStyle(.plain)
                     .focused($titleFieldFocused)
-                    
                     Spacer()
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)
-                
                 Divider()
-                
                 HStack(spacing: 8) {
                     Label(cursorIsHeading ? "幕標題" : "內文", systemImage: cursorIsHeading ? "textformat.size" : "text.alignleft")
                         .font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
@@ -416,12 +395,9 @@ struct EditorCenterView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 8)
                 .background(Color.appBackground)
-                
                 Divider()
-                
                 RichEditorView(section: section, bridge: bridge, onWordCountChange: { liveWordCount = $0 }, onHeadingStateChange: { cursorIsHeading = $0 })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
                 Divider()
                 HStack {
                     Spacer()
@@ -432,7 +408,6 @@ struct EditorCenterView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 8)
                 .background(Color.appBackground)
-                
             } else {
                 ContentUnavailableView("請從左側選擇或新增一個章節開始寫作", systemImage: "doc.text")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -442,7 +417,7 @@ struct EditorCenterView: View {
         .onAppear { liveWordCount = section?.wordCount ?? 0 }
         .onChange(of: section?.id) { _, _ in liveWordCount = section?.wordCount ?? 0 }
     }
-    
+
     private func sectionIndex(for section: Section, in book: Book) -> Int {
         guard let volume = section.volume else { return 1 }
         let sortedSections = volume.sections.sorted { $0.sortOrder < $1.sortOrder }
@@ -452,5 +427,3 @@ struct EditorCenterView: View {
         return 1
     }
 }
-
-

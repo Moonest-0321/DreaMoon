@@ -147,7 +147,7 @@ struct SearchReplaceView: View {
     }
 
     private var resultSummary: String {
-        results.isEmpty ? "沒有結果" : "(currentIndex + 1) / (results.count)"
+        results.isEmpty ? "沒有結果" : "\(currentIndex + 1) / \(results.count)"
     }
 
     private func refresh() {
