@@ -16,10 +16,11 @@ final class Node {
     @Relationship(deleteRule: .nullify)
     var section: Section?
 
+    // Kept for V3 store compatibility. V2.2 screens query Event by node instead.
     @Relationship(deleteRule: .cascade, inverse: \Event.node)
     var events: [Event]
 
-    init(id: UUID = UUID(), year: Int, month: Int? = nil, day: Int? = nil) {
+    init(id: UUID = UUID(), year: Int = 0, month: Int? = nil, day: Int? = nil) {
         self.id = id
         self.year = year
         self.month = month

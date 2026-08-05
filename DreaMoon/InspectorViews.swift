@@ -74,7 +74,7 @@ struct InspectorRootView: View {
                     character: character,
                     book: book,
                     onBack: { route = .detail(character) },
-                    onSelectCharacter: { route = .detail($0) }
+                    onSelectCharacter: { route = .graph($0) }
                 )
             }
         }
@@ -179,6 +179,11 @@ struct CharacterDetailView: View {
     let onBack: () -> Void
     let onShowGraph: () -> Void
     @Environment(\.modelContext) private var modelContext
+    @Query private var allProfiles: [CharacterProfile]
+
+    private var profile: CharacterProfile? {
+        allProfiles.first { $0.character?.id == character.id }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -194,12 +199,14 @@ struct CharacterDetailView: View {
             .background(Color(nsColor: .controlBackgroundColor))
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    formSection("基本資訊") {
-                        labeledField("真名 *") {
-                            TextField("必填", text: $character.realName)
-                                .textFieldStyle(.roundedBorder)
-                        }
+                VStack(alignment: .leading, spacing: 16) {
+                    characterHeader
+
+                    detailSection("摘要", systemImage: "text.quote") {
+                        CharacterSummarySectionView(character: character)
+                    }
+
+                    detailSection("基本資訊", systemImage: "person.text.rectangle") {
                         labeledField("UID") {
                             Text(String(format: "%06d", character.sortOrder + 1))
                                 .foregroundStyle(.secondary)
@@ -215,9 +222,7 @@ struct CharacterDetailView: View {
                             }
                             .pickerStyle(.segmented)
                         }
-                    }
-
-                    formSection("出生") {
+                        Divider()
                         BirthDatePickerSection(
                             birthYear: character.birthYear,
                             birthMonth: character.birthMonth,
@@ -236,51 +241,46 @@ struct CharacterDetailView: View {
                         ))
                         .textFieldStyle(.roundedBorder)
 
-                        TextEditor(text: Binding(
+                        Text("來歷").font(.caption).foregroundStyle(.secondary)
+                        InsetTextEditor(text: Binding(
                             get: { character.originStory ?? "" },
                             set: { character.originStory = $0 }
-                        ))
-                        .frame(height: 80)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
-                    }
-
-                    formSection("內在") {
-                        textEditorField("性格", text: $character.personality)
-                        textEditorField("原則", text: $character.principles)
-                    }
-
-                    formSection("小記") {
+                        ), minHeight: 90)
+                        CharacterAliasSectionView(character: character)
                         textEditorField("私人備註 / 非血緣關係", text: $character.notes)
                     }
 
-                    formSection("親屬關係 (血緣)") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(character.kinships) { kinship in
-                                if let target = kinship.targetCharacter {
-                                    HStack {
-                                        // 【修正】使用 displayName
-                                        Text(kinship.role.displayName)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 80, alignment: .leading)
-                                        Text(target.realName.isEmpty ? "未命名" : target.realName)
-                                        Spacer()
-                                        Button(action: { removeKinship(kinship) }, label: {
-                                            Image(systemName: "xmark.circle")
-                                                .foregroundStyle(.red)
-                                        })
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                        }
+                    detailSection("組織", systemImage: "building.2") {
+                        CharacterOrganizationSectionView(character: character, book: book)
                     }
 
-                    Button(action: onShowGraph) {
-                        Label("檢視關係圖", systemImage: "point.3.connected.trianglepath.dotted")
-                            .frame(maxWidth: .infinity)
+                    detailSection("能力", systemImage: "sparkles") {
+                        CharacterAbilitySectionView(character: character, book: book)
                     }
-                    .buttonStyle(.borderedProminent)
+
+                    detailSection("外觀", systemImage: "person.crop.rectangle") {
+                        CharacterAppearanceSectionView(character: character, book: book)
+                    }
+
+                    detailSection("心理", systemImage: "brain.head.profile") {
+                        CharacterPsychologySectionView(character: character, book: book)
+                    }
+
+                    detailSection("物品", systemImage: "shippingbox") {
+                        CharacterItemSectionView(character: character, book: book)
+                    }
+
+                    detailSection("關係", systemImage: "point.3.connected.trianglepath.dotted") {
+                        Button(action: onShowGraph) {
+                            Label("開啟關係網", systemImage: "point.3.connected.trianglepath.dotted")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    detailSection("事件", systemImage: "calendar.badge.clock") {
+                        CharacterEventSectionView(character: character, book: book)
+                    }
                 }
                 .padding(20)
             }
@@ -288,11 +288,55 @@ struct CharacterDetailView: View {
     }
 
     @ViewBuilder
-    private func formSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private var characterHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("角色真名", text: $character.realName)
+                .textFieldStyle(.plain)
+                .font(.title2.weight(.semibold))
+            TextField("角色定位，例如：男主角", text: roleBinding)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+    }
+
+    private var roleBinding: Binding<String> {
+        Binding(
+            get: { profile?.role ?? "" },
+            set: { newValue in
+                if let profile {
+                    profile.role = newValue
+                } else if !newValue.isEmpty {
+                    let created = CharacterProfile(role: newValue, character: character)
+                    modelContext.insert(created)
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func detailSection<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline).foregroundStyle(.secondary)
+            Label(title, systemImage: systemImage)
+                .font(.headline)
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+    }
+
+    private func emptyState(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+            Text(detail).font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -307,12 +351,10 @@ struct CharacterDetailView: View {
     private func textEditorField(_ title: String, text: Binding<String?>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: Binding(
+            InsetTextEditor(text: Binding(
                 get: { text.wrappedValue ?? "" },
                 set: { text.wrappedValue = $0 }
-            ))
-            .frame(height: 80)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
+            ), minHeight: 90)
         }
     }
 
@@ -391,10 +433,55 @@ struct KinshipGraphView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    @Query(sort: \CharacterRelationship.createdAt) private var allRelationships: [CharacterRelationship]
+    @Query private var allProfiles: [CharacterProfile]
     @State private var showingAddSheet = false
+    @State private var showingAddGeneralRelationship = false
+    @State private var selectedView = RelationshipView.network
+    @State private var selectedGroup: RelationshipGroup?
+    @State private var searchText = ""
+    @State private var selectedFilter = "全部"
+    @State private var canvasScale: CGFloat = 1
+
+    private enum RelationshipView: String, CaseIterable, Identifiable {
+        case network = "關係網"
+        case list = "關係列表"
+        var id: String { rawValue }
+    }
 
     private var availableTargets: [Character] {
         allCharacters.filter { $0.id != character.id && $0.book?.id == book.id }
+    }
+
+    private var graphGroups: [RelationshipGroup] {
+        RelationshipGroupBuilder.directGroups(for: character, relationships: allRelationships)
+    }
+
+    private var graphNodes: [Character] {
+        var ids = Set<UUID>()
+        return visibleGroups.compactMap { group in
+            let peer = group.source.id == character.id ? group.target : group.source
+            return ids.insert(peer.id).inserted ? peer : nil
+        }
+    }
+
+    private var filterOptions: [String] {
+        var values = Set<String>()
+        for group in graphGroups {
+            if !group.kinships.isEmpty { values.insert("血緣") }
+            values.formUnion(group.currentNames)
+        }
+        return ["全部"] + values.sorted()
+    }
+
+    private var visibleGroups: [RelationshipGroup] {
+        graphGroups.filter { group in
+            let peer = group.source.id == character.id ? group.target : group.source
+            let matchesSearch = searchText.isEmpty || peer.realName.localizedCaseInsensitiveContains(searchText)
+            let matchesFilter = selectedFilter == "全部" ||
+                (selectedFilter == "血緣" ? !group.kinships.isEmpty : group.currentNames.contains(selectedFilter))
+            return matchesSearch && matchesFilter
+        }
     }
 
     var body: some View {
@@ -406,46 +493,59 @@ struct KinshipGraphView: View {
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Button { showingAddSheet = true } label: {
+                Menu {
+                    Button("新增關係") { showingAddGeneralRelationship = true }
+                    Button("新增血緣關係") { showingAddSheet = true }
+                } label: {
                     Image(systemName: "plus.circle.fill").font(.title3)
                 }
-                .buttonStyle(.plain).help("新增血緣關係")
+                .menuStyle(.borderlessButton)
             }
             .padding(.horizontal).padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
 
-            ZStack {
-                Color.appBackground.opacity(0.5)
-                GeometryReader { geo in
-                    let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
-                    let nodeSize: CGFloat = 60
+            Picker("檢視", selection: $selectedView) {
+                ForEach(RelationshipView.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
 
-                    let indexedKinships = Array(character.kinships.enumerated())
-
-                    Path { path in
-                        for (index, kinship) in indexedKinships {
-                            guard kinship.targetCharacter != nil else { continue }
-                            let targetPos = position(for: kinship, index: index, total: character.kinships.count, center: center)
-                            path.move(to: center)
-                            path.addLine(to: targetPos)
-                        }
+            HStack {
+                TextField("搜尋角色", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                Picker("篩選", selection: $selectedFilter) {
+                    ForEach(filterOptions, id: \.self) { Text($0).tag($0) }
+                }
+                .frame(width: 130)
+                if selectedView == .network {
+                    Button { canvasScale = max(0.6, canvasScale - 0.1) } label: {
+                        Image(systemName: "minus.magnifyingglass")
                     }
-                    .stroke(Color.secondary.opacity(0.5), lineWidth: 1.5)
+                    .buttonStyle(.plain)
+                    Button { canvasScale = min(2, canvasScale + 0.1) } label: {
+                        Image(systemName: "plus.magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
 
-                    nodeView(character, at: center, size: nodeSize, isCenter: true)
-
-                    ForEach(indexedKinships, id: \.element.id) { index, kinship in
-                        if let target = kinship.targetCharacter {
-                            let pos = position(for: kinship, index: index, total: character.kinships.count, center: center)
-                            ZStack {
-                                nodeView(target, at: pos, size: nodeSize * 0.8, isCenter: false)
-                                // 【修正】使用 displayName
-                                Text(kinship.role.displayName)
-                                    .font(.caption2).padding(4)
-                                    .background(Color.appBackground).cornerRadius(4)
-                                    .position(x: (center.x + pos.x) / 2, y: (center.y + pos.y) / 2)
-                            }
-                        }
+            if selectedView == .list {
+                RelationshipListView(center: character, book: book, searchText: searchText, selectedFilter: selectedFilter)
+            } else {
+                GeometryReader { viewport in
+                    let baseSize = CGSize(
+                        width: max(viewport.size.width, CGFloat(graphNodes.count) * 150),
+                        height: max(viewport.size.height, 360)
+                    )
+                    let scaledSize = CGSize(width: baseSize.width * canvasScale, height: baseSize.height * canvasScale)
+                    ScrollView([.horizontal, .vertical]) {
+                        graphCanvas(size: baseSize)
+                            .frame(width: baseSize.width, height: baseSize.height)
+                            .scaleEffect(canvasScale, anchor: .topLeading)
+                            .frame(width: scaledSize.width, height: scaledSize.height, alignment: .topLeading)
                     }
                 }
             }
@@ -457,6 +557,56 @@ struct KinshipGraphView: View {
                 allCharacters: availableTargets
             )
         }
+        .sheet(isPresented: $showingAddGeneralRelationship) {
+            AddGeneralRelationshipSheet(
+                center: character,
+                book: book,
+                characters: availableTargets
+            )
+        }
+        .popover(item: $selectedGroup, attachmentAnchor: .rect(.bounds), arrowEdge: .trailing) { group in
+            RelationshipDetailSheet(group: group, book: book)
+        }
+    }
+
+    @ViewBuilder
+    private func graphCanvas(size: CGSize) -> some View {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let nodeSize: CGFloat = 76
+        let indexedNodes = Array(graphNodes.enumerated())
+
+        ZStack {
+            Color.appBackground.opacity(0.5)
+            Path { path in
+                for group in visibleGroups {
+                    let peer = group.source.id == character.id ? group.target : group.source
+                    guard let index = graphNodes.firstIndex(where: { $0.id == peer.id }) else { continue }
+                    let targetPos = position(index: index, total: graphNodes.count, center: center)
+                    path.move(to: center)
+                    path.addLine(to: targetPos)
+                }
+            }
+            .stroke(Color.secondary.opacity(0.5), lineWidth: 1.5)
+
+            nodeView(character, at: center, size: nodeSize, isCenter: true)
+            ForEach(indexedNodes, id: \.element.id) { index, node in
+                nodeView(node, at: position(index: index, total: indexedNodes.count, center: center), size: nodeSize * 0.8, isCenter: false)
+            }
+            ForEach(Array(visibleGroups.enumerated()), id: \.element.id) { groupIndex, group in
+                let peer = group.source.id == character.id ? group.target : group.source
+                if let index = graphNodes.firstIndex(where: { $0.id == peer.id }) {
+                    let pos = position(index: index, total: graphNodes.count, center: center)
+                    Button { selectedGroup = group } label: {
+                        Text("\(group.source.id == character.id ? "→" : "←") \(group.currentNames.prefix(2).joined(separator: "・"))")
+                            .font(.caption2).lineLimit(1).padding(8)
+                            .background(Color.appBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .position(x: (center.x + pos.x) / 2, y: (center.y + pos.y) / 2 + CGFloat(groupIndex.isMultiple(of: 2) ? -10 : 10))
+                }
+            }
+        }
     }
 
     private func nodeView(_ char: Character, at pos: CGPoint, size: CGFloat, isCenter: Bool) -> some View {
@@ -465,25 +615,27 @@ struct KinshipGraphView: View {
                 Circle()
                     .fill(isCenter ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
                     .frame(width: size, height: size).shadow(radius: 2)
-                Text(char.realName.isEmpty ? "?" : char.realName)
-                    .font(.caption).fontWeight(.medium).lineLimit(1).padding(.horizontal, 4)
+                VStack(spacing: 2) {
+                    Text(char.realName.isEmpty ? "?" : char.realName)
+                        .font(.caption).fontWeight(.medium).lineLimit(1).padding(.horizontal, 4)
+                    if isCenter, let role = allProfiles.first(where: { $0.character?.id == char.id })?.role, !role.isEmpty {
+                        Text(role).font(.caption2).lineLimit(1).padding(.horizontal, 4)
+                    }
+                }
             }
             .position(pos)
         }
         .buttonStyle(.plain)
     }
 
-    // 【修正】使用 isElder / isJunior 取代舊的 switch case
-    private func position(for kinship: KinshipRelation, index: Int, total: Int, center: CGPoint) -> CGPoint {
-        let spacing: CGFloat = 100
-        if kinship.role.isElder {
-            return CGPoint(x: center.x + CGFloat(index - total / 2) * spacing, y: center.y - spacing * 1.5)
-        } else if kinship.role.isJunior {
-            return CGPoint(x: center.x + CGFloat(index - total / 2) * spacing, y: center.y + spacing * 1.5)
-        } else {
-            let side = index % 2 == 0 ? -1.0 : 1.0
-            return CGPoint(x: center.x + side * spacing * 1.5, y: center.y + CGFloat(index / 2) * spacing)
-        }
+    private func position(index: Int, total: Int, center: CGPoint) -> CGPoint {
+        guard total > 0 else { return center }
+        let radius: CGFloat = 130
+        let angle = (Double(index) / Double(total)) * (.pi * 2) - (.pi / 2)
+        return CGPoint(
+            x: center.x + CGFloat(cos(angle)) * radius,
+            y: center.y + CGFloat(sin(angle)) * radius
+        )
     }
 }
 

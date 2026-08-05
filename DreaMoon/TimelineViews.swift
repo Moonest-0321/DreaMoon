@@ -577,7 +577,7 @@ struct TimelinePanelView: View {
         let ev = Event(title: newEventTitle, detail: newEventDetail)
         modelContext.insert(ev)
         ev.node = node
-        ev.sortOrder = (node.events.map(\.sortOrder).max() ?? -1) + 1
+        ev.sortOrder = (events(at: node).map(\.sortOrder).max() ?? -1) + 1
         ev.characters = allCharacters.filter { selectedCharIDs.contains($0.id.uuidString) }
         try? modelContext.save()
         newEventTitle = ""
@@ -656,9 +656,10 @@ struct TimelinePanelView: View {
             let hasMonth = n.month != nil
             let hasDay = n.day != nil
 
+            let nodeEvents = events(at: n)
             let evs = isPrimarySelected
-                ? n.events.filter { TimelineEngine.Visibility.isVisibleOnPrimaryAxis($0) }
-                : n.events
+                ? nodeEvents.filter { TimelineEngine.Visibility.isVisibleOnPrimaryAxis($0) }
+                : nodeEvents
 
             let key: String
             let kind: CellKind
@@ -699,6 +700,12 @@ struct TimelinePanelView: View {
         cells.sort { $0.ordinal < $1.ordinal }
         assignLabels(&cells)
         return cells
+    }
+
+    private func events(at node: Node) -> [Event] {
+        allEvents
+            .filter { $0.node?.id == node.id }
+            .sorted { $0.sortOrder < $1.sortOrder }
     }
 
     private func assignLabels(_ cells: inout [TimelineCell]) {
@@ -1309,12 +1316,12 @@ private struct EventProjectionRow: View {
 
     private var timeLabel: String {
         guard let n = event.node else { return "未定時間" }
-        var s = "\(n.year)年"
+        var s = n.year > 0 ? "\(n.year)年" : ""
         if let m = n.month {
             s += "\(m)月"
             if let d = n.day { s += "\(d)日" }
         }
-        return s
+        return s.isEmpty ? "未設定世界時間" : s
     }
 
     private var nodeHidesIt: Bool {

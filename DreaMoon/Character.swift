@@ -27,7 +27,7 @@ final class Character {
     // 5. 親屬關係 (僅限血緣，Cascade 刪除關聯鏈)
     @Relationship(deleteRule: .cascade, inverse: \KinshipRelation.sourceCharacter)
     var kinships: [KinshipRelation] = []
-    
+
     // 6. 性格 & 7. 原則
     var personality: String?
     var principles: String?

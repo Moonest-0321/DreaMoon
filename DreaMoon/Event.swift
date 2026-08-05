@@ -9,6 +9,7 @@ final class Event {
     var isVisible: Bool = true
     var sortOrder: Double = 0.0
 
+    // Node is a shared time locator. It does not own Event or other records.
     var node: Node?
 
     @Relationship(deleteRule: .nullify)
