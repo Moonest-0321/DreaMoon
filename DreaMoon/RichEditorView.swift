@@ -40,6 +40,7 @@ final class EditorBridge {
         NotificationCenter.default.post(name: .dreaMoonFindNext, object: nil)
     }
     func requestToggleHeading() { coordinator?.toggleSceneHeading() }
+    func focusEditor() { coordinator?.focusEditor() }
     func requestSelect(range: NSRange) {
         if let coordinator {
             coordinator.select(range: range)
@@ -344,6 +345,10 @@ struct RichEditorView: NSViewRepresentable {
         func flushPendingSave() {
             debounceWork?.perform()
             debounceWork = nil
+        }
+        func focusEditor() {
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             syncTypingAttributesToCursor()

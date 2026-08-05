@@ -68,7 +68,7 @@ struct EditorWorkspaceView: View {
                 }
                 .inspector(isPresented: $showInspector) {
                     // ⬇️ V3：唯一改動——掛分段 wrapper（設定集｜時間軸）
-                    InspectorWithTimeline(book: book).inspectorColumnWidth(min: 250, ideal: 300, max: 400)
+                    InspectorWithTimeline(book: book, currentSection: selectedSection).inspectorColumnWidth(min: 250, ideal: 300, max: 400)
                 }
         }
     }
@@ -461,6 +461,11 @@ struct EditorCenterView: View {
                     .font(.system(size: 24, weight: .bold))
                     .textFieldStyle(.plain)
                     .focused($titleFieldFocused)
+                    .onKeyPress(.tab) {
+                        titleFieldFocused = false
+                        bridge.focusEditor()
+                        return .handled
+                    }
                     Spacer()
                 }
                 .padding(.horizontal, 24)

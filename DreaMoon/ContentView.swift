@@ -42,24 +42,28 @@ struct ContentView: View {
                             .buttonStyle(.borderedProminent)
                     }
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 24) {
-                            ForEach(filteredBooks) { book in
-                                NavigationLink(value: book) {
-                                    BookCardView(book: book)
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        bookToDelete = book
-                                        showingDeleteAlert = true
-                                    } label: {
-                                        Label("刪除", systemImage: "trash")
+                    if filteredBooks.isEmpty {
+                        ContentUnavailableView("找不到書籍", systemImage: "magnifyingglass")
+                    } else {
+                        ScrollView {
+                            LazyVGrid(columns: columns, spacing: 24) {
+                                ForEach(filteredBooks) { book in
+                                    NavigationLink(value: book) {
+                                        BookCardView(book: book)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            bookToDelete = book
+                                            showingDeleteAlert = true
+                                        } label: {
+                                            Label("刪除", systemImage: "trash")
+                                        }
                                     }
                                 }
                             }
+                            .padding(24)
                         }
-                        .padding(24)
                     }
                 }
             }

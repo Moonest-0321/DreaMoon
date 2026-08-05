@@ -1,6 +1,31 @@
 import SwiftUI
 import SwiftData
 
+struct WritingReferenceScanner {
+    static func plainText(_ section: Section) -> String {
+        NSAttributedString(section.content).string
+    }
+
+    static func contains(_ name: String, in section: Section) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return plainText(section).localizedCaseInsensitiveContains(trimmed)
+    }
+
+    static func sections(for character: Character, in book: Book) -> [Section] {
+        allSections(in: book).filter { contains(character.realName, in: $0) }
+    }
+
+    static func sections(for item: Item, in book: Book) -> [Section] {
+        allSections(in: book).filter { contains(item.name, in: $0) }
+    }
+
+    static func allSections(in book: Book) -> [Section] {
+        book.volumes.sorted { $0.sortOrder < $1.sortOrder }
+            .flatMap { $0.sections.sorted { $0.sortOrder < $1.sortOrder } }
+    }
+}
+
 // MARK: - 導航狀態枚舉
 enum InspectorRoute: Hashable {
     case list
@@ -34,13 +59,20 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 // MARK: - 1. 設定集根視圖
 struct InspectorRootView: View {
     let book: Book
+    let currentSection: Section?
     @State private var selectedTab: InspectorTab = .character
     @State private var route: InspectorRoute = .list
 
-    init(book: Book) { self.book = book }
+    init(book: Book, currentSection: Section? = nil) {
+        self.book = book
+        self.currentSection = currentSection
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            if let currentSection {
+                WritingReferenceSummaryView(book: book, section: currentSection)
+            }
             Picker("設定種類", selection: $selectedTab) {
                 Text("人物").tag(InspectorTab.character)
                 Text("能力").tag(InspectorTab.ability)
@@ -56,6 +88,7 @@ struct InspectorRootView: View {
                 if selectedTab == .character {
                     CharacterListContainerView(
                         book: book,
+                        currentSection: currentSection,
                         onSelect: { route = .detail($0) },
                         onCreated: { route = .detail($0) }
                     )
@@ -78,6 +111,47 @@ struct InspectorRootView: View {
                 )
             }
         }
+    }
+}
+
+private struct WritingReferenceSummaryView: View {
+    let book: Book
+    let section: Section
+    @Query private var allItems: [Item]
+
+    private var referencedItems: [Item] {
+        allItems.filter { $0.book?.id == book.id && WritingReferenceScanner.contains($0.name, in: section) }
+    }
+    private var referencedCharacters: [Character] {
+        book.characters.filter { WritingReferenceScanner.contains($0.realName, in: section) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("本節引用", systemImage: "link")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("人物 \(referencedCharacters.count) · 物品 \(referencedItems.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if referencedCharacters.isEmpty && referencedItems.isEmpty {
+                Text("尚未找到設定集項目引用")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text((referencedCharacters.map { $0.realName } + referencedItems.map { $0.name })
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "、"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.06))
     }
 }
 
@@ -126,6 +200,7 @@ private struct AbilityListContainerView: View {
 // MARK: - 1b. 列表容器
 struct CharacterListContainerView: View {
     let book: Book
+    let currentSection: Section?
     let onSelect: (Character) -> Void
     let onCreated: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
@@ -142,6 +217,7 @@ struct CharacterListContainerView: View {
     var body: some View {
         CharacterListView(
             characters: characters,
+            currentSection: currentSection,
             onSelect: onSelect,
             onAdd: addCharacter,
             onDelete: { modelContext.delete($0) }
@@ -160,15 +236,20 @@ struct CharacterListContainerView: View {
 // MARK: - 2. 列表頁
 struct CharacterListView: View {
     let characters: [Character]
+    let currentSection: Section?
     let onSelect: (Character) -> Void
     let onAdd: () -> Void
     let onDelete: (Character) -> Void
     @State private var searchText = ""
+    @State private var showCurrentSectionOnly = false
 
     private var filteredCharacters: [Character] {
+        let source = showCurrentSectionOnly && currentSection != nil
+            ? characters.filter { WritingReferenceScanner.contains($0.realName, in: currentSection!) }
+            : characters
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return characters }
-        return characters.filter { character in
+        guard !query.isEmpty else { return source }
+        return source.filter { character in
             character.realName.localizedCaseInsensitiveContains(query) ||
             character.notes?.localizedCaseInsensitiveContains(query) == true
         }
@@ -194,6 +275,14 @@ struct CharacterListView: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 10)
+
+            if currentSection != nil {
+                Toggle("只顯示本節相關人物", isOn: $showCurrentSectionOnly)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
 
             List {
                 if filteredCharacters.isEmpty {
@@ -276,6 +365,8 @@ struct CharacterDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     characterHeader
+
+                    CharacterReferenceSectionsView(character: character, book: book)
 
                     detailSection("摘要", systemImage: "text.quote") {
                         CharacterSummarySectionView(character: character)
@@ -439,6 +530,44 @@ struct CharacterDetailView: View {
         }
         character.kinships.removeAll { $0.id == kinship.id }
         modelContext.delete(kinship)
+    }
+}
+
+private struct CharacterReferenceSectionsView: View {
+    let character: Character
+    let book: Book
+
+    var body: some View {
+        let sections = WritingReferenceScanner.sections(for: character, in: book)
+        VStack(alignment: .leading, spacing: 8) {
+            Label("正文引用", systemImage: "link")
+                .font(.headline)
+            if sections.isEmpty {
+                Text("尚未在正文中找到此人物名稱")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(sections) { section in
+                    HStack {
+                        Text("第 \(sectionNumber(section, in: book)) 節")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(section.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func sectionNumber(_ section: Section, in book: Book) -> Int {
+        guard let volume = section.volume else { return 1 }
+        return volume.sections.sorted { $0.sortOrder < $1.sortOrder }
+            .firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1
     }
 }
 
