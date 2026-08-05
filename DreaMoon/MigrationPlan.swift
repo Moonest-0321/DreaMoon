@@ -382,13 +382,32 @@ enum LegacyV2StoreImporter {
         from source: ModelContext,
         to destination: ModelContext
     ) throws {
-        let existingBooks = try destination.fetch(FetchDescriptor<DreaMoon.Book>())
-        guard existingBooks.isEmpty else { return }
-
         let legacyBooks = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Book>())
         guard !legacyBooks.isEmpty else { return }
 
         let legacyProfiles = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.AuthorProfile>())
+        let legacyVolumes = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Volume>())
+        let legacySections = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Section>())
+        let legacyCharacters = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Character>())
+        let legacyKinships = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.KinshipRelation>())
+
+        let existingBooks = try destination.fetch(FetchDescriptor<DreaMoon.Book>())
+        if !existingBooks.isEmpty {
+            try validateImport(
+                legacyBooks: legacyBooks,
+                legacyProfiles: legacyProfiles,
+                legacyVolumes: legacyVolumes,
+                legacySections: legacySections,
+                legacyCharacters: legacyCharacters,
+                legacyKinships: legacyKinships,
+                destination: destination
+            )
+            for book in existingBooks {
+                try TimelineEngine.Bootstrap.ensure(for: book, in: destination)
+            }
+            return
+        }
+
         for legacy in legacyProfiles {
             let profile = DreaMoon.AuthorProfile(
                 penName: legacy.penName,
@@ -416,7 +435,6 @@ enum LegacyV2StoreImporter {
             booksByID[legacy.id] = book
         }
 
-        let legacyVolumes = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Volume>())
         var volumesByID: [UUID: DreaMoon.Volume] = [:]
         for legacy in legacyVolumes {
             let volume = DreaMoon.Volume(
@@ -430,7 +448,6 @@ enum LegacyV2StoreImporter {
             volumesByID[legacy.id] = volume
         }
 
-        let legacySections = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Section>())
         for legacy in legacySections {
             let section = DreaMoon.Section(
                 id: legacy.id,
@@ -445,7 +462,6 @@ enum LegacyV2StoreImporter {
             destination.insert(section)
         }
 
-        let legacyCharacters = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.Character>())
         var charactersByID: [UUID: DreaMoon.Character] = [:]
         for legacy in legacyCharacters {
             let character = DreaMoon.Character(
@@ -471,7 +487,6 @@ enum LegacyV2StoreImporter {
             charactersByID[legacy.id] = character
         }
 
-        let legacyKinships = try source.fetch(FetchDescriptor<NovelWriterSchemaV2.KinshipRelation>())
         for legacy in legacyKinships {
             let relation = DreaMoon.KinshipRelation(
                 role: KinshipRole(rawValue: legacy.roleRawValue) ?? .siblingMixed,
@@ -487,5 +502,32 @@ enum LegacyV2StoreImporter {
         for book in booksByID.values {
             try TimelineEngine.Bootstrap.ensure(for: book, in: destination)
         }
+
+        try validateImport(
+            legacyBooks: legacyBooks,
+            legacyProfiles: legacyProfiles,
+            legacyVolumes: legacyVolumes,
+            legacySections: legacySections,
+            legacyCharacters: legacyCharacters,
+            legacyKinships: legacyKinships,
+            destination: destination
+        )
+    }
+
+    private static func validateImport(
+        legacyBooks: [NovelWriterSchemaV2.Book],
+        legacyProfiles: [NovelWriterSchemaV2.AuthorProfile],
+        legacyVolumes: [NovelWriterSchemaV2.Volume],
+        legacySections: [NovelWriterSchemaV2.Section],
+        legacyCharacters: [NovelWriterSchemaV2.Character],
+        legacyKinships: [NovelWriterSchemaV2.KinshipRelation],
+        destination: ModelContext
+    ) throws {
+        try LegacyImportValidator.validate(sourceIDs: legacyBooks.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.Book>()).map(\.id), entityName: "書籍")
+        try LegacyImportValidator.validate(sourceIDs: legacyProfiles.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.AuthorProfile>()).map(\.id), entityName: "作者資料")
+        try LegacyImportValidator.validate(sourceIDs: legacyVolumes.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.Volume>()).map(\.id), entityName: "卷冊")
+        try LegacyImportValidator.validate(sourceIDs: legacySections.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.Section>()).map(\.id), entityName: "章節")
+        try LegacyImportValidator.validate(sourceIDs: legacyCharacters.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.Character>()).map(\.id), entityName: "角色")
+        try LegacyImportValidator.validate(sourceIDs: legacyKinships.map(\.id), destinationIDs: try destination.fetch(FetchDescriptor<DreaMoon.KinshipRelation>()).map(\.id), entityName: "血緣關係")
     }
 }
