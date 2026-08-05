@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showingAuthorSettings = false
     @State private var showingDeleteAlert = false
     @State private var bookToDelete: Book?
+    @State private var bookToOpen: Book?
 
     var filteredBooks: [Book] {
         if searchText.isEmpty {
@@ -30,24 +31,37 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 24) {
-                    ForEach(filteredBooks) { book in
-                        NavigationLink(value: book) {
-                            BookCardView(book: book)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                bookToDelete = book
-                                showingDeleteAlert = true
-                            } label: {
-                                Label("刪除", systemImage: "trash")
+            Group {
+                if filteredBooks.isEmpty && searchText.isEmpty {
+                    ContentUnavailableView {
+                        Label("書櫃還沒有小說", systemImage: "books.vertical")
+                    } description: {
+                        Text("建立第一本小說，立即開始寫作。")
+                    } actions: {
+                        Button("建立第一本小說", systemImage: "plus") { showingNewBookSheet = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 24) {
+                            ForEach(filteredBooks) { book in
+                                NavigationLink(value: book) {
+                                    BookCardView(book: book)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        bookToDelete = book
+                                        showingDeleteAlert = true
+                                    } label: {
+                                        Label("刪除", systemImage: "trash")
+                                    }
+                                }
                             }
                         }
+                        .padding(24)
                     }
                 }
-                .padding(24)
             }
             .navigationTitle("DreaMoon")
             .searchable(text: $searchText, prompt: "搜尋書名或作者")
@@ -85,13 +99,30 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showingNewBookSheet) {
-                NewBookSheet()
+                NewBookSheet { book in
+                    bookToOpen = book
+                }
             }
             .sheet(isPresented: $showingAuthorSettings) {
                 AuthorSettingsView()
             }
             .navigationDestination(for: Book.self) { book in
                 BookOverviewView(book: book)
+            }
+            .navigationDestination(for: Section.self) { section in
+                if let book = section.volume?.book {
+                    EditorWorkspaceView(book: book, initialSection: section)
+                }
+            }
+            .navigationDestination(item: $bookToOpen) { book in
+                if let section = book.volumes
+                    .sorted(by: { $0.sortOrder < $1.sortOrder })
+                    .flatMap({ $0.sections.sorted(by: { $0.sortOrder < $1.sortOrder }) })
+                    .first {
+                    EditorWorkspaceView(book: book, initialSection: section)
+                } else {
+                    BookOverviewView(book: book)
+                }
             }
             .alert("確認刪除", isPresented: $showingDeleteAlert, presenting: bookToDelete) { book in
                 Button("取消", role: .cancel) { }
@@ -192,6 +223,11 @@ struct NewBookSheet: View {
     @Query private var profiles: [AuthorProfile]
     @State private var title = ""
     @State private var author = ""
+    let onCreated: (Book) -> Void
+
+    init(onCreated: @escaping (Book) -> Void = { _ in }) {
+        self.onCreated = onCreated
+    }
 
     var body: some View {
         NavigationStack {
@@ -223,6 +259,8 @@ struct NewBookSheet: View {
     private func saveBook() {
         let newBook = Book(title: title, author: author)
         let defaultVolume = Volume(title: "第一卷", book: newBook)
+        let firstSection = Section(title: "第一節", sortOrder: 0, volume: defaultVolume)
+        defaultVolume.sections.append(firstSection)
         newBook.volumes.append(defaultVolume)
         modelContext.insert(newBook)
 
@@ -241,6 +279,8 @@ struct NewBookSheet: View {
         try? TimelineEngine.Bootstrap.ensure(for: newBook, in: modelContext)
         #endif
 
+        do { try modelContext.save() } catch { print("❌ 新書儲存失敗：\(error)") }
+        onCreated(newBook)
         dismiss()
     }
 }

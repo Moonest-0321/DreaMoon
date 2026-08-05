@@ -124,9 +124,9 @@ private struct CharacterTimestampEditorSheet: View {
                     }
                     .padding(.vertical, 2)
                 }
-                Picker("章節", selection: $selectedSectionID) {
-                    Text("無章節定位").tag(Optional<UUID>.none)
-                    ForEach(sections) { Text($0.title.isEmpty ? "未命名章節" : $0.title).tag(Optional($0.id)) }
+                Picker("節", selection: $selectedSectionID) {
+                    Text("無節定位").tag(Optional<UUID>.none)
+                    ForEach(sections) { Text($0.title.isEmpty ? "未命名節" : $0.title).tag(Optional($0.id)) }
                 }
                 Toggle("顯示於時間軸", isOn: $isVisible)
             }

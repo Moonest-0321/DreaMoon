@@ -232,6 +232,7 @@ struct VolumeSectionTreeView: View {
     @FocusState private var renameFocused: Bool
     @State private var collapsedVolumeIDs: Set<UUID> = []
     @State private var deleteTarget: DeleteTarget? = nil
+    @State private var undoTarget: DeleteTarget? = nil
 
     @State private var draggingKind: DragKind? = nil
     @State private var dropTargetVolumeID: UUID? = nil
@@ -272,8 +273,25 @@ struct VolumeSectionTreeView: View {
             Button("刪除", role: .destructive) { performDelete(target) }
         } message: { target in
             switch target {
-            case .volume(let v): Text("確定要刪除卷「\(v.title)」嗎？其下所有章節將一併刪除，且無法復原。")
-            case .section(let s): Text("確定要刪除章節「\(s.title)」嗎？此操作無法復原。")
+            case .volume(let v): Text("確定要刪除卷「\(v.title)」嗎？其下所有節將一併刪除，且無法復原。")
+            case .section(let s): Text("確定要刪除節「\(s.title)」嗎？此操作無法復原。")
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let undoTarget {
+                HStack(spacing: 12) {
+                    Text(deleteSummary(undoTarget))
+                        .font(.caption)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("復原") { restore(undoTarget) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(10)
             }
         }
     }
@@ -294,8 +312,17 @@ struct VolumeSectionTreeView: View {
             ForEach(book.volumes.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { volume in
                 volumeRow(for: volume)
                 if !collapsedVolumeIDs.contains(volume.id) {
-                    ForEach(volume.sections.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { section in
-                        sectionRow(for: section, in: volume)
+                    if volume.sections.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("這一卷還沒有節").font(.subheadline).foregroundStyle(.secondary)
+                            Button("新增第一節", systemImage: "plus") { addSection(to: volume) }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        .padding(.leading, 42).padding(.vertical, 10)
+                    } else {
+                        ForEach(volume.sections.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { section in
+                            sectionRow(for: section, in: volume)
+                        }
                     }
                     if draggingSectionInSameVolume(volume.id) { sectionEndZone(for: volume) }
                 }
@@ -340,7 +367,7 @@ struct VolumeSectionTreeView: View {
                     .onTapGesture { startRenaming(id: volume.id, currentName: volume.title) }
             }
             Button { addSection(to: volume) } label: { Image(systemName: "plus").foregroundStyle(.secondary) }
-                .buttonStyle(.borderless).help("在此卷新增章節")
+                .buttonStyle(.borderless).help("在此卷新增節")
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
@@ -350,7 +377,7 @@ struct VolumeSectionTreeView: View {
             onMove: { draggedID in moveVolume(draggedID: draggedID, before: volume.id) }
         ))
         .contextMenu {
-            Button { addSection(to: volume) } label: { Label("新增章節", systemImage: "doc.badge.plus") }
+            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Button { addVolume() } label: { Label("新增卷", systemImage: "folder.badge.plus") }
             Divider()
             Button(role: .destructive) { deleteTarget = .volume(volume) } label: { Label("刪除卷", systemImage: "trash") }
@@ -381,7 +408,7 @@ struct VolumeSectionTreeView: View {
                 })
             } else {
                 // 【修正】總目錄這裡使用「第 X 節 標題」
-                Text("第 \(index) 節 \(section.title)").lineLimit(1)
+                Text("第 \(index) 節｜\(section.title)").lineLimit(1)
                     .onTapGesture { startRenaming(id: section.id, currentName: section.title) }
             }
         }
@@ -394,9 +421,9 @@ struct VolumeSectionTreeView: View {
         ))
         .contextMenu {
             Button { startRenaming(id: section.id, currentName: section.title) } label: { Label("重新命名", systemImage: "pencil") }
-            Button { addSection(to: volume) } label: { Label("新增章節", systemImage: "doc.badge.plus") }
+            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
-            Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除章節", systemImage: "trash") }
+            Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除節", systemImage: "trash") }
         }
         .overlay(alignment: .top) { DropIndicator(active: dropTargetSectionID == section.id) }
     }
@@ -464,8 +491,10 @@ struct VolumeSectionTreeView: View {
     }
     private func addSection(to volume: Volume) {
         let next = (volume.sections.map(\.sortOrder).max() ?? -1) + 1
-        volume.sections.append(Section(title: "新章節", sortOrder: next, volume: volume))
+        let newSection = Section(title: "新節", sortOrder: next, volume: volume)
+        volume.sections.append(newSection)
         book.updatedAt = Date()
+        onSelectSection?(newSection)
     }
 
     private func moveVolume(draggedID: UUID, before targetID: UUID) {
@@ -520,11 +549,43 @@ struct VolumeSectionTreeView: View {
     }
 
     private func performDelete(_ target: DeleteTarget) {
+        undoTarget = target
         switch target {
         case .volume(let v): modelContext.delete(v)
         case .section(let s): modelContext.delete(s)
         }
         book.updatedAt = Date()
         deleteTarget = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if undoTarget?.id == target.id { undoTarget = nil }
+        }
+    }
+
+    private func deleteSummary(_ target: DeleteTarget) -> String {
+        switch target {
+        case .volume(let volume): return "已刪除卷「\(volume.title)」"
+        case .section(let section): return "已刪除節「\(section.title)」"
+        }
+    }
+
+    private func restore(_ target: DeleteTarget) {
+        switch target {
+        case .volume(let volume):
+            if !book.volumes.contains(where: { $0.id == volume.id }) {
+                volume.book = book
+                book.volumes.append(volume)
+            }
+            modelContext.insert(volume)
+        case .section(let section):
+            guard let volume = section.volume else { return }
+            if !volume.sections.contains(where: { $0.id == section.id }) {
+                volume.sections.append(section)
+            }
+            modelContext.insert(section)
+            onSelectSection?(section)
+        }
+        book.updatedAt = Date()
+        try? modelContext.save()
+        undoTarget = nil
     }
 }

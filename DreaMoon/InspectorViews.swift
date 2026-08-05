@@ -60,7 +60,7 @@ struct InspectorRootView: View {
                         onCreated: { route = .detail($0) }
                     )
                 } else {
-                    ContentUnavailableView("敬請期待", systemImage: "hammer")
+                    AbilityListContainerView(book: book)
                 }
             case .detail(let character):
                 CharacterDetailView(
@@ -76,6 +76,48 @@ struct InspectorRootView: View {
                     onBack: { route = .detail(character) },
                     onSelectCharacter: { route = .graph($0) }
                 )
+            }
+        }
+    }
+}
+
+private struct AbilityListContainerView: View {
+    let book: Book
+    @Query(sort: \CharacterAbility.createdAt) private var allAbilities: [CharacterAbility]
+    @Query(sort: \Character.createdAt) private var allCharacters: [Character]
+
+    private var characters: [Character] { allCharacters.filter { $0.book?.id == book.id } }
+    private var abilities: [CharacterAbility] {
+        let ids = Set(characters.map(\.id))
+        return allAbilities.filter { $0.character.map { ids.contains($0.id) } ?? false }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if abilities.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("尚無能力資料")
+                        .font(.headline)
+                    Text(characters.isEmpty ? "先新增人物，再從人物詳細資料建立能力。" : "可從人物詳細資料建立第一項能力。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+            } else {
+                List(abilities) { ability in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(ability.name.isEmpty ? "未命名能力" : ability.name).font(.headline)
+                        Text(ability.character?.realName.isEmpty == false ? ability.character!.realName : "未命名角色")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !ability.currentStage.isEmpty { Text(ability.currentStage).font(.caption2).foregroundStyle(.tertiary) }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.plain)
             }
         }
     }
@@ -121,11 +163,43 @@ struct CharacterListView: View {
     let onSelect: (Character) -> Void
     let onAdd: () -> Void
     let onDelete: (Character) -> Void
+    @State private var searchText = ""
+
+    private var filteredCharacters: [Character] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return characters }
+        return characters.filter { character in
+            character.realName.localizedCaseInsensitiveContains(query) ||
+            character.notes?.localizedCaseInsensitiveContains(query) == true
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜尋人物", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+
             List {
-                ForEach(characters) { character in
+                if filteredCharacters.isEmpty {
+                    ContentUnavailableView("找不到人物", systemImage: "person.crop.circle.badge.questionmark")
+                } else {
+                    ForEach(filteredCharacters) { character in
                     CharacterRow(character: character)
                         .contentShape(Rectangle())
                         .onTapGesture { onSelect(character) }
@@ -134,6 +208,7 @@ struct CharacterListView: View {
                                 Label("刪除", systemImage: "trash")
                             }
                         }
+                    }
                 }
             }
             .listStyle(.plain)

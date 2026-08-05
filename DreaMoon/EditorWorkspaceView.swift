@@ -11,6 +11,19 @@ struct EditorWorkspaceView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var bridge = EditorBridge()
 
+    private var orderedSections: [Section] {
+        book.volumes.sorted { $0.sortOrder < $1.sortOrder }
+            .flatMap { $0.sections.sorted { $0.sortOrder < $1.sortOrder } }
+    }
+    private var previousSection: Section? {
+        guard let selectedSection, let index = orderedSections.firstIndex(where: { $0.id == selectedSection.id }), index > 0 else { return nil }
+        return orderedSections[index - 1]
+    }
+    private var nextSection: Section? {
+        guard let selectedSection, let index = orderedSections.firstIndex(where: { $0.id == selectedSection.id }), index + 1 < orderedSections.count else { return nil }
+        return orderedSections[index + 1]
+    }
+
     init(book: Book, initialSection: Section) {
         self.book = book
         _selectedSection = State(initialValue: initialSection)
@@ -18,7 +31,7 @@ struct EditorWorkspaceView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            EditorSidebarView(book: book, selectedSection: $selectedSection)
+            EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
                 .navigationSplitViewColumnWidth(min: 150, ideal: 200, max: 300)
         } detail: {
             EditorCenterView(section: selectedSection, bridge: bridge, book: book)
@@ -27,23 +40,30 @@ struct EditorWorkspaceView: View {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button { toggleSidebar() } label: { Label("目錄", systemImage: "sidebar.left") }.help("顯示/隱藏左欄目錄")
                         Button { showInspector.toggle() } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
-                        Divider()
                         Button {
-                            if let section = selectedSection {
-                                let content = ExportManager.exportSectionToTXT(section: section)
-                                ExportManager.presentSavePanel(for: book, defaultName: section.title, fileType: "txt", content: content)
-                            } else {
-                                let content = ExportManager.exportBookToTXT(book: book)
-                                ExportManager.presentSavePanel(for: book, defaultName: book.title, fileType: "txt", content: content)
-                            }
-                        } label: {
-                            Label("匯出 TXT", systemImage: "square.and.arrow.up")
-                        }
-                        .help("匯出當前章節或整本書為 TXT")
-                        Button { EpubExporter.exportBook(book: book) } label: {
-                            Label("匯出 EPUB", systemImage: "book.closed")
-                        }
-                        .help("匯出整本書為 EPUB 電子書")
+                            bridge.flushPendingSave()
+                            selectedSection = previousSection
+                        } label: { Label("上一節", systemImage: "chevron.left") }
+                            .disabled(previousSection == nil)
+                            .help(previousSection == nil ? "已是第一節" : "上一節")
+                        Button {
+                            bridge.flushPendingSave()
+                            selectedSection = nextSection
+                        } label: { Label("下一節", systemImage: "chevron.right") }
+                            .disabled(nextSection == nil)
+                            .help(nextSection == nil ? "已是最後一節" : "下一節")
+                        Menu {
+                            Button {
+                                if let section = selectedSection {
+                                    let content = ExportManager.exportSectionToTXT(section: section)
+                                    ExportManager.presentSavePanel(for: book, defaultName: section.title, fileType: "txt", content: content)
+                                } else {
+                                    let content = ExportManager.exportBookToTXT(book: book)
+                                    ExportManager.presentSavePanel(for: book, defaultName: book.title, fileType: "txt", content: content)
+                                }
+                            } label: { Label("匯出 TXT", systemImage: "doc.text") }
+                            Button { EpubExporter.exportBook(book: book) } label: { Label("匯出 EPUB", systemImage: "book.closed") }
+                        } label: { Label("更多", systemImage: "ellipsis.circle") }
                     }
                 }
                 .inspector(isPresented: $showInspector) {
@@ -62,6 +82,7 @@ struct EditorWorkspaceView: View {
 struct EditorSidebarView: View {
     let book: Book
     @Binding var selectedSection: Section?
+    let bridge: EditorBridge
     @Environment(\.modelContext) private var modelContext
 
     @State private var draggingKind: DragKind? = nil
@@ -72,6 +93,7 @@ struct EditorSidebarView: View {
     @State private var renameBuffer: String = ""
     @FocusState private var renameFocused: Bool
     @State private var deleteTarget: DeleteTarget? = nil
+    @State private var undoTarget: DeleteTarget? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,8 +119,17 @@ struct EditorSidebarView: View {
                 ForEach(book.volumes.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { volume in
                     volumeRow(for: volume)
                     if !collapsedVolumeIDs.contains(volume.id) {
-                        ForEach(volume.sections.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { section in
-                            sectionRow(for: section, in: volume)
+                        if volume.sections.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("這一卷還沒有節").font(.caption).foregroundStyle(.secondary)
+                                Button("新增第一節", systemImage: "plus") { addSection(to: volume) }
+                                    .buttonStyle(.borderedProminent)
+                            }
+                            .padding(.leading, 38).padding(.vertical, 8)
+                        } else {
+                            ForEach(volume.sections.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { section in
+                                sectionRow(for: section, in: volume)
+                            }
                         }
                         if draggingSectionInSameVolume(volume.id) { sectionEndZone(for: volume) }
                     }
@@ -113,8 +144,26 @@ struct EditorSidebarView: View {
             Button("刪除", role: .destructive) { performDelete(target) }
         } message: { target in
             switch target {
-            case .volume(let v): Text("確定要刪除卷「\(v.title)」嗎？其下所有章節將一併刪除，且無法復原。")
-            case .section(let s): Text("確定要刪除章節「\(s.title)」嗎？此操作無法復原。")
+            case .volume(let v): Text("確定要刪除卷「\(v.title)」嗎？其下所有節將一併刪除，且無法復原。")
+            case .section(let s): Text("確定要刪除節「\(s.title)」嗎？此操作無法復原。")
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let undoTarget {
+                HStack(spacing: 12) {
+                    Text(deleteSummary(undoTarget))
+                        .font(.caption)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("復原") { restore(undoTarget) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
@@ -152,13 +201,13 @@ struct EditorSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain) // 使用 plain 避免破壞 List 的選取背景色
-            .help("在此卷新增節次")
+                .help("在此卷新增節")
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture { toggleVolume(volume.id) } // 點擊空白處展開/收合
         .contextMenu {
-            Button { addSection(to: volume) } label: { Label("新增章節", systemImage: "doc.badge.plus") }
+            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
             Button(role: .destructive) { deleteTarget = .volume(volume) } label: { Label("刪除卷", systemImage: "trash") }
         }
@@ -180,8 +229,9 @@ struct EditorSidebarView: View {
             if renamingID == section.id {
                 renameEditor(commit: { newName in section.title = newName.isEmpty ? section.title : newName })
             } else {
-                Text("\(index). \(section.title)").lineLimit(1)
+                Text("第 \(index) 節｜\(section.title)").lineLimit(1)
                     .onTapGesture {
+                        bridge.flushPendingSave()
                         selectedSection = section
                         startRenaming(id: section.id, currentName: section.title)
                     }
@@ -190,7 +240,7 @@ struct EditorSidebarView: View {
         .padding(.leading, 8).padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onTapGesture { selectedSection = section }
+        .onTapGesture { bridge.flushPendingSave(); selectedSection = section }
         .onDrop(of: [UTType.plainText], delegate: SectionDropDelegate(
             targetID: section.id, targetVolumeID: volume.id, draggingKind: $draggingKind, highlightID: $dropTargetSectionID,
             onMove: { draggedID in moveSection(in: volume, draggedID: draggedID, before: section.id) }
@@ -199,9 +249,9 @@ struct EditorSidebarView: View {
         .overlay(alignment: .top) { DropIndicator(active: dropTargetSectionID == section.id) }
         .contextMenu {
             Button { startRenaming(id: section.id, currentName: section.title) } label: { Label("重新命名", systemImage: "pencil") }
-            Button { addSection(to: volume) } label: { Label("新增章節", systemImage: "doc.badge.plus") }
+            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
-            Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除章節", systemImage: "trash") }
+            Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除節", systemImage: "trash") }
         }
     }
 
@@ -267,8 +317,9 @@ struct EditorSidebarView: View {
     }
     private func addSection(to volume: Volume) {
         let next = (volume.sections.map(\.sortOrder).max() ?? -1) + 1
-        let newSection = Section(title: "新章節", sortOrder: next, volume: volume)
+        let newSection = Section(title: "新節", sortOrder: next, volume: volume)
         volume.sections.append(newSection)
+        bridge.flushPendingSave()
         selectedSection = newSection // 自動選取並跳轉至中欄編輯
     }
 
@@ -299,6 +350,7 @@ struct EditorSidebarView: View {
 
     // MARK: 刪除與 Fallback
     private func performDelete(_ target: DeleteTarget) {
+        undoTarget = target
         switch target {
         case .volume(let v):
             if selectedSection?.volume?.id == v.id {
@@ -312,6 +364,36 @@ struct EditorSidebarView: View {
             modelContext.delete(s)
         }
         deleteTarget = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if undoTarget?.id == target.id { undoTarget = nil }
+        }
+    }
+
+    private func deleteSummary(_ target: DeleteTarget) -> String {
+        switch target {
+        case .volume(let volume): return "已刪除卷「\(volume.title)」"
+        case .section(let section): return "已刪除節「\(section.title)」"
+        }
+    }
+
+    private func restore(_ target: DeleteTarget) {
+        switch target {
+        case .volume(let volume):
+            if !book.volumes.contains(where: { $0.id == volume.id }) {
+                volume.book = book
+                book.volumes.append(volume)
+            }
+            modelContext.insert(volume)
+        case .section(let section):
+            guard let volume = section.volume else { return }
+            if !volume.sections.contains(where: { $0.id == section.id }) {
+                volume.sections.append(section)
+            }
+            modelContext.insert(section)
+            selectedSection = section
+        }
+        try? modelContext.save()
+        undoTarget = nil
     }
     private func findFallbackSection(for deletedSection: Section, in book: Book) -> Section? {
         let sortedVolumes = book.volumes.sorted { $0.sortOrder < $1.sortOrder }
@@ -355,6 +437,9 @@ struct EditorCenterView: View {
     let book: Book
     @State private var liveWordCount: Int = 0
     @State private var cursorIsHeading: Bool = false
+    @State private var saveState: EditorSaveState = .saved
+    @AppStorage("dreaMoon.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
+    @State private var showingInlineAutosaveHint = false
     @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
@@ -362,7 +447,7 @@ struct EditorCenterView: View {
             if let section {
                 let index = sectionIndex(for: section, in: book)
                 HStack(spacing: 4) {
-                    Text("第 \(index) 節 ")
+                    Text("第 \(index) 節｜")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
@@ -396,12 +481,34 @@ struct EditorCenterView: View {
                 .padding(.vertical, 8)
                 .background(Color.appBackground)
                 Divider()
-                RichEditorView(section: section, bridge: bridge, onWordCountChange: { liveWordCount = $0 }, onHeadingStateChange: { cursorIsHeading = $0 })
+                ZStack(alignment: .topLeading) {
+                    RichEditorView(
+                        section: section,
+                        bridge: bridge,
+                        onWordCountChange: { liveWordCount = $0 },
+                        onHeadingStateChange: { cursorIsHeading = $0 },
+                        onSaveStateChange: { saveState = $0 },
+                        onEditorFocus: { showingInlineAutosaveHint = false }
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if showingInlineAutosaveHint && section.content.characters.isEmpty {
+                        Text("內容會自動儲存，開始輸入正文…")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary.opacity(0.48))
+                            .padding(.leading, 24)
+                            .padding(.top, 24)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
                 Divider()
                 HStack {
+                    Text(saveState.label)
+                        .font(.caption)
+                        .foregroundStyle(saveState == .failed ? .red : .secondary)
                     Spacer()
-                    Text("\(liveWordCount) 字")
+                    Text("\(liveWordCount) 字 · 第 \(index) 節 · \(section.volume?.title ?? "")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -409,13 +516,23 @@ struct EditorCenterView: View {
                 .padding(.vertical, 8)
                 .background(Color.appBackground)
             } else {
-                ContentUnavailableView("請從左側選擇或新增一個章節開始寫作", systemImage: "doc.text")
+                ContentUnavailableView("從目錄選擇節，或新增一節開始寫作", systemImage: "doc.text")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(Color.appBackground)
-        .onAppear { liveWordCount = section?.wordCount ?? 0 }
-        .onChange(of: section?.id) { _, _ in liveWordCount = section?.wordCount ?? 0 }
+        .onAppear {
+            liveWordCount = section?.wordCount ?? 0
+            if section != nil { DispatchQueue.main.async { titleFieldFocused = true } }
+            if !hasShownInlineAutosaveHint {
+                showingInlineAutosaveHint = true
+                hasShownInlineAutosaveHint = true
+            }
+        }
+        .onChange(of: section?.id) {
+            liveWordCount = section?.wordCount ?? 0
+            saveState = .saved
+        }
     }
 
     private func sectionIndex(for section: Section, in book: Book) -> Int {

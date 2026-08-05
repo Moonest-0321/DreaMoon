@@ -57,6 +57,11 @@ struct NovelWriterApp: App {
         } catch {
             fatalError("Psychology 舊資料轉換失敗: \(Self.errorDetails(error))")
         }
+        do {
+            try V4DataBackfill.ensureInitialWritingStructure(in: container.mainContext)
+        } catch {
+            fatalError("初始寫作結構補齊失敗: \(Self.errorDetails(error))")
+        }
         return container
     }()
 
@@ -105,6 +110,26 @@ struct NovelWriterApp: App {
 
 @MainActor
 enum V4DataBackfill {
+    static func ensureInitialWritingStructure(in context: ModelContext) throws {
+        let books = try context.fetch(FetchDescriptor<Book>())
+        var didChange = false
+        for book in books {
+            if book.volumes.isEmpty {
+                let volume = Volume(title: "第一卷", sortOrder: 0, book: book)
+                let section = Section(title: "第一節", sortOrder: 0, volume: volume)
+                volume.sections.append(section)
+                book.volumes.append(volume)
+                didChange = true
+            } else if book.volumes.allSatisfy({ $0.sections.isEmpty }) {
+                let firstVolume = book.volumes.min { $0.sortOrder < $1.sortOrder }!
+                let section = Section(title: "第一節", sortOrder: 0, volume: firstVolume)
+                firstVolume.sections.append(section)
+                didChange = true
+            }
+        }
+        if didChange { try context.save() }
+    }
+
     static func migrateLegacyPsychology(in context: ModelContext) throws {
         let characters = try context.fetch(FetchDescriptor<Character>())
         var didChange = false

@@ -56,8 +56,16 @@ final class EditorBridge {
         pendingSelection = range
     }
     func reloadVisibleContent() { coordinator?.reloadFromModel() }
+    func flushPendingSave() { coordinator?.flushPendingSave() }
     fileprivate var pendingSelection: NSRange?
     fileprivate var pendingSectionID: UUID?
+}
+
+enum EditorSaveState: Equatable {
+    case saved, saving, failed
+    var label: String {
+        switch self { case .saved: return "已儲存"; case .saving: return "儲存中…"; case .failed: return "儲存失敗" }
+    }
 }
 
 // MARK: - 自訂 NSTextView 子類
@@ -69,6 +77,7 @@ final class DreaMoonTextView: NSTextView {
     }
     required init?(coder: NSCoder) { fatalError("不支援 storyboard 初始化") }
     override func mouseDown(with event: NSEvent) {
+        coordinator?.onEditorFocus?()
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
     }
@@ -193,6 +202,8 @@ struct RichEditorView: NSViewRepresentable {
     let bridge: EditorBridge
     var onWordCountChange: ((Int) -> Void)? = nil
     var onHeadingStateChange: ((Bool) -> Void)? = nil
+    var onSaveStateChange: ((EditorSaveState) -> Void)? = nil
+    var onEditorFocus: (() -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -203,6 +214,8 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.bridge = bridge
         context.coordinator.onWordCountChange = onWordCountChange
         context.coordinator.onHeadingStateChange = onHeadingStateChange
+        context.coordinator.onSaveStateChange = onSaveStateChange
+        context.coordinator.onEditorFocus = onEditorFocus
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -236,6 +249,8 @@ struct RichEditorView: NSViewRepresentable {
         }
         coord.onWordCountChange = onWordCountChange
         coord.onHeadingStateChange = onHeadingStateChange
+        coord.onSaveStateChange = onSaveStateChange
+        coord.onEditorFocus = onEditorFocus
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -298,6 +313,8 @@ struct RichEditorView: NSViewRepresentable {
         var lastSectionID: UUID? = nil
         var onWordCountChange: ((Int) -> Void)?
         var onHeadingStateChange: ((Bool) -> Void)?
+        var onSaveStateChange: ((EditorSaveState) -> Void)?
+        var onEditorFocus: (() -> Void)?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         func textDidChange(_ notification: Notification) {
@@ -305,6 +322,7 @@ struct RichEditorView: NSViewRepresentable {
             let snapshot = AttributedString(tv.attributedString())
             let wc = countWords(tv.string)
             onWordCountChange?(wc)
+            onSaveStateChange?(.saving)
             debounceWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 guard let self = self, let sec = self.section else { return }
@@ -312,10 +330,20 @@ struct RichEditorView: NSViewRepresentable {
                 sec.wordCount = wc
                 sec.updatedAt = Date()
                 sec.volume?.book?.updatedAt = Date()
-                self.lastCommitted = snapshot
+                do {
+                    if let context = sec.modelContext { try context.save() }
+                    self.lastCommitted = snapshot
+                    self.onSaveStateChange?(.saved)
+                } catch {
+                    self.onSaveStateChange?(.failed)
+                }
             }
             debounceWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        }
+        func flushPendingSave() {
+            debounceWork?.perform()
+            debounceWork = nil
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             syncTypingAttributesToCursor()

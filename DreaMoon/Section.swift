@@ -4,7 +4,7 @@ import SwiftData
 @Model
 final class Section {
     var id: UUID = UUID()
-    var title: String = ""           // 節名 (例如：第一章、相遇)
+    var title: String = ""           // 節名 (例如：第一節、相遇)
     
     // 【核心內容】PRD 2.2 規定使用 AttributedString，儲存文字與「幕標題/內文」字體屬性。
     var content: AttributedString = AttributedString("")
