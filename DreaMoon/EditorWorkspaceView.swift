@@ -63,7 +63,7 @@ struct EditorWorkspaceView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
-                .navigationSplitViewColumnWidth(min: 150, ideal: 200, max: 300)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
             EditorCenterView(section: selectedSection, bridge: bridge, book: book)
                 .navigationTitle("")
@@ -377,16 +377,31 @@ struct EditorSidebarView: View {
             Image(systemName: collapsedVolumeIDs.contains(volume.id) ? "chevron.right" : "chevron.down")
                 .font(.caption).foregroundStyle(.secondary).frame(width: 14)
                 .contentShape(Rectangle())
-                .onTapGesture { toggleVolume(volume.id) }
+                .onTapGesture {
+                    commitCurrentRename()
+                    toggleVolume(volume.id)
+                }
             if renamingID == volume.id {
                 renameEditor(commit: { newName in volume.title = newName.isEmpty ? volume.title : newName })
             } else {
                 Text(volume.title).lineLimit(1).fontWeight(.semibold)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                     .onTapGesture { startRenaming(id: volume.id, currentName: volume.title) }
             }
-            Spacer()
+            Rectangle()
+                .fill(Color.clear)
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    commitCurrentRename()
+                    toggleVolume(volume.id)
+                }
             // 【新增】每個卷後面的 + 按鈕
-            Button(action: { addSection(to: volume) }) {
+            Button(action: {
+                commitCurrentRename()
+                addSection(to: volume)
+            }) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -398,7 +413,6 @@ struct EditorSidebarView: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { toggleVolume(volume.id) } // 點擊空白處展開/收合
         .contextMenu {
             Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
@@ -419,21 +433,39 @@ struct EditorSidebarView: View {
                     return NSItemProvider(object: NSString(string: section.id.uuidString))
                 }
             Image(systemName: "doc.text").foregroundStyle(.secondary).frame(width: 14)
+                .onTapGesture {
+                    commitCurrentRename()
+                    selectedSection = section
+                }
             if renamingID == section.id {
                 renameEditor(commit: { newName in section.title = newName.isEmpty ? section.title : newName })
             } else {
-                Text("第 \(index) 節｜\(section.title)").lineLimit(1)
-                    .onTapGesture {
-                        bridge.flushPendingSave()
-                        selectedSection = section
-                        startRenaming(id: section.id, currentName: section.title)
-                    }
+                HStack(spacing: 0) {
+                    Text("\(index)｜")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            commitCurrentRename()
+                            selectedSection = section
+                        }
+                    Text(section.title).lineLimit(1)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture { startRenaming(id: section.id, currentName: section.title) }
+                }
             }
+            Rectangle()
+                .fill(Color.clear)
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    commitCurrentRename()
+                    selectedSection = section
+                }
         }
         .padding(.leading, 8).padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { bridge.flushPendingSave(); selectedSection = section }
         .onDrop(of: [UTType.plainText], delegate: SectionDropDelegate(
             targetID: section.id, targetVolumeID: volume.id, draggingKind: $draggingKind, highlightID: $dropTargetSectionID,
             onMove: { draggedID in moveSection(in: volume, draggedID: draggedID, before: section.id) }
@@ -442,7 +474,10 @@ struct EditorSidebarView: View {
         .overlay(alignment: .top) { DropIndicator(active: dropTargetSectionID == section.id) }
         .contextMenu {
             Button { startRenaming(id: section.id, currentName: section.title) } label: { Label("重新命名", systemImage: "pencil") }
-            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
+            Button {
+                commitCurrentRename()
+                addSection(to: volume)
+            } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
             Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除節", systemImage: "trash") }
         }
@@ -469,6 +504,7 @@ struct EditorSidebarView: View {
                 TextField("", text: $renameBuffer)
                     .textFieldStyle(.roundedBorder)
                     .focused($renameFocused)
+                    .submitLabel(.done)
                     .onAppear { renameFocused = true }
                     .onSubmit { commitAndClose(commit: commit) }
             }
@@ -481,7 +517,21 @@ struct EditorSidebarView: View {
         .onChange(of: renameFocused) { _, focused in if !focused { commitAndClose(commit: commit) } }
     }
 
-    private func startRenaming(id: UUID, currentName: String) { renameBuffer = currentName; renamingID = id }
+    private func startRenaming(id: UUID, currentName: String) {
+        commitCurrentRename()
+        renameBuffer = currentName
+        renamingID = id
+    }
+    private func commitCurrentRename() {
+        guard let id = renamingID else { return }
+        if let volume = book.volumes.first(where: { $0.id == id }) {
+            volume.title = renameBuffer.isEmpty ? volume.title : renameBuffer
+        } else if let section = book.volumes.flatMap(\.sections).first(where: { $0.id == id }) {
+            section.title = renameBuffer.isEmpty ? section.title : renameBuffer
+        }
+        renamingID = nil
+        renameFocused = false
+    }
     private func commitAndClose(commit: (String) -> Void) { commit(renameBuffer); renamingID = nil; renameFocused = false }
     private func cancelRenaming() { renamingID = nil; renameFocused = false }
     private func toggleVolume(_ id: UUID) {
@@ -631,6 +681,7 @@ struct EditorCenterView: View {
     @State private var liveWordCount: Int = 0
     @State private var cursorIsHeading: Bool = false
     @State private var saveState: EditorSaveState = .saved
+    @State private var isContentLoading = false
     @AppStorage("dreaMoon.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
     @State private var showingInlineAutosaveHint = false
     @FocusState private var titleFieldFocused: Bool
@@ -686,9 +737,18 @@ struct EditorCenterView: View {
                         onWordCountChange: { liveWordCount = $0 },
                         onHeadingStateChange: { cursorIsHeading = $0 },
                         onSaveStateChange: { saveState = $0 },
-                        onEditorFocus: { showingInlineAutosaveHint = false }
+                        onEditorFocus: { showingInlineAutosaveHint = false },
+                        onLoadingChange: { isContentLoading = $0 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if isContentLoading && !section.content.characters.isEmpty {
+                        ProgressView("載入內容…")
+                            .controlSize(.small)
+                            .padding(12)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .allowsHitTesting(false)
+                    }
 
                     if showingInlineAutosaveHint && section.content.characters.isEmpty {
                         Text("內容會自動儲存，開始輸入正文…")
@@ -721,7 +781,6 @@ struct EditorCenterView: View {
         .background(Color.appBackground)
         .onAppear {
             liveWordCount = section?.wordCount ?? 0
-            if section != nil { DispatchQueue.main.async { titleFieldFocused = true } }
             if !hasShownInlineAutosaveHint {
                 showingInlineAutosaveHint = true
                 hasShownInlineAutosaveHint = true

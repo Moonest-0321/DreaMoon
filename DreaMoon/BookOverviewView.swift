@@ -356,7 +356,10 @@ struct VolumeSectionTreeView: View {
             Image(systemName: collapsedVolumeIDs.contains(volume.id) ? "chevron.right" : "chevron.down")
                 .font(.caption).foregroundStyle(.secondary).frame(width: 14)
                 .contentShape(Rectangle())
-                .onTapGesture { toggleVolume(volume.id) }
+                .onTapGesture {
+                    commitCurrentRename()
+                    toggleVolume(volume.id)
+                }
             if renamingID == volume.id {
                 renameEditor(commit: { newName in
                     volume.title = newName.isEmpty ? volume.title : newName
@@ -364,14 +367,26 @@ struct VolumeSectionTreeView: View {
                 })
             } else {
                 Text(volume.title).lineLimit(1).fontWeight(.semibold)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                     .onTapGesture { startRenaming(id: volume.id, currentName: volume.title) }
             }
-            Button { addSection(to: volume) } label: { Image(systemName: "plus").foregroundStyle(.secondary) }
+            Button {
+                commitCurrentRename()
+                addSection(to: volume)
+            } label: { Image(systemName: "plus").foregroundStyle(.secondary) }
                 .buttonStyle(.borderless).help("在此卷新增節")
+            Rectangle()
+                .fill(Color.clear)
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    commitCurrentRename()
+                    toggleVolume(volume.id)
+                }
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { toggleVolume(volume.id) }
         .onDrop(of: [UTType.plainText], delegate: VolumeDropDelegate(
             targetID: volume.id, draggingKind: $draggingKind, highlightID: $dropTargetVolumeID,
             onMove: { draggedID in moveVolume(draggedID: draggedID, before: volume.id) }
@@ -407,21 +422,41 @@ struct VolumeSectionTreeView: View {
                     book.updatedAt = Date()
                 })
             } else {
-                // 【修正】總目錄這裡使用「第 X 節 標題」
-                Text("第 \(index) 節｜\(section.title)").lineLimit(1)
-                    .onTapGesture { startRenaming(id: section.id, currentName: section.title) }
+                HStack(spacing: 0) {
+                    Text("\(index)｜")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            commitCurrentRename()
+                            onSelectSection?(section)
+                        }
+                    Text(section.title).lineLimit(1)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture { startRenaming(id: section.id, currentName: section.title) }
+                }
             }
+            Rectangle()
+                .fill(Color.clear)
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    commitCurrentRename()
+                    onSelectSection?(section)
+                }
         }
         .padding(.leading, 8).padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .onTapGesture { onSelectSection?(section) }
         .onDrop(of: [UTType.plainText], delegate: SectionDropDelegate(
             targetID: section.id, targetVolumeID: volume.id, draggingKind: $draggingKind, highlightID: $dropTargetSectionID,
             onMove: { draggedID in moveSection(in: volume, draggedID: draggedID, before: section.id) }
         ))
         .contextMenu {
             Button { startRenaming(id: section.id, currentName: section.title) } label: { Label("重新命名", systemImage: "pencil") }
-            Button { addSection(to: volume) } label: { Label("新增節", systemImage: "doc.badge.plus") }
+            Button {
+                commitCurrentRename()
+                addSection(to: volume)
+            } label: { Label("新增節", systemImage: "doc.badge.plus") }
             Divider()
             Button(role: .destructive) { deleteTarget = .section(section) } label: { Label("刪除節", systemImage: "trash") }
         }
@@ -465,6 +500,7 @@ struct VolumeSectionTreeView: View {
                 TextField("", text: $renameBuffer)
                     .textFieldStyle(.roundedBorder)
                     .focused($renameFocused)
+                    .submitLabel(.done)
                     .onAppear { renameFocused = true }
                     .onSubmit { commitAndClose(commit: commit) }
             }
@@ -476,7 +512,24 @@ struct VolumeSectionTreeView: View {
         }
         .onChange(of: renameFocused) { _, focused in if !focused { commitAndClose(commit: commit) } }
     }
-    private func startRenaming(id: UUID, currentName: String) { renameBuffer = currentName; renamingID = id }
+    private func startRenaming(id: UUID, currentName: String) {
+        commitCurrentRename()
+        renameBuffer = currentName
+        renamingID = id
+    }
+    private func commitCurrentRename() {
+        guard let id = renamingID else { return }
+        if let volume = book.volumes.first(where: { $0.id == id }) {
+            volume.title = renameBuffer.isEmpty ? volume.title : renameBuffer
+            book.updatedAt = Date()
+        } else if let section = book.volumes.flatMap(\.sections).first(where: { $0.id == id }) {
+            section.title = renameBuffer.isEmpty ? section.title : renameBuffer
+            section.updatedAt = Date()
+            book.updatedAt = Date()
+        }
+        renamingID = nil
+        renameFocused = false
+    }
     private func commitAndClose(commit: (String) -> Void) { commit(renameBuffer); renamingID = nil; renameFocused = false }
     private func cancelRenaming() { renamingID = nil; renameFocused = false }
 

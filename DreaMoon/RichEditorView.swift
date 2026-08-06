@@ -210,6 +210,7 @@ struct RichEditorView: NSViewRepresentable {
     var onHeadingStateChange: ((Bool) -> Void)? = nil
     var onSaveStateChange: ((EditorSaveState) -> Void)? = nil
     var onEditorFocus: (() -> Void)? = nil
+    var onLoadingChange: ((Bool) -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -222,18 +223,19 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onHeadingStateChange = onHeadingStateChange
         context.coordinator.onSaveStateChange = onSaveStateChange
         context.coordinator.onEditorFocus = onEditorFocus
+        context.coordinator.onLoadingChange = onLoadingChange
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
         context.coordinator.lastSectionID = section.id
         let sectionID = section.id
-        DispatchQueue.main.async { [weak textView, weak coordinator = context.coordinator] in
+        // 讓 NavigationSplitView 先完成首個 frame。長篇 AttributedString 的橋接與
+        // TextKit 排版都只能在主執行緒完成，若與 push 動畫同一輪執行會明顯掉幀。
+        context.coordinator.scheduleContentLoad(after: 0.18) { [weak textView, weak coordinator = context.coordinator] in
             guard let textView,
                   let coordinator,
                   coordinator.lastSectionID == sectionID else { return }
-            textView.textStorage?.setAttributedString(NSAttributedString(initial))
-            coordinator.syncTypingAttributesToCursor()
-            coordinator.reportHeadingState()
+            coordinator.apply(initial, to: textView, resetSelection: false)
         }
         return scrollView
     }
@@ -244,10 +246,9 @@ struct RichEditorView: NSViewRepresentable {
         if sectionChanged {
             coord.lastSectionID = section.id
             coord.section = section
-            textView.textStorage?.setAttributedString(NSAttributedString(section.content))
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            coord.cancelScheduledContentLoad()
+            coord.apply(section.content, to: textView, resetSelection: true)
             coord.lastCommitted = section.content
-            coord.syncTypingAttributesToCursor()
             // 修 422：view update 途中不可同步改 @State，丟下一 runloop
             let wc = countWords(textView.string)
             let wcCallback = onWordCountChange
@@ -257,6 +258,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.onHeadingStateChange = onHeadingStateChange
         coord.onSaveStateChange = onSaveStateChange
         coord.onEditorFocus = onEditorFocus
+        coord.onLoadingChange = onLoadingChange
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -265,8 +267,6 @@ struct RichEditorView: NSViewRepresentable {
             bridge.pendingSectionID = nil
             coord.select(range: pendingSelection)
         }
-        // 修 422：reportHeadingState 回調改 @State，不可在 updateNSView 同步執行
-        DispatchQueue.main.async { [weak coord] in coord?.reportHeadingState() }
     }
     private func makeScrollViewAndTextView() -> (NSScrollView, DreaMoonTextView) {
         let textStorage = NSTextStorage()
@@ -321,8 +321,41 @@ struct RichEditorView: NSViewRepresentable {
         var onHeadingStateChange: ((Bool) -> Void)?
         var onSaveStateChange: ((EditorSaveState) -> Void)?
         var onEditorFocus: (() -> Void)?
+        var onLoadingChange: ((Bool) -> Void)?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
+        private var contentLoadWork: DispatchWorkItem?
+
+        func scheduleContentLoad(after delay: TimeInterval, _ load: @escaping () -> Void) {
+            cancelScheduledContentLoad()
+            // makeNSView/updateNSView 期間不能同步回寫 SwiftUI 狀態。
+            let loadingCallback = onLoadingChange
+            DispatchQueue.main.async { loadingCallback?(true) }
+            let work = DispatchWorkItem { [weak self] in
+                load()
+                self?.contentLoadWork = nil
+            }
+            contentLoadWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+
+        func cancelScheduledContentLoad() {
+            contentLoadWork?.cancel()
+            contentLoadWork = nil
+        }
+
+        func apply(_ content: AttributedString, to textView: NSTextView, resetSelection: Bool) {
+            textView.textStorage?.beginEditing()
+            textView.textStorage?.setAttributedString(NSAttributedString(content))
+            textView.textStorage?.endEditing()
+            if resetSelection {
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
+            }
+            syncTypingAttributesToCursor()
+            reportHeadingState()
+            let loadingCallback = onLoadingChange
+            DispatchQueue.main.async { loadingCallback?(false) }
+        }
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             let snapshot = AttributedString(tv.attributedString())
@@ -330,8 +363,9 @@ struct RichEditorView: NSViewRepresentable {
             onWordCountChange?(wc)
             onSaveStateChange?(.saving)
             debounceWork?.cancel()
+            let targetSection = section
             let work = DispatchWorkItem { [weak self] in
-                guard let self = self, let sec = self.section else { return }
+                guard let self = self, let sec = targetSection else { return }
                 sec.content = snapshot
                 sec.wordCount = wc
                 sec.updatedAt = Date()
