@@ -53,6 +53,7 @@ enum InspectorRoute: Hashable {
 enum InspectorTab: String, CaseIterable, Identifiable {
     case character = "人物"
     case ability = "能力"
+    case item = "物品"
     var id: String { rawValue }
 }
 
@@ -60,12 +61,14 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 struct InspectorRootView: View {
     let book: Book
     let currentSection: Section?
+    let onSelectSection: ((Section) -> Void)?
     @State private var selectedTab: InspectorTab = .character
     @State private var route: InspectorRoute = .list
 
-    init(book: Book, currentSection: Section? = nil) {
+    init(book: Book, currentSection: Section? = nil, onSelectSection: ((Section) -> Void)? = nil) {
         self.book = book
         self.currentSection = currentSection
+        self.onSelectSection = onSelectSection
     }
 
     var body: some View {
@@ -76,6 +79,7 @@ struct InspectorRootView: View {
             Picker("設定種類", selection: $selectedTab) {
                 Text("人物").tag(InspectorTab.character)
                 Text("能力").tag(InspectorTab.ability)
+                Text("物品").tag(InspectorTab.item)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
@@ -89,18 +93,22 @@ struct InspectorRootView: View {
                     CharacterListContainerView(
                         book: book,
                         currentSection: currentSection,
+                        onSelectSection: onSelectSection,
                         onSelect: { route = .detail($0) },
                         onCreated: { route = .detail($0) }
                     )
-                } else {
+                } else if selectedTab == .ability {
                     AbilityListContainerView(book: book)
+                } else {
+                    ItemListContainerView(book: book, currentSection: currentSection, onSelectSection: onSelectSection)
                 }
             case .detail(let character):
                 CharacterDetailView(
                     character: character,
                     book: book,
                     onBack: { route = .list },
-                    onShowGraph: { route = .graph(character) }
+                    onShowGraph: { route = .graph(character) },
+                    onSelectSection: onSelectSection
                 )
             case .graph(let character):
                 KinshipGraphView(
@@ -111,6 +119,127 @@ struct InspectorRootView: View {
                 )
             }
         }
+    }
+}
+
+private struct ItemListContainerView: View {
+    let book: Book
+    let currentSection: Section?
+    let onSelectSection: ((Section) -> Void)?
+    @Query(sort: \Item.updatedAt, order: .reverse) private var allItems: [Item]
+    @State private var searchText = ""
+    @State private var showCurrentSectionOnly = false
+
+    private var items: [Item] {
+        let bookItems = allItems.filter { $0.book?.id == book.id }
+        let related = showCurrentSectionOnly && currentSection != nil
+            ? bookItems.filter { WritingReferenceScanner.contains($0.name, in: currentSection!) }
+            : bookItems
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return related }
+        return related.filter {
+            $0.name.localizedCaseInsensitiveContains(query) ||
+            $0.itemDescription.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜尋物品", text: $searchText).textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12).padding(.top, 10)
+
+            if currentSection != nil {
+                Toggle("只顯示本節引用物品", isOn: $showCurrentSectionOnly)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+            } else {
+                Spacer().frame(height: 10)
+            }
+
+            List {
+                if items.isEmpty {
+                    ContentUnavailableView("尚無符合的物品", systemImage: "shippingbox")
+                } else {
+                    ForEach(items) { item in
+                        ItemReferenceRow(item: item, book: book, onSelectSection: onSelectSection)
+                    }
+                }
+            }
+            .listStyle(.plain)
+
+        }
+    }
+}
+
+private struct ItemReferenceRow: View {
+    @Bindable var item: Item
+    let book: Book
+    let onSelectSection: ((Section) -> Void)?
+
+    private var referencedSections: [Section] {
+        WritingReferenceScanner.sections(for: item, in: book)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("物品名稱", text: $item.name)
+                .textFieldStyle(.roundedBorder)
+            TextField("描述", text: $item.itemDescription)
+                .textFieldStyle(.roundedBorder)
+            if referencedSections.isEmpty {
+                Text("尚未在正文中出現")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("出現於")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(referencedSections) { section in
+                                Button("第 \(sectionNumber(section, in: book)) 節｜\(section.title)") {
+                                    onSelectSection?(section)
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 72)
+                }
+            }
+            if !item.characterItems.isEmpty {
+                let linkedNames = item.characterItems.compactMap { $0.character?.realName.isEmpty == false ? $0.character?.realName : nil }
+                if !linkedNames.isEmpty {
+                    Text("關聯人物：" + linkedNames.joined(separator: "、"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.vertical, 5)
+        .onChange(of: item.name) { item.updatedAt = Date() }
+        .onChange(of: item.itemDescription) { item.updatedAt = Date() }
+    }
+
+    private func sectionNumber(_ section: Section, in book: Book) -> Int {
+        guard let volume = section.volume else { return 1 }
+        return volume.sections.sorted { $0.sortOrder < $1.sortOrder }
+            .firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1
     }
 }
 
@@ -201,6 +330,7 @@ private struct AbilityListContainerView: View {
 struct CharacterListContainerView: View {
     let book: Book
     let currentSection: Section?
+    let onSelectSection: ((Section) -> Void)?
     let onSelect: (Character) -> Void
     let onCreated: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
@@ -215,13 +345,13 @@ struct CharacterListContainerView: View {
     }
 
     var body: some View {
-        CharacterListView(
+            CharacterListView(
             characters: characters,
             currentSection: currentSection,
             onSelect: onSelect,
             onAdd: addCharacter,
-            onDelete: { modelContext.delete($0) }
-        )
+                onDelete: { modelContext.delete($0) }
+            )
     }
 
     private func addCharacter() {
@@ -342,6 +472,7 @@ struct CharacterDetailView: View {
     let book: Book
     let onBack: () -> Void
     let onShowGraph: () -> Void
+    let onSelectSection: ((Section) -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Query private var allProfiles: [CharacterProfile]
 
@@ -366,7 +497,7 @@ struct CharacterDetailView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     characterHeader
 
-                    CharacterReferenceSectionsView(character: character, book: book)
+                    CharacterReferenceSectionsView(character: character, book: book, onSelectSection: onSelectSection)
 
                     detailSection("摘要", systemImage: "text.quote") {
                         CharacterSummarySectionView(character: character)
@@ -536,6 +667,7 @@ struct CharacterDetailView: View {
 private struct CharacterReferenceSectionsView: View {
     let character: Character
     let book: Book
+    let onSelectSection: ((Section) -> Void)?
 
     var body: some View {
         let sections = WritingReferenceScanner.sections(for: character, in: book)
@@ -547,16 +679,20 @@ private struct CharacterReferenceSectionsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(sections) { section in
-                    HStack {
-                        Text("第 \(sectionNumber(section, in: book)) 節")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(section.title)
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(sections) { section in
+                            Button("第 \(sectionNumber(section, in: book)) 節｜\(section.title)") {
+                                onSelectSection?(section)
+                            }
+                            .buttonStyle(.link)
                             .font(.caption)
                             .lineLimit(1)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxHeight: 96)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

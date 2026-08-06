@@ -197,6 +197,11 @@ final class DreaMoonTextView: NSTextView {
     // ⬆️ V3 Phase 3 結束 ⬆️
 }
 
+extension Notification.Name {
+    static let dreaMoonPreviousSection = Notification.Name("dreaMoon.previousSection")
+    static let dreaMoonNextSection = Notification.Name("dreaMoon.nextSection")
+}
+
 // MARK: - 富文本編輯器
 struct RichEditorView: NSViewRepresentable {
     let section: Section

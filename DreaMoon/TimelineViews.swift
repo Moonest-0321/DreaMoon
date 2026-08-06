@@ -25,6 +25,7 @@ private enum DreaMoonTimelineGranularity: String, CaseIterable, Identifiable {
 struct InspectorWithTimeline: View {
     let book: Book
     let currentSection: Section?
+    var onSelectSection: ((Section) -> Void)? = nil
     @State private var tab: DreaMoonInspectorTab = .settings
 
     var body: some View {
@@ -40,7 +41,7 @@ struct InspectorWithTimeline: View {
             Divider()
             switch tab {
             case .settings:
-                InspectorRootView(book: book, currentSection: currentSection)
+                InspectorRootView(book: book, currentSection: currentSection, onSelectSection: onSelectSection)
             case .timeline:
                 TimelinePanelView(book: book)
             }

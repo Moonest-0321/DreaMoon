@@ -3,6 +3,34 @@ import SwiftData
 import UniformTypeIdentifiers
 import AppKit
 
+private final class EditorKeyboardMonitor {
+    private var monitor: Any?
+
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifiers.contains(.option) else { return event }
+            if event.keyCode == 123 {
+                NotificationCenter.default.post(name: .dreaMoonPreviousSection, object: nil)
+                return nil
+            }
+            if event.keyCode == 124 {
+                NotificationCenter.default.post(name: .dreaMoonNextSection, object: nil)
+                return nil
+            }
+            return event
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    deinit { stop() }
+}
+
 // MARK: - 三欄式編輯工作區 (PRD 3.3)
 struct EditorWorkspaceView: View {
     let book: Book
@@ -10,6 +38,9 @@ struct EditorWorkspaceView: View {
     @State private var showInspector = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var bridge = EditorBridge()
+    @State private var showingCommandPalette = false
+    @State private var showingShortcutHelp = false
+    @State private var keyboardMonitor = EditorKeyboardMonitor()
 
     private var orderedSections: [Section] {
         book.volumes.sorted { $0.sortOrder < $1.sortOrder }
@@ -40,19 +71,27 @@ struct EditorWorkspaceView: View {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button { toggleSidebar() } label: { Label("目錄", systemImage: "sidebar.left") }.help("顯示/隱藏左欄目錄")
                         Button { showInspector.toggle() } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
+                        Button { showingCommandPalette = true } label: { Label("指令", systemImage: "command") }
+                            .help("開啟指令面板 (⌘K)")
+                            .keyboardShortcut("k", modifiers: .command)
                         Button {
+                            guard previousSection != nil else { return }
                             bridge.flushPendingSave()
                             selectedSection = previousSection
                         } label: { Label("上一節", systemImage: "chevron.left") }
                             .disabled(previousSection == nil)
                             .help(previousSection == nil ? "已是第一節" : "上一節")
                         Button {
+                            guard nextSection != nil else { return }
                             bridge.flushPendingSave()
                             selectedSection = nextSection
                         } label: { Label("下一節", systemImage: "chevron.right") }
                             .disabled(nextSection == nil)
                             .help(nextSection == nil ? "已是最後一節" : "下一節")
                         Menu {
+                            Button { showingCommandPalette = true } label: { Label("指令面板", systemImage: "command") }
+                            Button { showingShortcutHelp = true } label: { Label("快捷鍵說明", systemImage: "keyboard") }
+                            Divider()
                             Button {
                                 if let section = selectedSection {
                                     let content = ExportManager.exportSectionToTXT(section: section)
@@ -68,13 +107,167 @@ struct EditorWorkspaceView: View {
                 }
                 .inspector(isPresented: $showInspector) {
                     // ⬇️ V3：唯一改動——掛分段 wrapper（設定集｜時間軸）
-                    InspectorWithTimeline(book: book, currentSection: selectedSection).inspectorColumnWidth(min: 250, ideal: 300, max: 400)
+                    InspectorWithTimeline(
+                        book: book,
+                        currentSection: selectedSection,
+                        onSelectSection: { section in
+                            bridge.flushPendingSave()
+                            selectedSection = section
+                        }
+                    )
+                    .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
                 }
         }
+        .sheet(isPresented: $showingCommandPalette) {
+            CommandPaletteView { command in
+                showingCommandPalette = false
+                perform(command)
+            }
+        }
+        .sheet(isPresented: $showingShortcutHelp) {
+            ShortcutHelpView()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonPreviousSection)) { _ in
+            guard previousSection != nil else { return }
+            bridge.flushPendingSave()
+            selectedSection = previousSection
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonNextSection)) { _ in
+            guard nextSection != nil else { return }
+            bridge.flushPendingSave()
+            selectedSection = nextSection
+        }
+        .onAppear { keyboardMonitor.start() }
+        .onDisappear { keyboardMonitor.stop() }
     }
 
     private func toggleSidebar() {
         columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
+    }
+
+    private func perform(_ command: PaletteCommand) {
+        switch command {
+        case .toggleOutline: toggleSidebar()
+        case .toggleInspector: showInspector.toggle()
+        case .previousSection:
+            guard previousSection != nil else { return }
+            bridge.flushPendingSave()
+            selectedSection = previousSection
+        case .nextSection:
+            guard nextSection != nil else { return }
+            bridge.flushPendingSave()
+            selectedSection = nextSection
+        case .toggleSceneHeading: bridge.requestToggleHeading()
+        case .showShortcuts: showingShortcutHelp = true
+        }
+    }
+}
+
+private enum PaletteCommand: String, CaseIterable, Identifiable {
+    case toggleOutline = "顯示／隱藏目錄"
+    case toggleInspector = "顯示／隱藏設定集"
+    case previousSection = "上一節"
+    case nextSection = "下一節"
+    case toggleSceneHeading = "切換幕標題"
+    case showShortcuts = "開啟快捷鍵說明"
+
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .toggleOutline: return "sidebar.left"
+        case .toggleInspector: return "sidebar.right"
+        case .previousSection: return "chevron.left"
+        case .nextSection: return "chevron.right"
+        case .toggleSceneHeading: return "textformat.size"
+        case .showShortcuts: return "keyboard"
+        }
+    }
+    var shortcut: String {
+        switch self {
+        case .toggleOutline: return ""
+        case .toggleInspector: return ""
+        case .previousSection: return "⌥←"
+        case .nextSection: return "⌥→"
+        case .toggleSceneHeading: return "⌘2"
+        case .showShortcuts: return ""
+        }
+    }
+}
+
+private struct CommandPaletteView: View {
+    let onPerform: (PaletteCommand) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
+
+    private var commands: [PaletteCommand] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return Array(PaletteCommand.allCases) }
+        return PaletteCommand.allCases.filter { $0.rawValue.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("輸入指令…", text: $query)
+                    .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                Button("取消") { dismiss() }
+                    .buttonStyle(.borderless)
+            }
+            .padding(14)
+            Divider()
+            List(commands) { command in
+                Button {
+                    onPerform(command)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: command.icon).frame(width: 20)
+                        Text(command.rawValue)
+                        Spacer()
+                        if !command.shortcut.isEmpty {
+                            Text(command.shortcut).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 5)
+            }
+            .listStyle(.plain)
+        }
+        .frame(width: 420, height: 360)
+        .onAppear { searchFocused = true }
+    }
+}
+
+private struct ShortcutHelpView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("快捷鍵").font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成") { dismiss() }
+            }
+            Divider()
+            shortcut("⌘K", "開啟指令面板")
+            shortcut("⌘2", "切換幕標題／內文")
+            shortcut("⌥←", "上一節")
+            shortcut("⌥→", "下一節")
+            Spacer()
+        }
+        .padding(24)
+        .frame(width: 360, height: 260)
+    }
+
+    private func shortcut(_ key: String, _ title: String) -> some View {
+        HStack {
+            Text(key).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary)
+            Text(title)
+        }
     }
 }
 
