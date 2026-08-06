@@ -229,9 +229,10 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.lastCommitted = initial
         context.coordinator.lastSectionID = section.id
         let sectionID = section.id
+        let initialLoadDelay: TimeInterval = section.wordCount > 5_000 ? 0.18 : 0
         // 讓 NavigationSplitView 先完成首個 frame。長篇 AttributedString 的橋接與
         // TextKit 排版都只能在主執行緒完成，若與 push 動畫同一輪執行會明顯掉幀。
-        context.coordinator.scheduleContentLoad(after: 0.18) { [weak textView, weak coordinator = context.coordinator] in
+        context.coordinator.scheduleContentLoad(after: initialLoadDelay) { [weak textView, weak coordinator = context.coordinator] in
             guard let textView,
                   let coordinator,
                   coordinator.lastSectionID == sectionID else { return }

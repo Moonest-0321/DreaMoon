@@ -29,17 +29,64 @@ struct ContentView: View {
         GridItem(.adaptive(minimum: 180), spacing: 24)
     ]
 
+    private var totalWordCount: Int {
+        books.reduce(0) { partialResult, book in
+            partialResult + book.volumes.reduce(0) { volumeResult, volume in
+                volumeResult + volume.sections.reduce(0) { $0 + $1.wordCount }
+            }
+        }
+    }
+
+    private var totalSectionCount: Int {
+        books.reduce(0) { $0 + $1.volumes.reduce(0) { $0 + $1.sections.count } }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if filteredBooks.isEmpty && searchText.isEmpty {
-                    ContentUnavailableView {
-                        Label("書櫃還沒有小說", systemImage: "books.vertical")
-                    } description: {
-                        Text("建立第一本小說，立即開始寫作。")
-                    } actions: {
-                        Button("建立第一本小說", systemImage: "plus") { showingNewBookSheet = true }
-                            .buttonStyle(.borderedProminent)
+                if searchText.isEmpty {
+                    ScrollView {
+                        HStack(alignment: .top, spacing: 24) {
+                            AuthorShelfCard(
+                                profile: profiles.first,
+                                bookCount: books.count,
+                                wordCount: totalWordCount,
+                                sectionCount: totalSectionCount,
+                                onEdit: { showingAuthorSettings = true }
+                            )
+
+                            if books.isEmpty {
+                                ContentUnavailableView {
+                                    Label("書櫃還沒有小說", systemImage: "books.vertical")
+                                } description: {
+                                    Text("建立第一本小說，立即開始寫作。")
+                                } actions: {
+                                    Button("建立第一本小說", systemImage: "plus") { showingNewBookSheet = true }
+                                        .buttonStyle(.borderedProminent)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 60)
+                            } else {
+                                LazyVGrid(columns: columns, spacing: 24) {
+                                    ForEach(books) { book in
+                                        NavigationLink(value: book) {
+                                            BookCardView(book: book)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .contextMenu {
+                                            Button(role: .destructive) {
+                                                bookToDelete = book
+                                                showingDeleteAlert = true
+                                            } label: {
+                                                Label("刪除", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(24)
                     }
                 } else {
                     if filteredBooks.isEmpty {
@@ -70,32 +117,6 @@ struct ContentView: View {
             .navigationTitle("DreaMoon")
             .searchable(text: $searchText, prompt: "搜尋書名或作者")
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button(action: { showingAuthorSettings = true }) {
-                        if let profile = profiles.first {
-                            ZStack {
-                                if let imageData = profile.avatarData, let nsImage = NSImage(data: imageData) {
-                                    Image(nsImage: nsImage)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                } else {
-                                    Text(String(profile.penName.prefix(1)).uppercased())
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                        .background(Color.accentColor.gradient)
-                                }
-                            }
-                            .frame(width: 24, height: 24)
-                            .clipShape(Circle())
-                        } else {
-                            Image(systemName: "person.crop.circle.badge.plus")
-                                .font(.title3)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help(profiles.first?.penName ?? "設定作者帳號")
-                }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewBookSheet = true }) {
                         Label("新建書籍", systemImage: "plus")
@@ -140,24 +161,111 @@ struct ContentView: View {
     }
 }
 
+// MARK: - 書櫃作者卡片
+private struct AuthorShelfCard: View {
+    let profile: AuthorProfile?
+    let bookCount: Int
+    let wordCount: Int
+    let sectionCount: Int
+    let onEdit: () -> Void
+
+    private var displayName: String {
+        let penName = profile?.penName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return penName.isEmpty ? "我的創作空間" : penName
+    }
+
+    private var displayBio: String {
+        let bio = profile?.bio?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return bio.isEmpty ? "在這裡收集每一個正在成形的故事。" : bio
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                avatar
+                Spacer()
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("編輯作者資料")
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("AUTHOR")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(.secondary)
+                Text(displayName)
+                    .font(.title3.weight(.bold))
+                    .lineLimit(1)
+                Text(displayBio)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                StatisticLabel(value: "\(bookCount)", title: "作品")
+                StatisticLabel(value: wordCount.formatted(), title: "字數")
+                StatisticLabel(value: "\(sectionCount)", title: "章節")
+            }
+        }
+        .padding(18)
+        .frame(width: 216, height: 280, alignment: .leading)
+        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var avatar: some View {
+        if let data = profile?.avatarData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 58, height: 58)
+                .clipShape(Circle())
+        } else {
+            Text(String(displayName.prefix(1)).uppercased())
+                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .background(Color.accentColor.gradient, in: Circle())
+        }
+    }
+}
+
+private struct StatisticLabel: View {
+    let value: String
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 // MARK: - 書籍卡片視圖
 struct BookCardView: View {
     let book: Book
 
-    var firstCharacter: String {
-        let trimmed = book.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(trimmed.prefix(1))
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                generatePastelColor(from: book.title)
-                Text(firstCharacter)
-                    .font(.system(size: 64, weight: .bold, design: .serif))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
-            }
+            BookCoverArtwork(book: book)
             .frame(maxWidth: .infinity)
             .frame(height: 170)
             VStack(alignment: .leading, spacing: 8) {
@@ -208,15 +316,45 @@ struct BookCardView: View {
         return total
     }
 
-    private func generatePastelColor(from string: String) -> Color {
-        var hash = 0
-        for char in string.unicodeScalars {
-            hash = Int(char.value) &+ (hash << 5) &- hash
+}
+
+// MARK: - 書籍封面
+struct BookCoverArtwork: View {
+    let book: Book
+
+    private var firstCharacter: String {
+        let trimmed = book.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(trimmed.prefix(1))
+    }
+
+    var body: some View {
+        Group {
+            if let image = BookCoverStore.image(for: book) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    defaultColor
+                    Text(firstCharacter)
+                        .font(.system(size: 64, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
+                }
+            }
         }
-        let r = Double((hash >> 16) & 0xFF) / 255.0 * 0.3 + 0.7
-        let g = Double((hash >> 8) & 0xFF) / 255.0 * 0.3 + 0.7
-        let b = Double(hash & 0xFF) / 255.0 * 0.3 + 0.7
-        return Color(red: r, green: g, blue: b)
+        .clipped()
+    }
+
+    private var defaultColor: Color {
+        var hash = 0
+        for character in book.title.unicodeScalars {
+            hash = Int(character.value) &+ (hash << 5) &- hash
+        }
+        let red = Double((hash >> 16) & 0xFF) / 255.0 * 0.3 + 0.7
+        let green = Double((hash >> 8) & 0xFF) / 255.0 * 0.3 + 0.7
+        let blue = Double(hash & 0xFF) / 255.0 * 0.3 + 0.7
+        return Color(red: red, green: green, blue: blue)
     }
 }
 

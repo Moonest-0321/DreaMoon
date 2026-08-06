@@ -173,6 +173,9 @@ struct BookOverviewView: View {
 // MARK: - 左側：書本基本資訊面板
 struct BookInfoPanel: View {
     @Bindable var book: Book
+    @State private var showingCoverImporter = false
+    @State private var hasCustomCover = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -201,6 +204,35 @@ struct BookInfoPanel: View {
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
+                    Text("封面").font(.headline).foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 14) {
+                        BookCoverArtwork(book: book)
+                            .frame(width: 84, height: 118)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(hasCustomCover ? "已使用自訂封面" : "目前使用預設封面")
+                                .font(.subheadline)
+                            Text("建議使用直式圖片；未選擇時會自動顯示預設封面。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                Button("選擇圖片", systemImage: "photo") {
+                                    showingCoverImporter = true
+                                }
+                                if hasCustomCover {
+                                    Button(role: .destructive) {
+                                        removeCover()
+                                    } label: {
+                                        Label("移除", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 12) {
                     Text("統計").font(.headline).foregroundStyle(.secondary)
                     HStack {
                         Text("全書總字數").foregroundStyle(.secondary)
@@ -213,7 +245,42 @@ struct BookInfoPanel: View {
             .padding(24)
         }
         .background(Color.appBackground)
+        .onAppear { hasCustomCover = BookCoverStore.hasCover(for: book) }
+        .fileImporter(
+            isPresented: $showingCoverImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            importCover(from: url)
+        }
     }
+
+    private func importCover(from url: URL) {
+        let hasAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        guard let image = NSImage(contentsOf: url) else { return }
+        do {
+            try BookCoverStore.save(image: image, for: book)
+            hasCustomCover = true
+            book.updatedAt = Date()
+        } catch {
+            print("❌ 封面儲存失敗：\(error.localizedDescription)")
+        }
+    }
+
+    private func removeCover() {
+        do {
+            try BookCoverStore.removeCover(for: book)
+            hasCustomCover = false
+            book.updatedAt = Date()
+        } catch {
+            print("❌ 封面移除失敗：\(error.localizedDescription)")
+        }
+    }
+
     private func calculateTotalWords() -> Int {
         var total = 0
         for volume in book.volumes { for section in volume.sections { total += section.wordCount } }
