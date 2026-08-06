@@ -211,20 +211,23 @@ struct CharacterOrganizationSectionView: View {
                     OrganizationMembershipRow(membership: membership, book: book, onDelete: { modelContext.delete(membership) })
                 }
             }
-            Menu {
-                Button("新增組織", action: addNewMembership)
+            HStack(spacing: 12) {
+                Button("新增組織", systemImage: "plus", action: addNewMembership)
+                    .buttonStyle(.borderless)
+
                 if !availableOrganizations.isEmpty {
-                    Divider()
-                    ForEach(availableOrganizations) { organization in
-                        Button(organization.name.isEmpty ? "未命名組織" : organization.name) {
-                            addMembership(for: organization)
+                    Menu {
+                        ForEach(availableOrganizations) { organization in
+                            Button(organization.name.isEmpty ? "未命名組織" : organization.name) {
+                                addMembership(for: organization)
+                            }
                         }
+                    } label: {
+                        Label("加入既有組織", systemImage: "link.badge.plus")
                     }
+                    .menuStyle(.borderlessButton)
                 }
-            } label: {
-                Label("新增組織", systemImage: "plus")
             }
-            .menuStyle(.borderlessButton)
         }
     }
 
@@ -402,17 +405,40 @@ private struct PsychologyRow: View {
     @Bindable var psychology: CharacterPsychology
     let book: Book
     let onDelete: () -> Void
+
     var body: some View {
-        HStack {
-            Picker("類型", selection: $psychology.kindRawValue) {
-                Text("性格").tag(CharacterPsychologyKind.personality.rawValue)
-                Text("價值觀").tag(CharacterPsychologyKind.value.rawValue)
-                Text("動機").tag(CharacterPsychologyKind.motivation.rawValue)
-            }.frame(width: 130)
-            TextField("內容", text: $psychology.content).textFieldStyle(.roundedBorder)
-            CharacterNodePicker(book: book, node: $psychology.node)
-            Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Picker("類型", selection: $psychology.kindRawValue) {
+                    Text("性格").tag(CharacterPsychologyKind.personality.rawValue)
+                    Text("價值觀").tag(CharacterPsychologyKind.value.rawValue)
+                    Text("動機").tag(CharacterPsychologyKind.motivation.rawValue)
+                }
+                .frame(width: 150)
+
+                Spacer(minLength: 0)
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("刪除心理資料", systemImage: "trash")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .help("刪除心理資料")
+            }
+
+            TextField("內容", text: $psychology.content)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 10) {
+                Text("時間定位")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                CharacterNodePicker(book: book, node: $psychology.node)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .padding(10)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onChange(of: psychology.kindRawValue) { psychology.updatedAt = Date() }
         .onChange(of: psychology.content) { psychology.updatedAt = Date() }
     }
@@ -437,20 +463,23 @@ struct CharacterItemSectionView: View {
             } else {
                 ForEach(characterItems) { characterItem in ItemRow(characterItem: characterItem, book: book, onDelete: { modelContext.delete(characterItem) }) }
             }
-            Menu {
-                Button("新增物品", action: addNewItem)
+            HStack(spacing: 12) {
+                Button("新增物品", systemImage: "plus", action: addNewItem)
+                    .buttonStyle(.borderless)
+
                 if !availableItems.isEmpty {
-                    Divider()
-                    ForEach(availableItems) { item in
-                        Button(item.name.isEmpty ? "未命名物品" : item.name) {
-                            addItem(item)
+                    Menu {
+                        ForEach(availableItems) { item in
+                            Button(item.name.isEmpty ? "未命名物品" : item.name) {
+                                addItem(item)
+                            }
                         }
+                    } label: {
+                        Label("加入既有物品", systemImage: "link.badge.plus")
                     }
+                    .menuStyle(.borderlessButton)
                 }
-            } label: {
-                Label("新增物品", systemImage: "plus")
             }
-            .menuStyle(.borderlessButton)
         }
     }
 

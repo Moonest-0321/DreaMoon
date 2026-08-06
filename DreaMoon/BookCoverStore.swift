@@ -11,7 +11,11 @@ enum BookCoverStore {
     }
 
     static func hasCover(for book: Book) -> Bool {
-        FileManager.default.fileExists(atPath: url(for: book).path)
+        hasCover(forID: book.id)
+    }
+
+    static func hasCover(forID bookID: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: url(forID: bookID).path)
     }
 
     static func save(image: NSImage, for book: Book) throws {
@@ -26,15 +30,23 @@ enum BookCoverStore {
     }
 
     static func removeCover(for book: Book) throws {
-        let coverURL = url(for: book)
+        try removeCover(forID: book.id)
+    }
+
+    static func removeCover(forID bookID: UUID) throws {
+        let coverURL = url(forID: bookID)
         guard FileManager.default.fileExists(atPath: coverURL.path) else { return }
         try FileManager.default.removeItem(at: coverURL)
     }
 
     private static func url(for book: Book) -> URL {
+        url(forID: book.id)
+    }
+
+    private static func url(forID bookID: UUID) -> URL {
         let directory = (try? coversDirectory())
             ?? FileManager.default.temporaryDirectory.appendingPathComponent(directoryName, isDirectory: true)
-        return directory.appendingPathComponent("\(book.id.uuidString).png")
+        return directory.appendingPathComponent("\(bookID.uuidString).png")
     }
 
     private static func coversDirectory() throws -> URL {

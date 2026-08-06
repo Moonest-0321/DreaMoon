@@ -7,12 +7,11 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.updatedAt, order: .reverse) private var books: [Book]
     @Query private var profiles: [AuthorProfile]
+    @State private var navigationPath = NavigationPath()
     @State private var showingNewBookSheet = false
     @State private var searchText = ""
     @State private var showingAuthorSettings = false
-    @State private var showingDeleteAlert = false
-    @State private var bookToDelete: Book?
-    @State private var bookToOpen: Book?
+    @State private var deletionRequest: BookDeletionRequest?
 
     var filteredBooks: [Book] {
         if searchText.isEmpty {
@@ -42,7 +41,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             Group {
                 if searchText.isEmpty {
                     ScrollView {
@@ -69,14 +68,13 @@ struct ContentView: View {
                             } else {
                                 LazyVGrid(columns: columns, spacing: 24) {
                                     ForEach(books) { book in
-                                        NavigationLink(value: book) {
+                                        NavigationLink(value: BookRoute(id: book.id, opensEditor: false)) {
                                             BookCardView(book: book)
                                         }
                                         .buttonStyle(.plain)
                                         .contextMenu {
                                             Button(role: .destructive) {
-                                                bookToDelete = book
-                                                showingDeleteAlert = true
+                                                deletionRequest = BookDeletionRequest(id: book.id, title: book.title)
                                             } label: {
                                                 Label("刪除", systemImage: "trash")
                                             }
@@ -95,14 +93,13 @@ struct ContentView: View {
                         ScrollView {
                             LazyVGrid(columns: columns, spacing: 24) {
                                 ForEach(filteredBooks) { book in
-                                    NavigationLink(value: book) {
+                                    NavigationLink(value: BookRoute(id: book.id, opensEditor: false)) {
                                         BookCardView(book: book)
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
                                         Button(role: .destructive) {
-                                            bookToDelete = book
-                                            showingDeleteAlert = true
+                                            deletionRequest = BookDeletionRequest(id: book.id, title: book.title)
                                         } label: {
                                             Label("刪除", systemImage: "trash")
                                         }
@@ -125,38 +122,93 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingNewBookSheet) {
                 NewBookSheet { book in
-                    bookToOpen = book
+                    navigationPath.append(BookRoute(id: book.id, opensEditor: true))
                 }
             }
             .sheet(isPresented: $showingAuthorSettings) {
                 AuthorSettingsView()
             }
-            .navigationDestination(for: Book.self) { book in
-                BookOverviewView(book: book)
+            .navigationDestination(for: BookRoute.self) { route in
+                BookRouteDestination(route: route)
             }
             .navigationDestination(for: Section.self) { section in
                 if let book = section.volume?.book {
                     EditorWorkspaceView(book: book, initialSection: section)
                 }
             }
-            .navigationDestination(item: $bookToOpen) { book in
-                if let section = book.volumes
-                    .sorted(by: { $0.sortOrder < $1.sortOrder })
-                    .flatMap({ $0.sections.sorted(by: { $0.sortOrder < $1.sortOrder }) })
-                    .first {
-                    EditorWorkspaceView(book: book, initialSection: section)
-                } else {
-                    BookOverviewView(book: book)
-                }
-            }
-            .alert("確認刪除", isPresented: $showingDeleteAlert, presenting: bookToDelete) { book in
+            .alert(
+                "確認刪除",
+                isPresented: Binding(
+                    get: { deletionRequest != nil },
+                    set: { if !$0 { deletionRequest = nil } }
+                ),
+                presenting: deletionRequest
+            ) { request in
                 Button("取消", role: .cancel) { }
                 Button("刪除", role: .destructive) {
-                    modelContext.delete(book)
+                    deleteBook(request)
                 }
-            } message: { book in
-                Text("確定要刪除《\(book.title)》嗎？此操作無法復原。")
+            } message: { request in
+                Text("確定要刪除《\(request.title)》嗎？此操作無法復原。")
             }
+        }
+    }
+
+    @MainActor
+    private func deleteBook(_ request: BookDeletionRequest) {
+        defer { deletionRequest = nil }
+        guard let book = books.first(where: { $0.id == request.id }) else { return }
+
+        do {
+            let bookID = request.id
+            try PersistentModelDeletion.deleteBook(book, in: modelContext)
+            try? BookCoverStore.removeCover(forID: bookID)
+        } catch {
+            print("❌ 書籍刪除失敗：\(error.localizedDescription)")
+        }
+    }
+}
+
+private struct BookRoute: Hashable {
+    let id: UUID
+    let opensEditor: Bool
+}
+
+private struct BookDeletionRequest {
+    let id: UUID
+    let title: String
+}
+
+private struct BookRouteDestination: View {
+    let route: BookRoute
+    @Query private var books: [Book]
+
+    init(route: BookRoute) {
+        self.route = route
+        let bookID = route.id
+        _books = Query(filter: #Predicate<Book> { $0.id == bookID })
+    }
+
+    var body: some View {
+        Group {
+            if let book = books.first {
+                destination(for: book)
+            } else {
+                ContentUnavailableView("找不到這本書", systemImage: "book.closed")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func destination(for book: Book) -> some View {
+        if route.opensEditor,
+           let section = book.volumes
+            .sorted(by: { $0.sortOrder < $1.sortOrder })
+            .flatMap({ $0.sections.sorted(by: { $0.sortOrder < $1.sortOrder }) })
+            .first {
+            EditorWorkspaceView(book: book, initialSection: section)
+        } else {
+            BookOverviewView(book: book)
         }
     }
 }

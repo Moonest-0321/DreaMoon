@@ -608,8 +608,11 @@ struct TimelinePanelView: View {
     }
 
     private func performDeleteNodes() {
-        for n in pendingDeleteNodes { modelContext.delete(n) }
-        try? modelContext.save()
+        do {
+            try PersistentModelDeletion.deleteNodes(pendingDeleteNodes, in: modelContext)
+        } catch {
+            print("❌ 時間釘子刪除失敗：\(error.localizedDescription)")
+        }
         pendingDeleteNodes = []
     }
 
@@ -631,8 +634,11 @@ struct TimelinePanelView: View {
         if selectedTimelineID == t.id {
             selectedTimelineID = bookTimelines.first(where: \.isPrimary)?.id
         }
-        modelContext.delete(t)
-        try? modelContext.save()
+        do {
+            try PersistentModelDeletion.deleteTimeline(t, in: modelContext)
+        } catch {
+            print("❌ 時間軸刪除失敗：\(error.localizedDescription)")
+        }
         pendingDeleteTimeline = nil
     }
 

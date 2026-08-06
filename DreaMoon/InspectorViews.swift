@@ -350,7 +350,13 @@ struct CharacterListContainerView: View {
             currentSection: currentSection,
             onSelect: onSelect,
             onAdd: addCharacter,
-                onDelete: { modelContext.delete($0) }
+            onDelete: { character in
+                do {
+                    try PersistentModelDeletion.deleteCharacter(character, in: modelContext)
+                } catch {
+                    print("❌ 角色刪除失敗：\(error.localizedDescription)")
+                }
+            }
             )
     }
 
@@ -484,8 +490,8 @@ struct CharacterDetailView: View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: onBack) {
-                    Image(systemName: "chevron.left")
-                    Text("返回列表")
+                    Label("返回列表", systemImage: "chevron.left")
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 Spacer()

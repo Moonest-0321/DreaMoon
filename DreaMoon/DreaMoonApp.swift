@@ -6,6 +6,12 @@ struct NovelWriterApp: App {
     
     // V4 uses a new store because the released V3 schema used live models.
     private static var storeURL: URL {
+        #if DEBUG
+        if let overridePath = ProcessInfo.processInfo.environment["DREAMOON_TEST_STORE_URL"],
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath)
+        }
+        #endif
         let fileManager = FileManager.default
         let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         if !fileManager.fileExists(atPath: appSupportURL.path) {
@@ -51,6 +57,11 @@ struct NovelWriterApp: App {
             try importLegacyStore(legacySource, into: container)
         } catch {
             fatalError("V3/V2 資料匯入 V4 失敗: \(Self.errorDetails(error))")
+        }
+        do {
+            try PersistentStoreRepair.run(in: container.mainContext)
+        } catch {
+            fatalError("書籍懸空資料修復失敗: \(Self.errorDetails(error))")
         }
         do {
             try V4DataBackfill.migrateLegacyPsychology(in: container.mainContext)
