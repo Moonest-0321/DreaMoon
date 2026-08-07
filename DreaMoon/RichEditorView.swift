@@ -82,6 +82,13 @@ final class DreaMoonTextView: NSTextView {
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
     }
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command, event.keyCode == 36, coordinator?.openSelectedCharacter() == true {
+            return
+        }
+        super.keyDown(with: event)
+    }
     convenience init() {
         self.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: nil)
         if let container = self.textContainer {
@@ -212,6 +219,7 @@ struct RichEditorView: NSViewRepresentable {
     var onEditorFocus: (() -> Void)? = nil
     var onLoadingChange: ((Bool) -> Void)? = nil
     var onSelectionTextChange: ((String) -> Void)? = nil
+    var onOpenSelectedText: ((String) -> Bool)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -226,6 +234,7 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onEditorFocus = onEditorFocus
         context.coordinator.onLoadingChange = onLoadingChange
         context.coordinator.onSelectionTextChange = onSelectionTextChange
+        context.coordinator.onOpenSelectedText = onOpenSelectedText
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -276,6 +285,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.onEditorFocus = onEditorFocus
         coord.onLoadingChange = onLoadingChange
         coord.onSelectionTextChange = onSelectionTextChange
+        coord.onOpenSelectedText = onOpenSelectedText
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -340,6 +350,7 @@ struct RichEditorView: NSViewRepresentable {
         var onEditorFocus: (() -> Void)?
         var onLoadingChange: ((Bool) -> Void)?
         var onSelectionTextChange: ((String) -> Void)?
+        var onOpenSelectedText: ((String) -> Bool)?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
@@ -421,6 +432,14 @@ struct RichEditorView: NSViewRepresentable {
         func focusEditor() {
             guard let textView else { return }
             textView.window?.makeFirstResponder(textView)
+        }
+        func openSelectedCharacter() -> Bool {
+            guard let tv = textView else { return false }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= tv.string.utf16.count else { return false }
+            let text = (tv.string as NSString).substring(with: range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return onOpenSelectedText?(text) ?? false
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             syncTypingAttributesToCursor()

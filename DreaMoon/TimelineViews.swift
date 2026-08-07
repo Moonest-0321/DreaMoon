@@ -25,6 +25,8 @@ private enum DreaMoonTimelineGranularity: String, CaseIterable, Identifiable {
 struct InspectorWithTimeline: View {
     let book: Book
     let currentSection: Section?
+    var focusedCharacter: Character? = nil
+    var focusRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
     @State private var tab: DreaMoonInspectorTab = .settings
 
@@ -41,11 +43,25 @@ struct InspectorWithTimeline: View {
             Divider()
             switch tab {
             case .settings:
-                InspectorRootView(book: book, currentSection: currentSection, onSelectSection: onSelectSection)
+                InspectorRootView(
+                    book: book,
+                    currentSection: currentSection,
+                    focusedCharacter: focusedCharacter,
+                    focusRequestID: focusRequestID,
+                    onSelectSection: onSelectSection
+                )
             case .timeline:
                 TimelinePanelView(book: book)
             }
         }
+        .onAppear { showFocusedCharacter() }
+        .onChange(of: focusedCharacter?.id) { _, _ in showFocusedCharacter() }
+        .onChange(of: focusRequestID) { _, _ in showFocusedCharacter() }
+    }
+
+    private func showFocusedCharacter() {
+        guard focusedCharacter != nil else { return }
+        tab = .settings
     }
 }
 

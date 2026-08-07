@@ -41,6 +41,8 @@ struct EditorWorkspaceView: View {
     @State private var showingCommandPalette = false
     @State private var showingShortcutHelp = false
     @State private var keyboardMonitor = EditorKeyboardMonitor()
+    @State private var focusedCharacter: Character?
+    @State private var characterFocusRequestID = UUID()
 
     private var neighboringSections: (previous: Section?, next: Section?) {
         let sections = BookStructure.orderedSections(in: book)
@@ -65,7 +67,11 @@ struct EditorWorkspaceView: View {
             EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
-            EditorCenterView(section: selectedSection, bridge: bridge, book: book)
+            EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
+                focusedCharacter = character
+                characterFocusRequestID = UUID()
+                showInspector = true
+            }
                 .navigationTitle("")
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
@@ -110,6 +116,8 @@ struct EditorWorkspaceView: View {
                     InspectorWithTimeline(
                         book: book,
                         currentSection: selectedSection,
+                        focusedCharacter: focusedCharacter,
+                        focusRequestID: characterFocusRequestID,
                         onSelectSection: { section in
                             bridge.flushPendingSave()
                             selectedSection = section
@@ -253,6 +261,7 @@ private struct ShortcutHelpView: View {
             Divider()
             shortcut("⌘K", "開啟指令面板")
             shortcut("⌘2", "切換幕標題／內文")
+            shortcut("⌘↩", "開啟反白角色資料")
             shortcut("⌥←", "上一節")
             shortcut("⌥→", "下一節")
             Spacer()
@@ -676,12 +685,12 @@ struct EditorCenterView: View {
     let section: Section?
     let bridge: EditorBridge
     let book: Book
+    let onOpenCharacter: (Character) -> Void
     @State private var liveWordCount: Int = 0
     @State private var cursorIsHeading: Bool = false
     @State private var saveState: EditorSaveState = .saved
     @State private var isContentLoading = false
     @State private var selectedText = ""
-    @State private var characterToInspect: Character?
     @AppStorage("dreaMoon.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
     @AppStorage("dreaMoon.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
     @State private var showingInlineAutosaveHint = false
@@ -690,7 +699,11 @@ struct EditorCenterView: View {
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
 
     private var selectedCharacterMatch: Character? {
-        let name = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        characterMatch(for: selectedText)
+    }
+
+    private func characterMatch(for text: String) -> Character? {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
         let characters = allCharacters.filter { $0.book?.id == book.id }
         if let character = characters.first(where: { $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
@@ -751,7 +764,7 @@ struct EditorCenterView: View {
                 Divider()
                 if showCharacterSelectionInfo, let character = selectedCharacterMatch {
                     CharacterSelectionInfoBar(character: character) {
-                        characterToInspect = character
+                        onOpenCharacter(character)
                     }
                     Divider()
                 }
@@ -764,7 +777,12 @@ struct EditorCenterView: View {
                         onSaveStateChange: { saveState = $0 },
                         onEditorFocus: { showingInlineAutosaveHint = false },
                         onLoadingChange: { isContentLoading = $0 },
-                        onSelectionTextChange: { selectedText = $0 }
+                        onSelectionTextChange: { selectedText = $0 },
+                        onOpenSelectedText: { text in
+                            guard let character = characterMatch(for: text) else { return false }
+                            onOpenCharacter(character)
+                            return true
+                        }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -817,16 +835,6 @@ struct EditorCenterView: View {
             saveState = .saved
             selectedText = ""
         }
-        .sheet(item: $characterToInspect) { character in
-            CharacterDetailView(
-                character: character,
-                book: book,
-                onBack: { characterToInspect = nil },
-                onShowGraph: {},
-                onSelectSection: nil
-            )
-            .frame(minWidth: 520, minHeight: 640)
-        }
     }
 
     private func sectionIndex(for section: Section, in book: Book) -> Int {
@@ -855,7 +863,7 @@ private struct CharacterSelectionInfoBar: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("查看角色資料", action: onInspect)
+            Button("在側欄查看", action: onInspect)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
         }

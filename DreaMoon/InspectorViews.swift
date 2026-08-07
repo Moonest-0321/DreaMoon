@@ -84,13 +84,17 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 struct InspectorRootView: View {
     let book: Book
     let currentSection: Section?
+    let focusedCharacter: Character?
+    let focusRequestID: UUID
     let onSelectSection: ((Section) -> Void)?
     @State private var selectedTab: InspectorTab = .character
     @State private var route: InspectorRoute = .list
 
-    init(book: Book, currentSection: Section? = nil, onSelectSection: ((Section) -> Void)? = nil) {
+    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil) {
         self.book = book
         self.currentSection = currentSection
+        self.focusedCharacter = focusedCharacter
+        self.focusRequestID = focusRequestID
         self.onSelectSection = onSelectSection
     }
 
@@ -142,6 +146,15 @@ struct InspectorRootView: View {
                 )
             }
         }
+        .onAppear { showFocusedCharacter() }
+        .onChange(of: focusedCharacter?.id) { _, _ in showFocusedCharacter() }
+        .onChange(of: focusRequestID) { _, _ in showFocusedCharacter() }
+    }
+
+    private func showFocusedCharacter() {
+        guard let focusedCharacter else { return }
+        selectedTab = .character
+        route = .detail(focusedCharacter)
     }
 }
 
