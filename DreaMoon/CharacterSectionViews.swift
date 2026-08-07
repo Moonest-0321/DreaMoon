@@ -155,6 +155,7 @@ private struct CharacterSectionEmptyState: View {
 
 struct CharacterAliasSectionView: View {
     let character: Character
+    var onRename: (String, String) -> Void = { _, _ in }
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
 
@@ -165,7 +166,9 @@ struct CharacterAliasSectionView: View {
             if aliases.isEmpty {
                 CharacterSectionEmptyState(title: "尚無別名", detail: "可加入化名、稱號或其他常用名稱。")
             } else {
-                ForEach(aliases) { alias in AliasRow(alias: alias, onDelete: { modelContext.delete(alias) }) }
+                ForEach(aliases) { alias in
+                    AliasRow(alias: alias, onRename: onRename, onDelete: { modelContext.delete(alias) })
+                }
             }
             Button { modelContext.insert(CharacterAlias(name: "新別名", character: character)) } label: {
                 Label("新增別名", systemImage: "plus")
@@ -177,12 +180,25 @@ struct CharacterAliasSectionView: View {
 
 private struct AliasRow: View {
     @Bindable var alias: CharacterAlias
+    let onRename: (String, String) -> Void
     let onDelete: () -> Void
+    @FocusState private var nameFieldFocused: Bool
+    @State private var nameBeforeEditing = ""
     var body: some View {
         HStack {
-            TextField("別名", text: $alias.name).textFieldStyle(.roundedBorder)
+            TextField("別名", text: $alias.name)
+                .textFieldStyle(.roundedBorder)
+                .focused($nameFieldFocused)
             TextField("備註", text: $alias.note).textFieldStyle(.roundedBorder)
             Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
+        }
+        .onAppear { nameBeforeEditing = alias.name }
+        .onChange(of: nameFieldFocused) { _, isFocused in
+            if isFocused {
+                nameBeforeEditing = alias.name
+            } else if nameBeforeEditing != alias.name {
+                onRename(nameBeforeEditing, alias.name)
+            }
         }
         .onChange(of: alias.name) { alias.updatedAt = Date() }
         .onChange(of: alias.note) { alias.updatedAt = Date() }

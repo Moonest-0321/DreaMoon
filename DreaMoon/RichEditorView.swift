@@ -27,6 +27,34 @@ fileprivate let headingAttrs: [NSAttributedString.Key: Any] = [
     .foregroundColor: NSColor.textColor,
     .paragraphStyle: headingParagraphStyle
 ]
+
+enum CharacterReferenceLink {
+    static func url(for characterID: UUID) -> URL {
+        URL(string: "dreamoon://character/\(characterID.uuidString)")!
+    }
+
+    static func characterID(from value: Any) -> UUID? {
+        let url: URL?
+        if let value = value as? URL {
+            url = value
+        } else if let value = value as? String {
+            url = URL(string: value)
+        } else {
+            url = nil
+        }
+        guard let url, url.scheme == "dreamoon", url.host == "character" else { return nil }
+        return UUID(uuidString: url.lastPathComponent)
+    }
+}
+
+struct CharacterMentionSuggestion {
+    let id: UUID
+    let characterName: String
+    let insertionName: String
+    let sortOrder: Int
+
+    var isAlias: Bool { characterName != insertionName }
+}
 fileprivate func isHeadingFont(_ font: NSFont?) -> Bool {
     guard let font else { return false }
     return font.pointSize == 18 && font.fontDescriptor.symbolicTraits.contains(.bold)
@@ -69,8 +97,58 @@ enum EditorSaveState: Equatable {
     }
 }
 
+// MARK: - 中文輸入法組字樣式
+final class CompositionUnderlineLayoutManager: NSLayoutManager {
+    weak var editorTextView: NSTextView?
+
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+
+        guard let textView = editorTextView else { return }
+        let markedRange = textView.markedRange()
+        guard markedRange.location != NSNotFound, markedRange.length > 0 else { return }
+        let markedGlyphRange = glyphRange(forCharacterRange: markedRange, actualCharacterRange: nil)
+        let visibleMarkedGlyphRange = NSIntersectionRange(glyphsToShow, markedGlyphRange)
+        guard visibleMarkedGlyphRange.length > 0 else { return }
+
+        enumerateLineFragments(forGlyphRange: visibleMarkedGlyphRange) { _, _, textContainer, lineGlyphRange, _ in
+            let fragmentGlyphRange = NSIntersectionRange(visibleMarkedGlyphRange, lineGlyphRange)
+            guard fragmentGlyphRange.length > 0 else { return }
+            let glyphRect = self.boundingRect(forGlyphRange: fragmentGlyphRange, in: textContainer)
+            // NSTextView 為 flipped 座標；maxY 是字形下緣。從這裡畫線可讓線的上緣貼齊字底。
+            let y = glyphRect.maxY + origin.y + 0.5
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: glyphRect.minX + origin.x, y: y))
+            path.line(to: NSPoint(x: glyphRect.maxX + origin.x, y: y))
+            path.lineWidth = 1
+            NSColor.textColor.setStroke()
+            path.stroke()
+        }
+    }
+}
+
+class CompositionAwareTextView: NSTextView {
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let marked: NSMutableAttributedString
+        if let attributed = string as? NSAttributedString {
+            marked = NSMutableAttributedString(attributedString: attributed)
+        } else {
+            marked = NSMutableAttributedString(string: string as? String ?? "")
+        }
+        let range = NSRange(location: 0, length: marked.length)
+        if range.length > 0 {
+            // 關閉輸入法的預設底線，改由 CompositionUnderlineLayoutManager 依字形底部繪製。
+            marked.removeAttribute(.underlineStyle, range: range)
+            marked.removeAttribute(.underlineColor, range: range)
+            marked.removeAttribute(.backgroundColor, range: range)
+            marked.addAttribute(.foregroundColor, value: NSColor.textColor, range: range)
+        }
+        super.setMarkedText(marked, selectedRange: selectedRange, replacementRange: replacementRange)
+    }
+}
+
 // MARK: - 自訂 NSTextView 子類
-final class DreaMoonTextView: NSTextView {
+final class DreaMoonTextView: CompositionAwareTextView {
     weak var coordinator: RichEditorView.Coordinator?
     override var acceptsFirstResponder: Bool { true }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
@@ -81,6 +159,24 @@ final class DreaMoonTextView: NSTextView {
         coordinator?.onEditorFocus?()
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
+    }
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        updateCharacterLinkCursor(shiftIsPressed: event.modifierFlags.contains(.shift))
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateCharacterLinkCursor(shiftIsPressed: false)
+        syncFrameToScrollView()
+        DispatchQueue.main.async { [weak self] in self?.syncFrameToScrollView() }
+    }
+    private func updateCharacterLinkCursor(shiftIsPressed: Bool) {
+        var attributes = linkTextAttributes ?? [:]
+        attributes[.cursor] = shiftIsPressed ? NSCursor.pointingHand : NSCursor.iBeam
+        linkTextAttributes = attributes
+        if let window {
+            window.invalidateCursorRects(for: self)
+        }
     }
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -95,11 +191,6 @@ final class DreaMoonTextView: NSTextView {
             container.containerSize = NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude)
             container.widthTracksTextView = true
         }
-    }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        syncFrameToScrollView()
-        DispatchQueue.main.async { [weak self] in self?.syncFrameToScrollView() }
     }
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
@@ -124,12 +215,31 @@ final class DreaMoonTextView: NSTextView {
     }
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         super.insertText(insertString, replacementRange: replacementRange)
+        let inserted: String
+        if let string = insertString as? String {
+            inserted = string
+        } else if let attributed = insertString as? NSAttributedString {
+            inserted = attributed.string
+        } else {
+            inserted = ""
+        }
+        if !inserted.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.coordinator?.showCharacterMentionMenuIfNeeded()
+            }
+        }
     }
     override func deleteBackward(_ sender: Any?) {
         super.deleteBackward(sender)
+        DispatchQueue.main.async { [weak self] in
+            self?.coordinator?.showCharacterMentionMenuIfNeeded()
+        }
     }
     override func deleteForward(_ sender: Any?) {
         super.deleteForward(sender)
+        DispatchQueue.main.async { [weak self] in
+            self?.coordinator?.showCharacterMentionMenuIfNeeded()
+        }
     }
     override func insertNewline(_ sender: Any?) {
         coordinator?.handleEnter()
@@ -148,6 +258,36 @@ final class DreaMoonTextView: NSTextView {
     // ⬇️ V3 Phase 3：右鍵捕獲（加入時間軸）⬇️
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        let selectedText = selectedPlainText()
+        let preview = String(selectedText.prefix(24))
+        let createCharacterItem = NSMenuItem(
+            title: preview.isEmpty ? "建立角色" : "建立角色「\(preview)」",
+            action: #selector(createCharacterFromSelection(_:)),
+            keyEquivalent: ""
+        )
+        createCharacterItem.target = self
+        createCharacterItem.isEnabled = coordinator?.canCreateCharacter(named: selectedText) == true
+        menu.addItem(createCharacterItem)
+
+        let linkCharacterItem = NSMenuItem(
+            title: preview.isEmpty ? "連結到角色" : "連結到角色「\(preview)」",
+            action: #selector(linkCharacterFromSelection(_:)),
+            keyEquivalent: ""
+        )
+        linkCharacterItem.target = self
+        linkCharacterItem.isEnabled = coordinator?.canLinkCharacter(named: selectedText) == true
+        menu.addItem(linkCharacterItem)
+
+        let unlinkCharacterItem = NSMenuItem(
+            title: "解除角色連結",
+            action: #selector(unlinkCharacterFromSelection(_:)),
+            keyEquivalent: ""
+        )
+        unlinkCharacterItem.target = self
+        unlinkCharacterItem.isEnabled = selectedRangeHasCharacterLink()
+        menu.addItem(unlinkCharacterItem)
+        menu.addItem(NSMenuItem.separator())
+
         let captureItem = NSMenuItem(
             title: "加入時間軸",
             action: #selector(captureToTimeline(_:)),
@@ -162,6 +302,38 @@ final class DreaMoonTextView: NSTextView {
         menu.addItem(withTitle: "貼上", action: #selector(paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "全選", action: #selector(selectAll(_:)), keyEquivalent: "a")
         return menu
+    }
+
+    @objc func createCharacterFromSelection(_ sender: Any?) {
+        coordinator?.createCharacter(named: selectedPlainText())
+    }
+
+    @objc func linkCharacterFromSelection(_ sender: Any?) {
+        coordinator?.linkSelectedCharacter()
+    }
+
+    @objc func unlinkCharacterFromSelection(_ sender: Any?) {
+        coordinator?.unlinkSelectedCharacter()
+    }
+
+    private func selectedPlainText() -> String {
+        let range = selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= string.utf16.count else { return "" }
+        return (string as NSString).substring(with: range)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func selectedRangeHasCharacterLink() -> Bool {
+        let range = selectedRange()
+        guard range.length > 0, let storage = textStorage, NSMaxRange(range) <= storage.length else { return false }
+        var found = false
+        storage.enumerateAttribute(.link, in: range) { value, _, stop in
+            if let value, CharacterReferenceLink.characterID(from: value) != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
     }
 
     @objc func captureToTimeline(_ sender: Any?) {
@@ -207,6 +379,7 @@ final class DreaMoonTextView: NSTextView {
 extension Notification.Name {
     static let dreaMoonPreviousSection = Notification.Name("dreaMoon.previousSection")
     static let dreaMoonNextSection = Notification.Name("dreaMoon.nextSection")
+    static let dreaMoonCharacterReferencesChanged = Notification.Name("dreaMoon.characterReferencesChanged")
 }
 
 // MARK: - 富文本編輯器
@@ -220,6 +393,11 @@ struct RichEditorView: NSViewRepresentable {
     var onLoadingChange: ((Bool) -> Void)? = nil
     var onSelectionTextChange: ((String) -> Void)? = nil
     var onOpenSelectedText: ((String) -> Bool)? = nil
+    var onOpenCharacterReference: ((UUID) -> Bool)? = nil
+    var canCreateCharacter: ((String) -> Bool)? = nil
+    var onCreateCharacter: ((String) -> Bool)? = nil
+    var resolveCharacterID: ((String) -> UUID?)? = nil
+    var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -235,6 +413,11 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onLoadingChange = onLoadingChange
         context.coordinator.onSelectionTextChange = onSelectionTextChange
         context.coordinator.onOpenSelectedText = onOpenSelectedText
+        context.coordinator.onOpenCharacterReference = onOpenCharacterReference
+        context.coordinator.canCreateCharacterHandler = canCreateCharacter
+        context.coordinator.onCreateCharacter = onCreateCharacter
+        context.coordinator.resolveCharacterID = resolveCharacterID
+        context.coordinator.characterSuggestions = characterSuggestions
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -286,6 +469,11 @@ struct RichEditorView: NSViewRepresentable {
         coord.onLoadingChange = onLoadingChange
         coord.onSelectionTextChange = onSelectionTextChange
         coord.onOpenSelectedText = onOpenSelectedText
+        coord.onOpenCharacterReference = onOpenCharacterReference
+        coord.canCreateCharacterHandler = canCreateCharacter
+        coord.onCreateCharacter = onCreateCharacter
+        coord.resolveCharacterID = resolveCharacterID
+        coord.characterSuggestions = characterSuggestions
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -297,7 +485,7 @@ struct RichEditorView: NSViewRepresentable {
     }
     private func makeScrollViewAndTextView() -> (NSScrollView, DreaMoonTextView) {
         let textStorage = NSTextStorage()
-        let layoutManager = NSLayoutManager()
+        let layoutManager = CompositionUnderlineLayoutManager()
         layoutManager.allowsNonContiguousLayout = true
         let textContainer = NSTextContainer(size: NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude))
         textContainer.widthTracksTextView = true
@@ -307,6 +495,7 @@ struct RichEditorView: NSViewRepresentable {
             frame: NSRect(x: 0, y: 0, width: 800, height: 600),
             textContainer: textContainer
         )
+        layoutManager.editorTextView = textView
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
@@ -322,6 +511,12 @@ struct RichEditorView: NSViewRepresentable {
         textView.drawsBackground = true
         textView.textContainerInset = NSSize(width: 24, height: 24)
         textView.typingAttributes = bodyAttrs
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.textColor,
+            .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.12),
+            .underlineStyle: 0,
+            .cursor: NSCursor.iBeam
+        ]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
@@ -351,6 +546,11 @@ struct RichEditorView: NSViewRepresentable {
         var onLoadingChange: ((Bool) -> Void)?
         var onSelectionTextChange: ((String) -> Void)?
         var onOpenSelectedText: ((String) -> Bool)?
+        var onOpenCharacterReference: ((UUID) -> Bool)?
+        var canCreateCharacterHandler: ((String) -> Bool)?
+        var onCreateCharacter: ((String) -> Bool)?
+        var resolveCharacterID: ((String) -> UUID?)?
+        var characterSuggestions: (() -> [CharacterMentionSuggestion])?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
@@ -440,6 +640,158 @@ struct RichEditorView: NSViewRepresentable {
             let text = (tv.string as NSString).substring(with: range)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return onOpenSelectedText?(text) ?? false
+        }
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            // 角色參照是編輯器的內部識別資料，不可交由 macOS 當成外部 URL 開啟。
+            guard let characterID = CharacterReferenceLink.characterID(from: link) else {
+                return false
+            }
+            if NSEvent.modifierFlags.contains(.shift) {
+                return onOpenCharacterReference?(characterID) ?? true
+            }
+
+            // 一般點擊仍是文字編輯操作：放置游標，不觸發角色跳轉。
+            let location = min(max(0, charIndex), textView.string.utf16.count)
+            textView.setSelectedRange(NSRange(location: location, length: 0))
+            textView.window?.makeFirstResponder(textView)
+            return true
+        }
+        func canCreateCharacter(named text: String) -> Bool {
+            canCreateCharacterHandler?(text) ?? false
+        }
+        @discardableResult
+        func createCharacter(named text: String) -> Bool {
+            onCreateCharacter?(text) ?? false
+        }
+        func canLinkCharacter(named text: String) -> Bool {
+            resolveCharacterID?(text) != nil
+        }
+        func linkSelectedCharacter() {
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+            let text = (tv.string as NSString).substring(with: range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let id = resolveCharacterID?(text) else { return }
+            storage.addAttribute(.link, value: CharacterReferenceLink.url(for: id), range: range)
+            tv.didChangeText()
+        }
+        func unlinkSelectedCharacter() {
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+            storage.removeAttribute(.link, range: range)
+            tv.didChangeText()
+        }
+        private var activeMentionRange: NSRange?
+        private var mentionMenuWorkItem: DispatchWorkItem?
+
+        func showCharacterMentionMenuIfNeeded() {
+            // 中文、日文等輸入法仍在組字時，候選字面板需要使用游標下方的位置；
+            // 不可在此時彈出角色選單或搶走輸入焦點。
+            guard let textView, !textView.hasMarkedText() else { return }
+            mentionMenuWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.presentCharacterMentionMenuIfNeeded()
+            }
+            mentionMenuWorkItem = work
+            // 不限制單字；使用短暫停頓讓作者可以自然輸入完整查詢。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: work)
+        }
+
+        private func presentCharacterMentionMenuIfNeeded() {
+            guard let tv = textView, !tv.hasMarkedText() else { return }
+            guard let mentionRange = currentMentionRange(in: tv) else { return }
+            let fullText = tv.string as NSString
+            let queryRange = NSRange(location: mentionRange.location + 1, length: mentionRange.length - 1)
+            let query = fullText.substring(with: queryRange)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return }
+
+            let suggestions = characterSuggestions?() ?? []
+            let matchingSuggestions = suggestions.filter {
+                $0.characterName.localizedCaseInsensitiveContains(query) ||
+                $0.insertionName.localizedCaseInsensitiveContains(query)
+            }
+            guard !matchingSuggestions.isEmpty else { return }
+
+            activeMentionRange = mentionRange
+            let menu = NSMenu(title: "選擇角色")
+            menu.autoenablesItems = false
+
+            let duplicateInsertions = Dictionary(grouping: matchingSuggestions, by: { $0.insertionName })
+                .filter { $0.value.count > 1 }.keys
+            for suggestion in matchingSuggestions {
+                var title = suggestion.isAlias
+                    ? "\(suggestion.insertionName)　— \(suggestion.characterName) 的別名"
+                    : suggestion.characterName
+                if duplicateInsertions.contains(suggestion.insertionName) {
+                    title += " · UID \(String(format: "%06d", suggestion.sortOrder + 1))"
+                }
+                let item = NSMenuItem(title: title, action: #selector(insertCharacterMention(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(suggestion.id.uuidString)|\(suggestion.insertionName)"
+                menu.addItem(item)
+            }
+
+            menu.popUp(positioning: nil, at: mentionMenuPoint(in: tv), in: tv)
+        }
+
+        @objc private func insertCharacterMention(_ sender: NSMenuItem) {
+            mentionMenuWorkItem?.cancel()
+            guard let tv = textView,
+                  let payload = sender.representedObject as? String,
+                  let separator = payload.firstIndex(of: "|"),
+                  let id = UUID(uuidString: String(payload[..<separator])),
+                  let storage = tv.textStorage else { return }
+            let insertionName = String(payload[payload.index(after: separator)...])
+            guard let mentionRange = activeMentionRange,
+                  NSMaxRange(mentionRange) <= storage.length else { return }
+
+            var attributes = tv.typingAttributes
+            attributes[.link] = CharacterReferenceLink.url(for: id)
+            storage.replaceCharacters(
+                in: mentionRange,
+                with: NSAttributedString(string: insertionName, attributes: attributes)
+            )
+            let nextLocation = mentionRange.location + (insertionName as NSString).length
+            tv.setSelectedRange(NSRange(location: nextLocation, length: 0))
+            activeMentionRange = nil
+            tv.didChangeText()
+            syncTypingAttributesToCursor()
+        }
+
+        private func currentMentionRange(in textView: NSTextView) -> NSRange? {
+            let cursor = textView.selectedRange().location
+            guard cursor > 1 else { return nil }
+            let text = textView.string as NSString
+            var location = cursor - 1
+            while location >= 0 {
+                let character = text.substring(with: NSRange(location: location, length: 1))
+                if character == "@" || character == "＠" {
+                    return NSRange(location: location, length: cursor - location)
+                }
+                if character.rangeOfCharacter(from: .whitespacesAndNewlines) != nil || ".,，。！？!?；;：:()（）[]【】{}<>《》".contains(character) {
+                    return nil
+                }
+                location -= 1
+            }
+            return nil
+        }
+
+        private func mentionMenuPoint(in textView: NSTextView) -> NSPoint {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer,
+                  layoutManager.numberOfGlyphs > 0 else {
+                return NSPoint(x: textView.textContainerInset.width, y: textView.textContainerInset.height + 20)
+            }
+            let characterIndex = max(0, min(textView.selectedRange().location - 1, textView.string.utf16.count - 1))
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: characterIndex)
+            var point = layoutManager.location(forGlyphAt: glyphIndex)
+            point.x += textView.textContainerInset.width
+            point.y += textView.textContainerInset.height + layoutManager.defaultLineHeight(for: bodyFont)
+            _ = textContainer
+            return point
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             syncTypingAttributesToCursor()

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 
 struct WritingReferenceScanner {
     static func plainText(_ section: Section) -> String {
@@ -46,6 +47,267 @@ struct WritingReferenceScanner {
     static func allSections(in book: Book) -> [Section] {
         book.volumes.sorted { $0.sortOrder < $1.sortOrder }
             .flatMap { $0.sections.sorted { $0.sortOrder < $1.sortOrder } }
+    }
+}
+
+private struct CompositionAwareTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let font: NSFont
+    let onEditingChanged: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> CompositionAwareTextView {
+        let textStorage = NSTextStorage()
+        let layoutManager = CompositionUnderlineLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 1, height: 32))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = CompositionAwareTextView(frame: .zero, textContainer: textContainer)
+        layoutManager.editorTextView = textView
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.font = font
+        textView.textColor = .textColor
+        textView.backgroundColor = .clear
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = false
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.maximumNumberOfLines = 1
+        textView.textContainer?.lineBreakMode = .byClipping
+        textView.typingAttributes = [.font: font, .foregroundColor: NSColor.textColor]
+        return textView
+    }
+
+    func updateNSView(_ textView: CompositionAwareTextView, context: Context) {
+        context.coordinator.parent = self
+        textView.font = font
+        if textView.string != text, textView.window?.firstResponder !== textView {
+            textView.string = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: CompositionAwareTextField
+        init(parent: CompositionAwareTextField) { self.parent = parent }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.onEditingChanged(true)
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.onEditingChanged(false)
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+    }
+}
+
+@MainActor
+private enum CharacterReferenceSynchronizer {
+    static func unlinkedCandidates(
+        from oldName: String,
+        to newName: String,
+        sourceLabel: String,
+        in book: Book
+    ) -> [UnlinkedReferenceCandidate] {
+        let source = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacement = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty, !replacement.isEmpty, source != replacement else { return [] }
+
+        return WritingReferenceScanner.allSections(in: book).flatMap { section in
+            let attributed = NSAttributedString(section.content)
+            let text = attributed.string as NSString
+            var searchRange = NSRange(location: 0, length: text.length)
+            var result: [UnlinkedReferenceCandidate] = []
+
+            while searchRange.length > 0 {
+                let range = text.range(of: source, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange)
+                guard range.location != NSNotFound else { break }
+                var hasLink = false
+                attributed.enumerateAttribute(.link, in: range) { value, _, stop in
+                    if value != nil {
+                        hasLink = true
+                        stop.pointee = true
+                    }
+                }
+                if !hasLink {
+                    let previewStart = max(0, range.location - 14)
+                    let previewEnd = min(text.length, NSMaxRange(range) + 14)
+                    let preview = text.substring(with: NSRange(location: previewStart, length: previewEnd - previewStart))
+                    result.append(UnlinkedReferenceCandidate(
+                        section: section,
+                        range: range,
+                        sourceName: source,
+                        replacement: replacement,
+                        sourceLabel: sourceLabel,
+                        preview: preview
+                    ))
+                }
+                let next = NSMaxRange(range)
+                searchRange = NSRange(location: next, length: text.length - next)
+            }
+            return result
+        }
+    }
+
+    static func apply(_ candidates: [UnlinkedReferenceCandidate], in book: Book, context: ModelContext) -> Set<UUID> {
+        let selected = candidates.filter(\.isSelected)
+        guard !selected.isEmpty else { return [] }
+        var changedSectionIDs = Set<UUID>()
+
+        for (_, sectionCandidates) in Dictionary(grouping: selected, by: { $0.section.id }) {
+            guard let section = sectionCandidates.first?.section else { continue }
+            let attributed = NSMutableAttributedString(attributedString: NSAttributedString(section.content))
+            var didChange = false
+
+            for candidate in sectionCandidates.sorted(by: { $0.range.location > $1.range.location }) {
+                guard NSMaxRange(candidate.range) <= attributed.length,
+                      (attributed.string as NSString).substring(with: candidate.range)
+                        .compare(candidate.sourceName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame else { continue }
+                var hasLink = false
+                attributed.enumerateAttribute(.link, in: candidate.range) { value, _, stop in
+                    if value != nil {
+                        hasLink = true
+                        stop.pointee = true
+                    }
+                }
+                guard !hasLink else { continue }
+                let attributes = attributed.attributes(at: candidate.range.location, effectiveRange: nil)
+                attributed.replaceCharacters(in: candidate.range, with: NSAttributedString(string: candidate.replacement, attributes: attributes))
+                didChange = true
+            }
+
+            guard didChange else { continue }
+            section.content = AttributedString(attributed)
+            section.wordCount = attributed.string.filter { !$0.isWhitespace }.count
+            section.updatedAt = Date()
+            changedSectionIDs.insert(section.id)
+        }
+
+        guard !changedSectionIDs.isEmpty else { return [] }
+        book.updatedAt = Date()
+        try? context.save()
+        NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+        return changedSectionIDs
+    }
+
+    static func updateLinkedNames(for character: Character, to newName: String, in book: Book, context: ModelContext) {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var changedSectionIDs = Set<UUID>()
+
+        for section in WritingReferenceScanner.allSections(in: book) {
+            let attributed = NSMutableAttributedString(attributedString: NSAttributedString(section.content))
+            var ranges: [NSRange] = []
+            attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+                guard let value, CharacterReferenceLink.characterID(from: value) == character.id else { return }
+                ranges.append(range)
+            }
+            guard !ranges.isEmpty else { continue }
+
+            for range in ranges.reversed() {
+                let attributes = attributed.attributes(at: range.location, effectiveRange: nil)
+                attributed.replaceCharacters(
+                    in: range,
+                    with: NSAttributedString(string: name, attributes: attributes)
+                )
+            }
+            section.content = AttributedString(attributed)
+            section.wordCount = attributed.string.filter { !$0.isWhitespace }.count
+            section.updatedAt = Date()
+            changedSectionIDs.insert(section.id)
+        }
+
+        guard !changedSectionIDs.isEmpty else { return }
+        book.updatedAt = Date()
+        try? context.save()
+        NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+    }
+}
+
+private struct UnlinkedReferenceCandidate: Identifiable {
+    let id = UUID()
+    let section: Section
+    let range: NSRange
+    let sourceName: String
+    let replacement: String
+    let sourceLabel: String
+    let preview: String
+    var isSelected = false
+}
+
+private struct UnlinkedReferenceReviewView: View {
+    @Binding var candidates: [UnlinkedReferenceCandidate]
+    let onApply: () -> Void
+    let onDismiss: () -> Void
+
+    private var selectedCount: Int { candidates.filter(\.isSelected).count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "text.magnifyingglass")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("發現未連結的舊名稱")
+                        .font(.subheadline.weight(.semibold))
+                    Text("已連結文字已同步；以下文字請依上下文決定是否替換。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("暫不處理")
+            }
+
+            HStack(spacing: 10) {
+                Button("全選") { candidates.indices.forEach { candidates[$0].isSelected = true } }
+                Button("全不選") { candidates.indices.forEach { candidates[$0].isSelected = false } }
+                Spacer()
+                Text("共 \(candidates.count) 處")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach($candidates) { $candidate in
+                    Toggle(isOn: $candidate.isSelected) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(candidate.sourceLabel)：\(candidate.sourceName) → \(candidate.replacement)")
+                                .font(.caption.weight(.medium))
+                            Text("\(candidate.section.title.isEmpty ? "未命名章節" : candidate.section.title)　\(candidate.preview)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+
+            Button("套用已選 \(selectedCount) 處", action: onApply)
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedCount == 0)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -630,6 +892,8 @@ struct CharacterDetailView: View {
     @Query private var allCharacterItems: [CharacterItem]
     @Query private var allRelationships: [CharacterRelationship]
     @Query private var allEvents: [Event]
+    @State private var realNameBeforeEditing = ""
+    @State private var unlinkedCandidates: [UnlinkedReferenceCandidate] = []
 
     private var profile: CharacterProfile? {
         allProfiles.first { $0.character?.id == character.id }
@@ -660,6 +924,14 @@ struct CharacterDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     characterHeader
+
+                    if !unlinkedCandidates.isEmpty {
+                        UnlinkedReferenceReviewView(
+                            candidates: $unlinkedCandidates,
+                            onApply: applySelectedUnlinkedChanges,
+                            onDismiss: { unlinkedCandidates = [] }
+                        )
+                    }
 
                     CharacterReferenceSectionsView(character: character, book: book, onSelectSection: onSelectSection)
 
@@ -711,7 +983,9 @@ struct CharacterDetailView: View {
                     }
 
                     detailSection("別名", systemImage: "person.badge.key", summary: compactSummary(aliases.map(\.name))) {
-                        CharacterAliasSectionView(character: character)
+                        CharacterAliasSectionView(character: character) { oldName, newName in
+                            commitNameChange(from: oldName, to: newName, sourceLabel: "別名", updatesLinkedReferences: false)
+                        }
                     }
 
                     detailSection("組織", systemImage: "building.2", summary: compactSummary(memberships.compactMap { $0.organization?.name })) {
@@ -754,11 +1028,31 @@ struct CharacterDetailView: View {
     @ViewBuilder
     private var characterHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("角色真名", text: $character.realName)
-                .textFieldStyle(.plain)
-                .font(.title2.weight(.semibold))
+            ZStack(alignment: .leading) {
+                if character.realName.isEmpty {
+                    Text("角色真名")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .allowsHitTesting(false)
+                }
+                CompositionAwareTextField(
+                    text: $character.realName,
+                    placeholder: "角色真名",
+                    font: .systemFont(ofSize: 22, weight: .semibold),
+                    onEditingChanged: { isEditing in
+                        if isEditing {
+                            realNameBeforeEditing = character.realName
+                        } else {
+                            commitNameChange(from: realNameBeforeEditing, to: character.realName, sourceLabel: "真名", updatesLinkedReferences: true)
+                        }
+                    }
+                )
+            }
                 .frame(minHeight: 32, alignment: .center)
                 .padding(.vertical, 2)
+                .onAppear {
+                    realNameBeforeEditing = character.realName
+                }
             TextField("角色定位，例如：男主角", text: roleBinding)
                 .textFieldStyle(.plain)
                 .font(.subheadline)
@@ -780,6 +1074,31 @@ struct CharacterDetailView: View {
                 }
             }
         )
+    }
+
+    private func commitNameChange(
+        from oldName: String,
+        to newName: String,
+        sourceLabel: String,
+        updatesLinkedReferences: Bool
+    ) {
+        let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard old != new, !old.isEmpty, !new.isEmpty else { return }
+        if updatesLinkedReferences {
+            CharacterReferenceSynchronizer.updateLinkedNames(for: character, to: new, in: book, context: modelContext)
+        }
+        unlinkedCandidates += CharacterReferenceSynchronizer.unlinkedCandidates(
+            from: old,
+            to: new,
+            sourceLabel: sourceLabel,
+            in: book
+        )
+    }
+
+    private func applySelectedUnlinkedChanges() {
+        _ = CharacterReferenceSynchronizer.apply(unlinkedCandidates, in: book, context: modelContext)
+        unlinkedCandidates.removeAll()
     }
 
     @ViewBuilder

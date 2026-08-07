@@ -141,6 +141,12 @@ struct EditorWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dreaMoonNextSection)) { _ in
             navigate(to: neighboringSections.next)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonCharacterReferencesChanged)) { notification in
+            guard let sectionIDs = notification.object as? Set<UUID>,
+                  let selectedSection,
+                  sectionIDs.contains(selectedSection.id) else { return }
+            bridge.reloadVisibleContent()
+        }
         .onAppear { keyboardMonitor.start() }
         .onDisappear { keyboardMonitor.stop() }
     }
@@ -686,6 +692,7 @@ struct EditorCenterView: View {
     let bridge: EditorBridge
     let book: Book
     let onOpenCharacter: (Character) -> Void
+    @Environment(\.modelContext) private var modelContext
     @State private var liveWordCount: Int = 0
     @State private var cursorIsHeading: Bool = false
     @State private var saveState: EditorSaveState = .saved
@@ -713,6 +720,39 @@ struct EditorCenterView: View {
             alias.character?.book?.id == book.id &&
             alias.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }?.character
+    }
+
+    private func characterIDForReference(from text: String) -> UUID? {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("\n") else { return nil }
+        let matches = allCharacters.filter {
+            $0.book?.id == book.id &&
+            $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        guard matches.count == 1 else { return nil }
+        return matches[0].id
+    }
+
+    private func canCreateCharacter(from text: String) -> Bool {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 80, !name.contains("\n") else { return false }
+        return characterMatch(for: name) == nil
+    }
+
+    private func createCharacter(from text: String) -> Bool {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canCreateCharacter(from: name) else { return false }
+        let character = Character(realName: name, book: book)
+        character.sortOrder = (allCharacters.filter { $0.book?.id == book.id }.map(\.sortOrder).max() ?? -1) + 1
+        modelContext.insert(character)
+        do {
+            try modelContext.save()
+            onOpenCharacter(character)
+            return true
+        } catch {
+            modelContext.delete(character)
+            return false
+        }
     }
 
     var body: some View {
@@ -782,6 +822,46 @@ struct EditorCenterView: View {
                             guard let character = characterMatch(for: text) else { return false }
                             onOpenCharacter(character)
                             return true
+                        },
+                        onOpenCharacterReference: { characterID in
+                            guard let character = allCharacters.first(where: {
+                                $0.book?.id == book.id && $0.id == characterID
+                            }) else { return false }
+                            onOpenCharacter(character)
+                            return true
+                        },
+                        canCreateCharacter: { canCreateCharacter(from: $0) },
+                        onCreateCharacter: { createCharacter(from: $0) },
+                        resolveCharacterID: { characterIDForReference(from: $0) },
+                        characterSuggestions: {
+                            let characters = allCharacters
+                                .filter { $0.book?.id == book.id && !$0.realName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                                .sorted {
+                                    if $0.isPinned != $1.isPinned { return $0.isPinned }
+                                    return $0.sortOrder < $1.sortOrder
+                                }
+                            let trueNames = characters.map {
+                                    CharacterMentionSuggestion(
+                                        id: $0.id,
+                                        characterName: $0.realName.trimmingCharacters(in: .whitespacesAndNewlines),
+                                        insertionName: $0.realName.trimmingCharacters(in: .whitespacesAndNewlines),
+                                        sortOrder: $0.sortOrder
+                                    )
+                                }
+                            let aliases = allAliases.compactMap { alias -> CharacterMentionSuggestion? in
+                                guard let character = alias.character,
+                                      character.book?.id == book.id else { return nil }
+                                let aliasName = alias.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let characterName = character.realName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !aliasName.isEmpty, !characterName.isEmpty else { return nil }
+                                return CharacterMentionSuggestion(
+                                    id: character.id,
+                                    characterName: characterName,
+                                    insertionName: aliasName,
+                                    sortOrder: character.sortOrder
+                                )
+                            }
+                            return trueNames + aliases
                         }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
