@@ -141,6 +141,11 @@ struct EditorWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dreaMoonNextSection)) { _ in
             navigate(to: neighboringSections.next)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonWillChangeCharacterReferences)) { _ in
+            // 名稱同步會直接改寫 Section.content；先提交作者正在輸入的內容，
+            // 避免背景同步以較舊的模型內容覆蓋編輯器。
+            bridge.flushPendingSave()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .dreaMoonCharacterReferencesChanged)) { notification in
             guard let sectionIDs = notification.object as? Set<UUID>,
                   let selectedSection,
@@ -722,15 +727,24 @@ struct EditorCenterView: View {
         }?.character
     }
 
-    private func characterIDForReference(from text: String) -> UUID? {
+    private func characterReference(from text: String) -> CharacterReference? {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("\n") else { return nil }
-        let matches = allCharacters.filter {
+        let canonicalMatches = allCharacters.filter {
             $0.book?.id == book.id &&
             $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }
-        guard matches.count == 1 else { return nil }
-        return matches[0].id
+        if canonicalMatches.count == 1 {
+            return CharacterReference(characterID: canonicalMatches[0].id, source: .canonical)
+        }
+        guard canonicalMatches.isEmpty else { return nil }
+
+        let aliasMatches = allAliases.filter {
+            $0.character?.book?.id == book.id &&
+            $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        guard aliasMatches.count == 1, let characterID = aliasMatches[0].character?.id else { return nil }
+        return CharacterReference(characterID: characterID, source: .alias(aliasMatches[0].id))
     }
 
     private func canCreateCharacter(from text: String) -> Bool {
@@ -832,7 +846,7 @@ struct EditorCenterView: View {
                         },
                         canCreateCharacter: { canCreateCharacter(from: $0) },
                         onCreateCharacter: { createCharacter(from: $0) },
-                        resolveCharacterID: { characterIDForReference(from: $0) },
+                        resolveCharacterReference: { characterReference(from: $0) },
                         characterSuggestions: {
                             let characters = allCharacters
                                 .filter { $0.book?.id == book.id && !$0.realName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -845,7 +859,8 @@ struct EditorCenterView: View {
                                         id: $0.id,
                                         characterName: $0.realName.trimmingCharacters(in: .whitespacesAndNewlines),
                                         insertionName: $0.realName.trimmingCharacters(in: .whitespacesAndNewlines),
-                                        sortOrder: $0.sortOrder
+                                        sortOrder: $0.sortOrder,
+                                        source: .canonical
                                     )
                                 }
                             let aliases = allAliases.compactMap { alias -> CharacterMentionSuggestion? in
@@ -858,7 +873,8 @@ struct EditorCenterView: View {
                                     id: character.id,
                                     characterName: characterName,
                                     insertionName: aliasName,
-                                    sortOrder: character.sortOrder
+                                    sortOrder: character.sortOrder,
+                                    source: .alias(alias.id)
                                 )
                             }
                             return trueNames + aliases

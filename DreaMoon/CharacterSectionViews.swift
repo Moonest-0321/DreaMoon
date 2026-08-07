@@ -155,7 +155,7 @@ private struct CharacterSectionEmptyState: View {
 
 struct CharacterAliasSectionView: View {
     let character: Character
-    var onRename: (String, String) -> Void = { _, _ in }
+    var onRename: (CharacterAlias, String, String) -> Void = { _, _, _ in }
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
 
@@ -180,7 +180,7 @@ struct CharacterAliasSectionView: View {
 
 private struct AliasRow: View {
     @Bindable var alias: CharacterAlias
-    let onRename: (String, String) -> Void
+    let onRename: (CharacterAlias, String, String) -> Void
     let onDelete: () -> Void
     @FocusState private var nameFieldFocused: Bool
     @State private var nameBeforeEditing = ""
@@ -197,7 +197,7 @@ private struct AliasRow: View {
             if isFocused {
                 nameBeforeEditing = alias.name
             } else if nameBeforeEditing != alias.name {
-                onRename(nameBeforeEditing, alias.name)
+                onRename(alias, nameBeforeEditing, alias.name)
             }
         }
         .onChange(of: alias.name) { alias.updatedAt = Date() }

@@ -28,12 +28,39 @@ fileprivate let headingAttrs: [NSAttributedString.Key: Any] = [
     .paragraphStyle: headingParagraphStyle
 ]
 
+enum CharacterReferenceSource: Equatable {
+    case canonical
+    case alias(UUID)
+    case legacy
+}
+
+struct CharacterReference: Equatable {
+    let characterID: UUID
+    let source: CharacterReferenceSource
+}
+
 enum CharacterReferenceLink {
-    static func url(for characterID: UUID) -> URL {
-        URL(string: "dreamoon://character/\(characterID.uuidString)")!
+    static func url(for reference: CharacterReference) -> URL {
+        var components = URLComponents()
+        components.scheme = "dreamoon"
+        components.host = "character"
+        components.path = "/\(reference.characterID.uuidString)"
+        switch reference.source {
+        case .canonical:
+            components.queryItems = [URLQueryItem(name: "source", value: "canonical")]
+        case .alias(let aliasID):
+            components.queryItems = [URLQueryItem(name: "alias", value: aliasID.uuidString)]
+        case .legacy:
+            break
+        }
+        return components.url!
     }
 
-    static func characterID(from value: Any) -> UUID? {
+    static func url(for characterID: UUID) -> URL {
+        url(for: CharacterReference(characterID: characterID, source: .canonical))
+    }
+
+    static func reference(from value: Any) -> CharacterReference? {
         let url: URL?
         if let value = value as? URL {
             url = value
@@ -42,8 +69,23 @@ enum CharacterReferenceLink {
         } else {
             url = nil
         }
-        guard let url, url.scheme == "dreamoon", url.host == "character" else { return nil }
-        return UUID(uuidString: url.lastPathComponent)
+        guard let url,
+              url.scheme == "dreamoon",
+              url.host == "character",
+              let characterID = UUID(uuidString: url.lastPathComponent) else { return nil }
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let aliasValue = queryItems.first(where: { $0.name == "alias" })?.value,
+           let aliasID = UUID(uuidString: aliasValue) {
+            return CharacterReference(characterID: characterID, source: .alias(aliasID))
+        }
+        if queryItems.contains(where: { $0.name == "source" && $0.value == "canonical" }) {
+            return CharacterReference(characterID: characterID, source: .canonical)
+        }
+        return CharacterReference(characterID: characterID, source: .legacy)
+    }
+
+    static func characterID(from value: Any) -> UUID? {
+        reference(from: value)?.characterID
     }
 }
 
@@ -52,8 +94,14 @@ struct CharacterMentionSuggestion {
     let characterName: String
     let insertionName: String
     let sortOrder: Int
+    let source: CharacterReferenceSource
 
     var isAlias: Bool { characterName != insertionName }
+}
+
+private struct CharacterMentionPayload {
+    let reference: CharacterReference
+    let insertionName: String
 }
 fileprivate func isHeadingFont(_ font: NSFont?) -> Bool {
     guard let font else { return false }
@@ -379,6 +427,7 @@ final class DreaMoonTextView: CompositionAwareTextView {
 extension Notification.Name {
     static let dreaMoonPreviousSection = Notification.Name("dreaMoon.previousSection")
     static let dreaMoonNextSection = Notification.Name("dreaMoon.nextSection")
+    static let dreaMoonWillChangeCharacterReferences = Notification.Name("dreaMoon.willChangeCharacterReferences")
     static let dreaMoonCharacterReferencesChanged = Notification.Name("dreaMoon.characterReferencesChanged")
 }
 
@@ -396,7 +445,7 @@ struct RichEditorView: NSViewRepresentable {
     var onOpenCharacterReference: ((UUID) -> Bool)? = nil
     var canCreateCharacter: ((String) -> Bool)? = nil
     var onCreateCharacter: ((String) -> Bool)? = nil
-    var resolveCharacterID: ((String) -> UUID?)? = nil
+    var resolveCharacterReference: ((String) -> CharacterReference?)? = nil
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
@@ -416,7 +465,7 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onOpenCharacterReference = onOpenCharacterReference
         context.coordinator.canCreateCharacterHandler = canCreateCharacter
         context.coordinator.onCreateCharacter = onCreateCharacter
-        context.coordinator.resolveCharacterID = resolveCharacterID
+        context.coordinator.resolveCharacterReference = resolveCharacterReference
         context.coordinator.characterSuggestions = characterSuggestions
         bridge.coordinator = context.coordinator
         let initial = section.content
@@ -472,7 +521,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.onOpenCharacterReference = onOpenCharacterReference
         coord.canCreateCharacterHandler = canCreateCharacter
         coord.onCreateCharacter = onCreateCharacter
-        coord.resolveCharacterID = resolveCharacterID
+        coord.resolveCharacterReference = resolveCharacterReference
         coord.characterSuggestions = characterSuggestions
         coord.bridge = bridge
         bridge.coordinator = coord
@@ -549,7 +598,7 @@ struct RichEditorView: NSViewRepresentable {
         var onOpenCharacterReference: ((UUID) -> Bool)?
         var canCreateCharacterHandler: ((String) -> Bool)?
         var onCreateCharacter: ((String) -> Bool)?
-        var resolveCharacterID: ((String) -> UUID?)?
+        var resolveCharacterReference: ((String) -> CharacterReference?)?
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
@@ -664,16 +713,23 @@ struct RichEditorView: NSViewRepresentable {
             onCreateCharacter?(text) ?? false
         }
         func canLinkCharacter(named text: String) -> Bool {
-            resolveCharacterID?(text) != nil
+            resolveCharacterReference?(text) != nil
         }
         func linkSelectedCharacter() {
             guard let tv = textView, let storage = tv.textStorage else { return }
-            let range = tv.selectedRange()
-            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-            let text = (tv.string as NSString).substring(with: range)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let id = resolveCharacterID?(text) else { return }
-            storage.addAttribute(.link, value: CharacterReferenceLink.url(for: id), range: range)
+            let selectedRange = tv.selectedRange()
+            guard selectedRange.length > 0, NSMaxRange(selectedRange) <= storage.length else { return }
+            let fullText = tv.string as NSString
+            let selectedText = fullText.substring(with: selectedRange)
+            let trimmedText = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let reference = resolveCharacterReference?(trimmedText) else { return }
+            let relativeRange = (selectedText as NSString).range(of: trimmedText)
+            guard relativeRange.location != NSNotFound else { return }
+            let linkRange = NSRange(
+                location: selectedRange.location + relativeRange.location,
+                length: relativeRange.length
+            )
+            storage.addAttribute(.link, value: CharacterReferenceLink.url(for: reference), range: linkRange)
             tv.didChangeText()
         }
         func unlinkSelectedCharacter() {
@@ -730,7 +786,10 @@ struct RichEditorView: NSViewRepresentable {
                 }
                 let item = NSMenuItem(title: title, action: #selector(insertCharacterMention(_:)), keyEquivalent: "")
                 item.target = self
-                item.representedObject = "\(suggestion.id.uuidString)|\(suggestion.insertionName)"
+                item.representedObject = CharacterMentionPayload(
+                    reference: CharacterReference(characterID: suggestion.id, source: suggestion.source),
+                    insertionName: suggestion.insertionName
+                )
                 menu.addItem(item)
             }
 
@@ -740,16 +799,14 @@ struct RichEditorView: NSViewRepresentable {
         @objc private func insertCharacterMention(_ sender: NSMenuItem) {
             mentionMenuWorkItem?.cancel()
             guard let tv = textView,
-                  let payload = sender.representedObject as? String,
-                  let separator = payload.firstIndex(of: "|"),
-                  let id = UUID(uuidString: String(payload[..<separator])),
+                  let payload = sender.representedObject as? CharacterMentionPayload,
                   let storage = tv.textStorage else { return }
-            let insertionName = String(payload[payload.index(after: separator)...])
+            let insertionName = payload.insertionName
             guard let mentionRange = activeMentionRange,
                   NSMaxRange(mentionRange) <= storage.length else { return }
 
             var attributes = tv.typingAttributes
-            attributes[.link] = CharacterReferenceLink.url(for: id)
+            attributes[.link] = CharacterReferenceLink.url(for: payload.reference)
             storage.replaceCharacters(
                 in: mentionRange,
                 with: NSAttributedString(string: insertionName, attributes: attributes)

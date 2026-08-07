@@ -202,16 +202,79 @@ private enum CharacterReferenceSynchronizer {
         return changedSectionIDs
     }
 
-    static func updateLinkedNames(for character: Character, to newName: String, in book: Book, context: ModelContext) {
+    static func updateLinkedNames(
+        for character: Character,
+        from oldName: String,
+        to newName: String,
+        in book: Book,
+        context: ModelContext
+    ) {
+        let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard !old.isEmpty, !name.isEmpty else { return }
+        updateLinkedReferences(
+            for: character,
+            replacement: name,
+            in: book,
+            context: context
+        ) { reference, linkedText in
+            switch reference.source {
+            case .canonical:
+                return true
+            case .alias:
+                return false
+            case .legacy:
+                return linkedText.compare(old, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }
+        }
+    }
+
+    static func updateLinkedAlias(
+        _ alias: CharacterAlias,
+        from oldName: String,
+        to newName: String,
+        in book: Book,
+        context: ModelContext
+    ) {
+        guard let character = alias.character else { return }
+        let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !old.isEmpty, !name.isEmpty else { return }
+        updateLinkedReferences(
+            for: character,
+            replacement: name,
+            in: book,
+            context: context
+        ) { reference, linkedText in
+            switch reference.source {
+            case .alias(let aliasID):
+                return aliasID == alias.id
+            case .canonical:
+                return false
+            case .legacy:
+                return linkedText.compare(old, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }
+        }
+    }
+
+    private static func updateLinkedReferences(
+        for character: Character,
+        replacement: String,
+        in book: Book,
+        context: ModelContext,
+        shouldReplace: (CharacterReference, String) -> Bool
+    ) {
         var changedSectionIDs = Set<UUID>()
 
         for section in WritingReferenceScanner.allSections(in: book) {
             let attributed = NSMutableAttributedString(attributedString: NSAttributedString(section.content))
             var ranges: [NSRange] = []
             attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
-                guard let value, CharacterReferenceLink.characterID(from: value) == character.id else { return }
+                guard let value,
+                      let reference = CharacterReferenceLink.reference(from: value),
+                      reference.characterID == character.id else { return }
+                let linkedText = (attributed.string as NSString).substring(with: range)
+                guard shouldReplace(reference, linkedText) else { return }
                 ranges.append(range)
             }
             guard !ranges.isEmpty else { continue }
@@ -220,7 +283,7 @@ private enum CharacterReferenceSynchronizer {
                 let attributes = attributed.attributes(at: range.location, effectiveRange: nil)
                 attributed.replaceCharacters(
                     in: range,
-                    with: NSAttributedString(string: name, attributes: attributes)
+                    with: NSAttributedString(string: replacement, attributes: attributes)
                 )
             }
             section.content = AttributedString(attributed)
@@ -983,8 +1046,8 @@ struct CharacterDetailView: View {
                     }
 
                     detailSection("別名", systemImage: "person.badge.key", summary: compactSummary(aliases.map(\.name))) {
-                        CharacterAliasSectionView(character: character) { oldName, newName in
-                            commitNameChange(from: oldName, to: newName, sourceLabel: "別名", updatesLinkedReferences: false)
+                        CharacterAliasSectionView(character: character) { alias, oldName, newName in
+                            commitAliasNameChange(alias, from: oldName, to: newName)
                         }
                     }
 
@@ -1085,13 +1148,40 @@ struct CharacterDetailView: View {
         let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard old != new, !old.isEmpty, !new.isEmpty else { return }
+        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
         if updatesLinkedReferences {
-            CharacterReferenceSynchronizer.updateLinkedNames(for: character, to: new, in: book, context: modelContext)
+            CharacterReferenceSynchronizer.updateLinkedNames(
+                for: character,
+                from: old,
+                to: new,
+                in: book,
+                context: modelContext
+            )
         }
         unlinkedCandidates += CharacterReferenceSynchronizer.unlinkedCandidates(
             from: old,
             to: new,
             sourceLabel: sourceLabel,
+            in: book
+        )
+    }
+
+    private func commitAliasNameChange(_ alias: CharacterAlias, from oldName: String, to newName: String) {
+        let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard old != new, !old.isEmpty, !new.isEmpty else { return }
+        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        CharacterReferenceSynchronizer.updateLinkedAlias(
+            alias,
+            from: old,
+            to: new,
+            in: book,
+            context: modelContext
+        )
+        unlinkedCandidates += CharacterReferenceSynchronizer.unlinkedCandidates(
+            from: old,
+            to: new,
+            sourceLabel: "別名",
             in: book
         )
     }
