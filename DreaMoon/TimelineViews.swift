@@ -163,8 +163,11 @@ struct TimelinePanelView: View {
         self.book = book
         let bookID = book.id
         _allTimelines = Query(filter: #Predicate<Timeline> { $0.book?.id == bookID })
-        _allNodes = Query(filter: #Predicate<Node> { $0.timeline?.book?.id == bookID })
-        _allEvents = Query(filter: #Predicate<Event> { $0.node?.timeline?.book?.id == bookID })
+        // SwiftData cannot translate nested optional relationship paths such as
+        // `timeline?.book?.id` into a persistent-store predicate. Nodes and
+        // events are scoped in memory below by their selected timeline/node.
+        _allNodes = Query()
+        _allEvents = Query()
         _allCharacters = Query(filter: #Predicate<Character> { $0.book?.id == bookID })
     }
 
