@@ -143,13 +143,21 @@ struct TimelinePanelView: View {
     @State private var newNodeEraID: UUID? = nil
     @State private var showingEraManager = false
 
+    init(book: Book) {
+        self.book = book
+        let bookID = book.id
+        _allTimelines = Query(filter: #Predicate<Timeline> { $0.book?.id == bookID })
+        _allNodes = Query(filter: #Predicate<Node> { $0.timeline?.book?.id == bookID })
+        _allEvents = Query(filter: #Predicate<Event> { $0.node?.timeline?.book?.id == bookID })
+        _allCharacters = Query(filter: #Predicate<Character> { $0.book?.id == bookID })
+    }
+
     private var sortedCharacters: [Character] {
         allCharacters.sorted { dreaMoonDisplayName($0) < dreaMoonDisplayName($1) }
     }
 
     private var bookTimelines: [Timeline] {
         allTimelines
-            .filter { $0.book?.id == book.id }
             .sorted { lhs, rhs in
                 if lhs.isPrimary != rhs.isPrimary { return lhs.isPrimary }
                 return lhs.sortOrder < rhs.sortOrder

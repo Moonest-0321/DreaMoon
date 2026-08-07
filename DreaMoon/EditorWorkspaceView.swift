@@ -42,17 +42,16 @@ struct EditorWorkspaceView: View {
     @State private var showingShortcutHelp = false
     @State private var keyboardMonitor = EditorKeyboardMonitor()
 
-    private var orderedSections: [Section] {
-        book.volumes.sorted { $0.sortOrder < $1.sortOrder }
-            .flatMap { $0.sections.sorted { $0.sortOrder < $1.sortOrder } }
-    }
-    private var previousSection: Section? {
-        guard let selectedSection, let index = orderedSections.firstIndex(where: { $0.id == selectedSection.id }), index > 0 else { return nil }
-        return orderedSections[index - 1]
-    }
-    private var nextSection: Section? {
-        guard let selectedSection, let index = orderedSections.firstIndex(where: { $0.id == selectedSection.id }), index + 1 < orderedSections.count else { return nil }
-        return orderedSections[index + 1]
+    private var neighboringSections: (previous: Section?, next: Section?) {
+        let sections = BookStructure.orderedSections(in: book)
+        guard let selectedSection,
+              let index = sections.firstIndex(where: { $0.id == selectedSection.id }) else {
+            return (nil, nil)
+        }
+        return (
+            index > 0 ? sections[index - 1] : nil,
+            index + 1 < sections.count ? sections[index + 1] : nil
+        )
     }
 
     init(book: Book, initialSection: Section) {
@@ -61,6 +60,7 @@ struct EditorWorkspaceView: View {
     }
 
     var body: some View {
+        let neighbors = neighboringSections
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
@@ -75,19 +75,19 @@ struct EditorWorkspaceView: View {
                             .help("開啟指令面板 (⌘K)")
                             .keyboardShortcut("k", modifiers: .command)
                         Button {
-                            guard previousSection != nil else { return }
+                            guard let previous = neighbors.previous else { return }
                             bridge.flushPendingSave()
-                            selectedSection = previousSection
+                            selectedSection = previous
                         } label: { Label("上一節", systemImage: "chevron.left") }
-                            .disabled(previousSection == nil)
-                            .help(previousSection == nil ? "已是第一節" : "上一節")
+                            .disabled(neighbors.previous == nil)
+                            .help(neighbors.previous == nil ? "已是第一節" : "上一節")
                         Button {
-                            guard nextSection != nil else { return }
+                            guard let next = neighbors.next else { return }
                             bridge.flushPendingSave()
-                            selectedSection = nextSection
+                            selectedSection = next
                         } label: { Label("下一節", systemImage: "chevron.right") }
-                            .disabled(nextSection == nil)
-                            .help(nextSection == nil ? "已是最後一節" : "下一節")
+                            .disabled(neighbors.next == nil)
+                            .help(neighbors.next == nil ? "已是最後一節" : "下一節")
                         Menu {
                             Button { showingCommandPalette = true } label: { Label("指令面板", systemImage: "command") }
                             Button { showingShortcutHelp = true } label: { Label("快捷鍵說明", systemImage: "keyboard") }
@@ -128,14 +128,10 @@ struct EditorWorkspaceView: View {
             ShortcutHelpView()
         }
         .onReceive(NotificationCenter.default.publisher(for: .dreaMoonPreviousSection)) { _ in
-            guard previousSection != nil else { return }
-            bridge.flushPendingSave()
-            selectedSection = previousSection
+            navigate(to: neighboringSections.previous)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dreaMoonNextSection)) { _ in
-            guard nextSection != nil else { return }
-            bridge.flushPendingSave()
-            selectedSection = nextSection
+            navigate(to: neighboringSections.next)
         }
         .onAppear { keyboardMonitor.start() }
         .onDisappear { keyboardMonitor.stop() }
@@ -150,16 +146,18 @@ struct EditorWorkspaceView: View {
         case .toggleOutline: toggleSidebar()
         case .toggleInspector: showInspector.toggle()
         case .previousSection:
-            guard previousSection != nil else { return }
-            bridge.flushPendingSave()
-            selectedSection = previousSection
+            navigate(to: neighboringSections.previous)
         case .nextSection:
-            guard nextSection != nil else { return }
-            bridge.flushPendingSave()
-            selectedSection = nextSection
+            navigate(to: neighboringSections.next)
         case .toggleSceneHeading: bridge.requestToggleHeading()
         case .showShortcuts: showingShortcutHelp = true
         }
+    }
+
+    private func navigate(to section: Section?) {
+        guard let section else { return }
+        bridge.flushPendingSave()
+        selectedSection = section
     }
 }
 

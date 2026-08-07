@@ -28,19 +28,22 @@ struct ContentView: View {
         GridItem(.adaptive(minimum: 180), spacing: 24)
     ]
 
-    private var totalWordCount: Int {
-        books.reduce(0) { partialResult, book in
-            partialResult + book.volumes.reduce(0) { volumeResult, volume in
-                volumeResult + volume.sections.reduce(0) { $0 + $1.wordCount }
-            }
+    private var libraryMetrics: (wordCount: Int, sectionCount: Int, byBookID: [UUID: BookStructure.Metrics]) {
+        var wordCount = 0
+        var sectionCount = 0
+        var byBookID: [UUID: BookStructure.Metrics] = [:]
+        byBookID.reserveCapacity(books.count)
+        for book in books {
+            let metrics = BookStructure.metrics(for: book)
+            byBookID[book.id] = metrics
+            wordCount += metrics.wordCount
+            sectionCount += metrics.sectionCount
         }
-    }
-
-    private var totalSectionCount: Int {
-        books.reduce(0) { $0 + $1.volumes.reduce(0) { $0 + $1.sections.count } }
+        return (wordCount, sectionCount, byBookID)
     }
 
     var body: some View {
+        let metrics = libraryMetrics
         NavigationStack(path: $navigationPath) {
             Group {
                 if searchText.isEmpty {
@@ -49,8 +52,8 @@ struct ContentView: View {
                             AuthorShelfCard(
                                 profile: profiles.first,
                                 bookCount: books.count,
-                                wordCount: totalWordCount,
-                                sectionCount: totalSectionCount,
+                                wordCount: metrics.wordCount,
+                                sectionCount: metrics.sectionCount,
                                 onEdit: { showingAuthorSettings = true }
                             )
 
@@ -69,7 +72,7 @@ struct ContentView: View {
                                 LazyVGrid(columns: columns, spacing: 24) {
                                     ForEach(books) { book in
                                         NavigationLink(value: BookRoute(id: book.id, opensEditor: false)) {
-                                            BookCardView(book: book)
+                                            BookCardView(book: book, wordCount: metrics.byBookID[book.id]?.wordCount ?? 0)
                                         }
                                         .buttonStyle(.plain)
                                         .contextMenu {
@@ -94,7 +97,7 @@ struct ContentView: View {
                             LazyVGrid(columns: columns, spacing: 24) {
                                 ForEach(filteredBooks) { book in
                                     NavigationLink(value: BookRoute(id: book.id, opensEditor: false)) {
-                                        BookCardView(book: book)
+                                        BookCardView(book: book, wordCount: metrics.byBookID[book.id]?.wordCount ?? 0)
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
@@ -202,10 +205,7 @@ private struct BookRouteDestination: View {
     @ViewBuilder
     private func destination(for book: Book) -> some View {
         if route.opensEditor,
-           let section = book.volumes
-            .sorted(by: { $0.sortOrder < $1.sortOrder })
-            .flatMap({ $0.sections.sorted(by: { $0.sortOrder < $1.sortOrder }) })
-            .first {
+           let section = BookStructure.orderedSections(in: book).first {
             EditorWorkspaceView(book: book, initialSection: section)
         } else {
             BookOverviewView(book: book)
@@ -314,6 +314,7 @@ private struct StatisticLabel: View {
 // MARK: - 書籍卡片視圖
 struct BookCardView: View {
     let book: Book
+    let wordCount: Int
 
     var body: some View {
         VStack(spacing: 0) {
@@ -332,7 +333,7 @@ struct BookCardView: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 HStack {
-                    Label("\(calculateTotalWords()) 字", systemImage: "character.textbox")
+                    Label("\(wordCount) 字", systemImage: "character.textbox")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -356,16 +357,6 @@ struct BookCardView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
-    }
-
-    private func calculateTotalWords() -> Int {
-        var total = 0
-        for volume in book.volumes {
-            for section in volume.sections {
-                total += section.wordCount
-            }
-        }
-        return total
     }
 
 }

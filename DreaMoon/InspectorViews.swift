@@ -596,6 +596,8 @@ struct CharacterDetailView: View {
             TextField("角色真名", text: $character.realName)
                 .textFieldStyle(.plain)
                 .font(.title2.weight(.semibold))
+                .frame(minHeight: 32, alignment: .center)
+                .padding(.vertical, 2)
             TextField("角色定位，例如：男主角", text: roleBinding)
                 .textFieldStyle(.plain)
                 .font(.subheadline)

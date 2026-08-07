@@ -159,13 +159,21 @@ struct BookOverviewView: View {
     var body: some View {
         HSplitView {
             BookInfoPanel(book: book).frame(minWidth: 300, idealWidth: 350, maxWidth: 450)
-            VolumeSectionTreeView(book: book, onSelectSection: { section in sectionToOpen = section })
+            VolumeSectionTreeView(book: book, onSelectSection: openEditor)
                 .frame(minWidth: 300, idealWidth: 400)
         }
         .navigationTitle(book.title)
         .navigationSubtitle("書籍總覽")
         .navigationDestination(item: $sectionToOpen) { section in
             EditorWorkspaceView(book: book, initialSection: section)
+        }
+    }
+
+    private func openEditor(_ section: Section) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            sectionToOpen = section
         }
     }
 }
