@@ -54,12 +54,14 @@ enum InspectorRoute: Hashable {
     case list
     case detail(Character)
     case graph(Character)
+    case itemDetail(Item, Character)
 
     func hash(into hasher: inout Hasher) {
         switch self {
         case .list: hasher.combine(0)
         case .detail(let c): hasher.combine(1); hasher.combine(c.id)
         case .graph(let c): hasher.combine(2); hasher.combine(c.id)
+        case .itemDetail(let item, let source): hasher.combine(3); hasher.combine(item.id); hasher.combine(source.id)
         }
     }
 
@@ -68,6 +70,8 @@ enum InspectorRoute: Hashable {
         case (.list, .list): return true
         case (.detail(let a), .detail(let b)): return a.id == b.id
         case (.graph(let a), .graph(let b)): return a.id == b.id
+        case (.itemDetail(let a, let sourceA), .itemDetail(let b, let sourceB)):
+            return a.id == b.id && sourceA.id == sourceB.id
         default: return false
         }
     }
@@ -103,16 +107,18 @@ struct InspectorRootView: View {
             if let currentSection {
                 WritingReferenceSummaryView(book: book, section: currentSection)
             }
-            Picker("設定種類", selection: $selectedTab) {
-                Text("角色").tag(InspectorTab.character)
-                Text("能力").tag(InspectorTab.ability)
-                Text("物品").tag(InspectorTab.item)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            if route == .list {
+                Picker("設定種類", selection: $selectedTab) {
+                    Text("角色").tag(InspectorTab.character)
+                    Text("能力").tag(InspectorTab.ability)
+                    Text("物品").tag(InspectorTab.item)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
-            Divider()
+                Divider()
+            }
 
             switch route {
             case .list:
@@ -135,6 +141,7 @@ struct InspectorRootView: View {
                     book: book,
                     onBack: { route = .list },
                     onShowGraph: { route = .graph(character) },
+                    onOpenItem: { route = .itemDetail($0, character) },
                     onSelectSection: onSelectSection
                 )
             case .graph(let character):
@@ -143,6 +150,13 @@ struct InspectorRootView: View {
                     book: book,
                     onBack: { route = .detail(character) },
                     onSelectCharacter: { route = .graph($0) }
+                )
+            case .itemDetail(let item, let sourceCharacter):
+                ItemDetailView(
+                    item: item,
+                    book: book,
+                    onBack: { route = .detail(sourceCharacter) },
+                    onSelectSection: onSelectSection
                 )
             }
         }
@@ -276,6 +290,86 @@ private struct ItemReferenceRow: View {
         guard let volume = section.volume else { return 1 }
         return volume.sections.sorted { $0.sortOrder < $1.sortOrder }
             .firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1
+    }
+}
+
+private struct ItemDetailView: View {
+    @Bindable var item: Item
+    let book: Book
+    let onBack: () -> Void
+    let onSelectSection: ((Section) -> Void)?
+
+    private var referencedSections: [Section] {
+        WritingReferenceScanner.sections(for: item, in: book)
+    }
+    private var linkedCharacters: [Character] {
+        item.characterItems.compactMap(\.character)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: onBack) {
+                    Label("返回角色", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("物品設定", systemImage: "shippingbox")
+                        .font(.headline)
+
+                    TextField("物品名稱", text: $item.name)
+                        .textFieldStyle(.roundedBorder)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("描述")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        InsetTextEditor(text: $item.itemDescription, minHeight: 120)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("關聯角色")
+                            .font(.caption.weight(.semibold))
+                        Text(linkedCharacters.isEmpty
+                             ? "尚未由任何角色持有"
+                             : linkedCharacters.map { $0.realName.isEmpty ? "未命名角色" : $0.realName }.joined(separator: "、"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("正文引用")
+                            .font(.caption.weight(.semibold))
+                        if referencedSections.isEmpty {
+                            Text("尚未在正文中出現")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(referencedSections) { section in
+                                Button(section.title.isEmpty ? "未命名節" : section.title) {
+                                    onSelectSection?(section)
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+            }
+        }
+        .onChange(of: item.name) { item.updatedAt = Date() }
+        .onChange(of: item.itemDescription) { item.updatedAt = Date() }
     }
 }
 
@@ -524,13 +618,31 @@ struct CharacterDetailView: View {
     let book: Book
     let onBack: () -> Void
     let onShowGraph: () -> Void
+    let onOpenItem: (Item) -> Void
     let onSelectSection: ((Section) -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Query private var allProfiles: [CharacterProfile]
+    @Query private var allAliases: [CharacterAlias]
+    @Query private var allMemberships: [CharacterOrganization]
+    @Query private var allAbilities: [CharacterAbility]
+    @Query private var allAppearances: [CharacterAppearance]
+    @Query private var allPsychologies: [CharacterPsychology]
+    @Query private var allCharacterItems: [CharacterItem]
+    @Query private var allRelationships: [CharacterRelationship]
+    @Query private var allEvents: [Event]
 
     private var profile: CharacterProfile? {
         allProfiles.first { $0.character?.id == character.id }
     }
+
+    private var aliases: [CharacterAlias] { allAliases.filter { $0.character?.id == character.id } }
+    private var memberships: [CharacterOrganization] { allMemberships.filter { $0.character?.id == character.id } }
+    private var abilities: [CharacterAbility] { allAbilities.filter { $0.character?.id == character.id } }
+    private var appearances: [CharacterAppearance] { allAppearances.filter { $0.character?.id == character.id } }
+    private var psychologies: [CharacterPsychology] { allPsychologies.filter { $0.character?.id == character.id } }
+    private var characterItems: [CharacterItem] { allCharacterItems.filter { $0.character?.id == character.id } }
+    private var relationships: [CharacterRelationship] { allRelationships.filter { $0.sourceCharacter?.id == character.id } }
+    private var events: [Event] { allEvents.filter { $0.characters.contains { $0.id == character.id } } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -546,16 +658,16 @@ struct CharacterDetailView: View {
             .background(Color(nsColor: .controlBackgroundColor))
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
                     characterHeader
 
                     CharacterReferenceSectionsView(character: character, book: book, onSelectSection: onSelectSection)
 
-                    detailSection("摘要", systemImage: "text.quote") {
+                    detailSection("摘要", systemImage: "text.quote", summary: "角色重點") {
                         CharacterSummarySectionView(character: character)
                     }
 
-                    detailSection("基本資訊", systemImage: "person.text.rectangle") {
+                    detailSection("基本資訊", systemImage: "person.text.rectangle", summary: basicInfoSummary) {
                         labeledField("UID") {
                             Text(String(format: "%06d", character.sortOrder + 1))
                                 .foregroundStyle(.secondary)
@@ -598,31 +710,31 @@ struct CharacterDetailView: View {
                         textEditorField("私人備註 / 非血緣關係", text: $character.notes)
                     }
 
-                    detailSection("別名", systemImage: "person.badge.key") {
+                    detailSection("別名", systemImage: "person.badge.key", summary: compactSummary(aliases.map(\.name))) {
                         CharacterAliasSectionView(character: character)
                     }
 
-                    detailSection("組織", systemImage: "building.2") {
+                    detailSection("組織", systemImage: "building.2", summary: compactSummary(memberships.compactMap { $0.organization?.name })) {
                         CharacterOrganizationSectionView(character: character, book: book)
                     }
 
-                    detailSection("能力", systemImage: "sparkles") {
+                    detailSection("能力", systemImage: "sparkles", summary: compactSummary(abilities.map(\.name))) {
                         CharacterAbilitySectionView(character: character, book: book)
                     }
 
-                    detailSection("外觀", systemImage: "person.crop.rectangle") {
+                    detailSection("外觀", systemImage: "person.crop.rectangle", summary: countSummary(appearances.count)) {
                         CharacterAppearanceSectionView(character: character, book: book)
                     }
 
-                    detailSection("心理", systemImage: "brain.head.profile") {
+                    detailSection("心理", systemImage: "brain.head.profile", summary: countSummary(psychologies.count)) {
                         CharacterPsychologySectionView(character: character, book: book)
                     }
 
-                    detailSection("物品", systemImage: "shippingbox") {
-                        CharacterItemSectionView(character: character, book: book)
+                    detailSection("物品", systemImage: "shippingbox", summary: compactSummary(characterItems.compactMap { $0.item?.name })) {
+                        CharacterItemSectionView(character: character, book: book, onOpenItem: onOpenItem)
                     }
 
-                    detailSection("關係", systemImage: "point.3.connected.trianglepath.dotted") {
+                    detailSection("關係", systemImage: "point.3.connected.trianglepath.dotted", summary: compactSummary(relationships.compactMap { $0.targetCharacter?.realName })) {
                         Button(action: onShowGraph) {
                             Label("開啟關係網", systemImage: "point.3.connected.trianglepath.dotted")
                                 .frame(maxWidth: .infinity)
@@ -630,11 +742,11 @@ struct CharacterDetailView: View {
                         .buttonStyle(.bordered)
                     }
 
-                    detailSection("事件", systemImage: "calendar.badge.clock") {
+                    detailSection("事件", systemImage: "calendar.badge.clock", summary: compactSummary(events.map(\.title))) {
                         CharacterEventSectionView(character: character, book: book)
                     }
                 }
-                .padding(20)
+                .padding(12)
             }
         }
     }
@@ -671,9 +783,25 @@ struct CharacterDetailView: View {
     }
 
     @ViewBuilder
-    private func detailSection<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: @escaping () -> Content) -> some View {
-        CollapsibleDetailSection(title: title, systemImage: systemImage, characterID: character.id, content: content)
+    private func detailSection<Content: View>(_ title: String, systemImage: String, summary: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        CollapsibleDetailSection(title: title, systemImage: systemImage, summary: summary, characterID: character.id, content: content)
     }
+
+    private var basicInfoSummary: String {
+        let values = [character.gender, character.birthYear, character.originBackground]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return values.isEmpty ? "尚未填寫" : values.prefix(2).joined(separator: "・")
+    }
+
+    private func compactSummary(_ values: [String]) -> String {
+        let names = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !names.isEmpty else { return "尚無" }
+        let visible = names.prefix(2).joined(separator: "、")
+        return names.count > 2 ? "\(visible) 等 \(names.count) 項" : visible
+    }
+
+    private func countSummary(_ count: Int) -> String { count == 0 ? "尚無" : "\(count) 項" }
 
     private func emptyState(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -735,6 +863,8 @@ private struct CharacterReferenceSectionsView: View {
                 Spacer()
                 Button { isCollapsed.toggle() } label: {
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(isCollapsed ? "展開正文引用" : "收合正文引用")
@@ -775,12 +905,14 @@ private struct CharacterReferenceSectionsView: View {
 private struct CollapsibleDetailSection<Content: View>: View {
     let title: String
     let systemImage: String
+    let summary: String
     @ViewBuilder let content: () -> Content
     @AppStorage private var isCollapsed: Bool
 
-    init(title: String, systemImage: String, characterID: UUID, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String, systemImage: String, summary: String, characterID: UUID, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.systemImage = systemImage
+        self.summary = summary
         self.content = content
         _isCollapsed = AppStorage(
             wrappedValue: false,
@@ -789,13 +921,22 @@ private struct CollapsibleDetailSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label(title, systemImage: systemImage)
                     .font(.headline)
                 Spacer()
+                if isCollapsed {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Button { isCollapsed.toggle() } label: {
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(isCollapsed ? "展開\(title)" : "收合\(title)")
@@ -805,7 +946,7 @@ private struct CollapsibleDetailSection<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))

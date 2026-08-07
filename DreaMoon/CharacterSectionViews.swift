@@ -447,6 +447,7 @@ private struct PsychologyRow: View {
 struct CharacterItemSectionView: View {
     let character: Character
     let book: Book
+    var onOpenItem: ((Item) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @Query private var allCharacterItems: [CharacterItem]
     @Query(sort: \Item.name) private var allItems: [Item]
@@ -461,7 +462,14 @@ struct CharacterItemSectionView: View {
             if characterItems.isEmpty {
                 CharacterSectionEmptyState(title: "尚無持有物品", detail: "可管理物品描述、數量與歷史。")
             } else {
-                ForEach(characterItems) { characterItem in ItemRow(characterItem: characterItem, book: book, onDelete: { modelContext.delete(characterItem) }) }
+                ForEach(characterItems) { characterItem in
+                    ItemRow(
+                        characterItem: characterItem,
+                        book: book,
+                        onOpenItem: onOpenItem,
+                        onDelete: { modelContext.delete(characterItem) }
+                    )
+                }
             }
             HStack(spacing: 12) {
                 Button("新增物品", systemImage: "plus", action: addNewItem)
@@ -497,6 +505,7 @@ struct CharacterItemSectionView: View {
 private struct ItemRow: View {
     @Bindable var characterItem: CharacterItem
     let book: Book
+    let onOpenItem: ((Item) -> Void)?
     let onDelete: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -504,6 +513,16 @@ private struct ItemRow: View {
                 if let item = characterItem.item {
                     @Bindable var item = item
                     TextField("物品名稱", text: $item.name).textFieldStyle(.roundedBorder)
+                    if let onOpenItem {
+                        Button { onOpenItem(item) } label: {
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("前往物品設定")
+                    }
                 }
                 Stepper("數量 \(characterItem.quantity)", value: $characterItem.quantity, in: 0...9999).frame(width: 130)
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
