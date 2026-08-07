@@ -89,7 +89,7 @@ struct RelationshipListView: View {
     var body: some View {
         Group {
             if visibleGroups.isEmpty {
-                ContentUnavailableView("尚未建立人物關係", systemImage: "point.3.connected.trianglepath.dotted")
+                ContentUnavailableView("尚未建立角色關係", systemImage: "point.3.connected.trianglepath.dotted")
             } else {
                 List(visibleGroups) { group in
                     Button { selectedGroup = group } label: {

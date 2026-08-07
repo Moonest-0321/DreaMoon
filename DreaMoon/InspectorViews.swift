@@ -13,7 +13,30 @@ struct WritingReferenceScanner {
     }
 
     static func sections(for character: Character, in book: Book) -> [Section] {
-        allSections(in: book).filter { contains(character.realName, in: $0) }
+        sections(for: character, aliases: [], in: book)
+    }
+
+    static func sections(for character: Character, aliases: [CharacterAlias], in book: Book) -> [Section] {
+        let names = characterNames(for: character, aliases: aliases)
+        return allSections(in: book).filter { section in
+            names.contains { contains($0, in: section) }
+        }
+    }
+
+    static func contains(_ character: Character, aliases: [CharacterAlias], in section: Section) -> Bool {
+        !matchingNames(for: character, aliases: aliases, in: section).isEmpty
+    }
+
+    static func matchingNames(for character: Character, aliases: [CharacterAlias], in section: Section) -> [String] {
+        characterNames(for: character, aliases: aliases).filter { contains($0, in: section) }
+    }
+
+    static func characterNames(for character: Character, aliases: [CharacterAlias]) -> [String] {
+        ([character.realName] + aliases
+            .filter { $0.character?.id == character.id }
+            .map(\.name))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     static func sections(for item: Item, in book: Book) -> [Section] {
@@ -51,7 +74,7 @@ enum InspectorRoute: Hashable {
 }
 
 enum InspectorTab: String, CaseIterable, Identifiable {
-    case character = "人物"
+    case character = "角色"
     case ability = "能力"
     case item = "物品"
     var id: String { rawValue }
@@ -77,7 +100,7 @@ struct InspectorRootView: View {
                 WritingReferenceSummaryView(book: book, section: currentSection)
             }
             Picker("設定種類", selection: $selectedTab) {
-                Text("人物").tag(InspectorTab.character)
+                Text("角色").tag(InspectorTab.character)
                 Text("能力").tag(InspectorTab.ability)
                 Text("物品").tag(InspectorTab.item)
             }
@@ -224,7 +247,7 @@ private struct ItemReferenceRow: View {
             if !item.characterItems.isEmpty {
                 let linkedNames = item.characterItems.compactMap { $0.character?.realName.isEmpty == false ? $0.character?.realName : nil }
                 if !linkedNames.isEmpty {
-                    Text("關聯人物：" + linkedNames.joined(separator: "、"))
+                    Text("關聯角色：" + linkedNames.joined(separator: "、"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -247,12 +270,21 @@ private struct WritingReferenceSummaryView: View {
     let book: Book
     let section: Section
     @Query private var allItems: [Item]
+    @Query private var allAliases: [CharacterAlias]
 
     private var referencedItems: [Item] {
         allItems.filter { $0.book?.id == book.id && WritingReferenceScanner.contains($0.name, in: section) }
     }
     private var referencedCharacters: [Character] {
-        book.characters.filter { WritingReferenceScanner.contains($0.realName, in: section) }
+        book.characters.filter { WritingReferenceScanner.contains($0, aliases: allAliases, in: section) }
+    }
+    private var referencedCharacterLabels: [String] {
+        referencedCharacters.map { character in
+            let matchedAliases = WritingReferenceScanner.matchingNames(for: character, aliases: allAliases, in: section)
+                .filter { $0.compare(character.realName, options: [.caseInsensitive, .diacriticInsensitive]) != .orderedSame }
+            let name = character.realName.isEmpty ? "未命名角色" : character.realName
+            return matchedAliases.isEmpty ? name : "\(name)（別名：\(matchedAliases.joined(separator: "、"))）"
+        }
     }
 
     var body: some View {
@@ -261,7 +293,7 @@ private struct WritingReferenceSummaryView: View {
                 Label("本節引用", systemImage: "link")
                     .font(.caption.weight(.semibold))
                 Spacer()
-                Text("人物 \(referencedCharacters.count) · 物品 \(referencedItems.count)")
+                Text("角色 \(referencedCharacters.count) · 物品 \(referencedItems.count)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -270,7 +302,7 @@ private struct WritingReferenceSummaryView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text((referencedCharacters.map { $0.realName } + referencedItems.map { $0.name })
+                Text((referencedCharacterLabels + referencedItems.map { $0.name })
                     .filter { !$0.isEmpty }
                     .joined(separator: "、"))
                     .font(.caption2)
@@ -304,7 +336,7 @@ private struct AbilityListContainerView: View {
                         .foregroundStyle(.secondary)
                     Text("尚無能力資料")
                         .font(.headline)
-                    Text(characters.isEmpty ? "先新增人物，再從人物詳細資料建立能力。" : "可從人物詳細資料建立第一項能力。")
+                    Text(characters.isEmpty ? "先新增角色，再從角色詳細資料建立能力。" : "可從角色詳細資料建立第一項能力。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -378,10 +410,11 @@ struct CharacterListView: View {
     let onDelete: (Character) -> Void
     @State private var searchText = ""
     @State private var showCurrentSectionOnly = false
+    @Query private var allAliases: [CharacterAlias]
 
     private var filteredCharacters: [Character] {
         let source = showCurrentSectionOnly && currentSection != nil
-            ? characters.filter { WritingReferenceScanner.contains($0.realName, in: currentSection!) }
+            ? characters.filter { WritingReferenceScanner.contains($0, aliases: allAliases, in: currentSection!) }
             : characters
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
@@ -396,7 +429,7 @@ struct CharacterListView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜尋人物", text: $searchText)
+                TextField("搜尋角色", text: $searchText)
                     .textFieldStyle(.plain)
                 if !searchText.isEmpty {
                     Button { searchText = "" } label: {
@@ -413,7 +446,7 @@ struct CharacterListView: View {
             .padding(.bottom, 10)
 
             if currentSection != nil {
-                Toggle("只顯示本節相關人物", isOn: $showCurrentSectionOnly)
+                Toggle("只顯示本節相關角色", isOn: $showCurrentSectionOnly)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
@@ -422,7 +455,7 @@ struct CharacterListView: View {
 
             List {
                 if filteredCharacters.isEmpty {
-                    ContentUnavailableView("找不到人物", systemImage: "person.crop.circle.badge.questionmark")
+                    ContentUnavailableView("找不到角色", systemImage: "person.crop.circle.badge.questionmark")
                 } else {
                     ForEach(filteredCharacters) { character in
                     CharacterRow(character: character)
@@ -549,8 +582,11 @@ struct CharacterDetailView: View {
                             get: { character.originStory ?? "" },
                             set: { character.originStory = $0 }
                         ), minHeight: 90)
-                        CharacterAliasSectionView(character: character)
                         textEditorField("私人備註 / 非血緣關係", text: $character.notes)
+                    }
+
+                    detailSection("別名", systemImage: "person.badge.key") {
+                        CharacterAliasSectionView(character: character)
                     }
 
                     detailSection("組織", systemImage: "building.2") {
@@ -622,17 +658,8 @@ struct CharacterDetailView: View {
     }
 
     @ViewBuilder
-    private func detailSection<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+    private func detailSection<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        CollapsibleDetailSection(title: title, systemImage: systemImage, characterID: character.id, content: content)
     }
 
     private func emptyState(_ title: String, detail: String) -> some View {
@@ -676,17 +703,34 @@ private struct CharacterReferenceSectionsView: View {
     let character: Character
     let book: Book
     let onSelectSection: ((Section) -> Void)?
+    @Query private var allAliases: [CharacterAlias]
+    @AppStorage private var isCollapsed: Bool
+
+    init(character: Character, book: Book, onSelectSection: ((Section) -> Void)?) {
+        self.character = character
+        self.book = book
+        self.onSelectSection = onSelectSection
+        _isCollapsed = AppStorage(wrappedValue: false, "dreaMoon.characterDetail.\(character.id.uuidString).正文引用.collapsed")
+    }
 
     var body: some View {
-        let sections = WritingReferenceScanner.sections(for: character, in: book)
+        let sections = WritingReferenceScanner.sections(for: character, aliases: allAliases, in: book)
         VStack(alignment: .leading, spacing: 8) {
-            Label("正文引用", systemImage: "link")
-                .font(.headline)
-            if sections.isEmpty {
-                Text("尚未在正文中找到此人物名稱")
+            HStack {
+                Label("正文引用", systemImage: "link")
+                    .font(.headline)
+                Spacer()
+                Button { isCollapsed.toggle() } label: {
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "展開正文引用" : "收合正文引用")
+            }
+            if !isCollapsed && sections.isEmpty {
+                Text("尚未在正文中找到此角色名稱")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
+            } else if !isCollapsed {
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(sections) { section in
@@ -712,6 +756,46 @@ private struct CharacterReferenceSectionsView: View {
         guard let volume = section.volume else { return 1 }
         return volume.sections.sorted { $0.sortOrder < $1.sortOrder }
             .firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1
+    }
+}
+
+private struct CollapsibleDetailSection<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: () -> Content
+    @AppStorage private var isCollapsed: Bool
+
+    init(title: String, systemImage: String, characterID: UUID, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content
+        _isCollapsed = AppStorage(
+            wrappedValue: false,
+            "dreaMoon.characterDetail.\(characterID.uuidString).\(title).collapsed"
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(title, systemImage: systemImage)
+                    .font(.headline)
+                Spacer()
+                Button { isCollapsed.toggle() } label: {
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "展開\(title)" : "收合\(title)")
+            }
+            if !isCollapsed {
+                content()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
     }
 }
 

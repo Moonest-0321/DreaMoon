@@ -211,6 +211,7 @@ struct RichEditorView: NSViewRepresentable {
     var onSaveStateChange: ((EditorSaveState) -> Void)? = nil
     var onEditorFocus: (() -> Void)? = nil
     var onLoadingChange: ((Bool) -> Void)? = nil
+    var onSelectionTextChange: ((String) -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -224,6 +225,7 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onSaveStateChange = onSaveStateChange
         context.coordinator.onEditorFocus = onEditorFocus
         context.coordinator.onLoadingChange = onLoadingChange
+        context.coordinator.onSelectionTextChange = onSelectionTextChange
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -273,6 +275,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.onSaveStateChange = onSaveStateChange
         coord.onEditorFocus = onEditorFocus
         coord.onLoadingChange = onLoadingChange
+        coord.onSelectionTextChange = onSelectionTextChange
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -336,6 +339,7 @@ struct RichEditorView: NSViewRepresentable {
         var onSaveStateChange: ((EditorSaveState) -> Void)?
         var onEditorFocus: (() -> Void)?
         var onLoadingChange: ((Bool) -> Void)?
+        var onSelectionTextChange: ((String) -> Void)?
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
@@ -421,6 +425,15 @@ struct RichEditorView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             syncTypingAttributesToCursor()
             reportHeadingState()
+            guard let tv = notification.object as? NSTextView else { return }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= tv.string.utf16.count else {
+                onSelectionTextChange?("")
+                return
+            }
+            let text = (tv.string as NSString).substring(with: range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            onSelectionTextChange?(text)
         }
         func handleEnter() {
             if bridge?.isSearchMode == true {

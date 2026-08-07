@@ -680,9 +680,27 @@ struct EditorCenterView: View {
     @State private var cursorIsHeading: Bool = false
     @State private var saveState: EditorSaveState = .saved
     @State private var isContentLoading = false
+    @State private var selectedText = ""
+    @State private var characterToInspect: Character?
     @AppStorage("dreaMoon.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
+    @AppStorage("dreaMoon.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
     @State private var showingInlineAutosaveHint = false
     @FocusState private var titleFieldFocused: Bool
+    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
+
+    private var selectedCharacterMatch: Character? {
+        let name = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let characters = allCharacters.filter { $0.book?.id == book.id }
+        if let character = characters.first(where: { $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
+            return character
+        }
+        return allAliases.first { alias in
+            alias.character?.book?.id == book.id &&
+            alias.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }?.character
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -723,11 +741,20 @@ struct EditorCenterView: View {
                     .buttonStyle(.borderless)
                     .help("將游標所在段落設為幕標題 / 內文 (⌘2)")
                     .keyboardShortcut("2", modifiers: .command)
+                    Toggle("反白角色時顯示資訊", isOn: $showCharacterSelectionInfo)
+                        .toggleStyle(.switch)
+                        .font(.caption)
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 8)
                 .background(Color.appBackground)
                 Divider()
+                if showCharacterSelectionInfo, let character = selectedCharacterMatch {
+                    CharacterSelectionInfoBar(character: character) {
+                        characterToInspect = character
+                    }
+                    Divider()
+                }
                 ZStack(alignment: .topLeading) {
                     RichEditorView(
                         section: section,
@@ -736,7 +763,8 @@ struct EditorCenterView: View {
                         onHeadingStateChange: { cursorIsHeading = $0 },
                         onSaveStateChange: { saveState = $0 },
                         onEditorFocus: { showingInlineAutosaveHint = false },
-                        onLoadingChange: { isContentLoading = $0 }
+                        onLoadingChange: { isContentLoading = $0 },
+                        onSelectionTextChange: { selectedText = $0 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -787,6 +815,17 @@ struct EditorCenterView: View {
         .onChange(of: section?.id) {
             liveWordCount = section?.wordCount ?? 0
             saveState = .saved
+            selectedText = ""
+        }
+        .sheet(item: $characterToInspect) { character in
+            CharacterDetailView(
+                character: character,
+                book: book,
+                onBack: { characterToInspect = nil },
+                onShowGraph: {},
+                onSelectSection: nil
+            )
+            .frame(minWidth: 520, minHeight: 640)
         }
     }
 
@@ -797,5 +836,31 @@ struct EditorCenterView: View {
             return index + 1
         }
         return 1
+    }
+}
+
+private struct CharacterSelectionInfoBar: View {
+    let character: Character
+    let onInspect: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.text.rectangle")
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(character.realName.isEmpty ? "未命名角色" : character.realName)
+                    .font(.subheadline.weight(.semibold))
+                Text("已辨識反白的角色名稱")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("查看角色資料", action: onInspect)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.08))
     }
 }
