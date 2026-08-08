@@ -717,14 +717,19 @@ struct EditorCenterView: View {
     private func characterMatch(for text: String) -> Character? {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
-        let characters = allCharacters.filter { $0.book?.id == book.id }
-        if let character = characters.first(where: { $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
-            return character
+        var matchesByID: [UUID: Character] = [:]
+        for character in allCharacters where
+            character.book?.id == book.id &&
+            character.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+            matchesByID[character.id] = character
         }
-        return allAliases.first { alias in
+        for alias in allAliases where
             alias.character?.book?.id == book.id &&
-            alias.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-        }?.character
+            alias.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+            if let character = alias.character { matchesByID[character.id] = character }
+        }
+        guard matchesByID.count == 1 else { return nil }
+        return matchesByID.values.first
     }
 
     private func characterReference(from text: String) -> CharacterReference? {
@@ -734,38 +739,47 @@ struct EditorCenterView: View {
             $0.book?.id == book.id &&
             $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }
-        if canonicalMatches.count == 1 {
-            return CharacterReference(characterID: canonicalMatches[0].id, source: .canonical)
-        }
-        guard canonicalMatches.isEmpty else { return nil }
-
         let aliasMatches = allAliases.filter {
             $0.character?.book?.id == book.id &&
             $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }
-        guard aliasMatches.count == 1, let characterID = aliasMatches[0].character?.id else { return nil }
-        return CharacterReference(characterID: characterID, source: .alias(aliasMatches[0].id))
+        let matchedCharacterIDs = Set(canonicalMatches.map(\.id) + aliasMatches.compactMap { $0.character?.id })
+        guard matchedCharacterIDs.count == 1, let characterID = matchedCharacterIDs.first else { return nil }
+        if canonicalMatches.contains(where: { $0.id == characterID }) {
+            return CharacterReference(characterID: characterID, source: .canonical)
+        }
+        let matchingAliases = aliasMatches.filter { $0.character?.id == characterID }
+        guard matchingAliases.count == 1 else { return nil }
+        return CharacterReference(characterID: characterID, source: .alias(matchingAliases[0].id))
     }
 
     private func canCreateCharacter(from text: String) -> Bool {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 80, !name.contains("\n") else { return false }
-        return characterMatch(for: name) == nil
+        let hasCanonicalMatch = allCharacters.contains {
+            $0.book?.id == book.id &&
+            $0.realName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        let hasAliasMatch = allAliases.contains {
+            $0.character?.book?.id == book.id &&
+            $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        return !hasCanonicalMatch && !hasAliasMatch
     }
 
-    private func createCharacter(from text: String) -> Bool {
+    private func createCharacter(from text: String) -> CharacterReference? {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canCreateCharacter(from: name) else { return false }
+        guard canCreateCharacter(from: name) else { return nil }
         let character = Character(realName: name, book: book)
         character.sortOrder = (allCharacters.filter { $0.book?.id == book.id }.map(\.sortOrder).max() ?? -1) + 1
         modelContext.insert(character)
         do {
             try modelContext.save()
             onOpenCharacter(character)
-            return true
+            return CharacterReference(characterID: character.id, source: .canonical)
         } catch {
             modelContext.delete(character)
-            return false
+            return nil
         }
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import AppKit
 
 private protocol StoreUUIDModel {
     var id: UUID { get }
@@ -336,6 +337,26 @@ enum PersistentModelDeletion {
 
     static func deleteCharacter(_ character: Character, in context: ModelContext, save: Bool = true) throws {
         let characterID = character.id
+        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        var changedSectionIDs = Set<UUID>()
+
+        // 刪除設定集資料時保留作者的正文，只移除已失效的角色連結樣式。
+        for section in try context.fetch(FetchDescriptor<Section>()) {
+            let attributed = NSMutableAttributedString(attributedString: NSAttributedString(section.content))
+            var ranges: [NSRange] = []
+            attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+                guard let value, CharacterReferenceLink.characterID(from: value) == characterID else { return }
+                ranges.append(range)
+            }
+            guard !ranges.isEmpty else { continue }
+            for range in ranges.reversed() {
+                attributed.removeAttribute(.link, range: range)
+            }
+            section.content = AttributedString(attributed)
+            section.updatedAt = Date()
+            section.volume?.book?.updatedAt = Date()
+            changedSectionIDs.insert(section.id)
+        }
 
         try context.fetch(FetchDescriptor<CharacterProfile>(predicate: #Predicate { $0.character?.id == characterID }))
             .forEach(context.delete)
@@ -376,7 +397,12 @@ enum PersistentModelDeletion {
         }
 
         context.delete(character)
-        if save { try context.save() }
+        if save {
+            try context.save()
+            if !changedSectionIDs.isEmpty {
+                NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+            }
+        }
     }
 
     static func deleteNodes(_ nodes: [Node], in context: ModelContext, save: Bool = true) throws {

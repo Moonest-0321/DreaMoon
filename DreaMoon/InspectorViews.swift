@@ -24,6 +24,34 @@ struct WritingReferenceScanner {
         }
     }
 
+    static func linkedSections(for character: Character, in book: Book) -> [Section] {
+        allSections(in: book).filter { containsLinkedReference(to: character.id, in: $0) }
+    }
+
+    static func possibleMentionSections(
+        for character: Character,
+        aliases: [CharacterAlias],
+        in book: Book,
+        excluding linkedIDs: Set<UUID>
+    ) -> [Section] {
+        let names = characterNames(for: character, aliases: aliases)
+        return allSections(in: book).filter { section in
+            !linkedIDs.contains(section.id) && names.contains { contains($0, in: section) }
+        }
+    }
+
+    static func containsLinkedReference(to characterID: UUID, in section: Section) -> Bool {
+        let attributed = NSAttributedString(section.content)
+        var found = false
+        attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, _, stop in
+            if let value, CharacterReferenceLink.characterID(from: value) == characterID {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
     static func contains(_ character: Character, aliases: [CharacterAlias], in section: Section) -> Bool {
         !matchingNames(for: character, aliases: aliases, in: section).isEmpty
     }
@@ -120,18 +148,24 @@ private enum CharacterReferenceSynchronizer {
         to newName: String,
         sourceLabel: String,
         in book: Book
-    ) -> [UnlinkedReferenceCandidate] {
+    ) async -> [UnlinkedReferenceCandidate] {
         let source = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let replacement = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty, !replacement.isEmpty, source != replacement else { return [] }
 
-        return WritingReferenceScanner.allSections(in: book).flatMap { section in
+        var allCandidates: [UnlinkedReferenceCandidate] = []
+        for (index, section) in WritingReferenceScanner.allSections(in: book).enumerated() {
+            guard !Task.isCancelled else { return [] }
+            if index > 0 && index.isMultiple(of: 4) {
+                // 富文字橋接留在主執行緒，但分批讓出執行權，避免長篇小說改名時卡住介面。
+                await Task.yield()
+            }
             let attributed = NSAttributedString(section.content)
             let text = attributed.string as NSString
             var searchRange = NSRange(location: 0, length: text.length)
-            var result: [UnlinkedReferenceCandidate] = []
 
             while searchRange.length > 0 {
+                guard !Task.isCancelled else { return [] }
                 let range = text.range(of: source, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange)
                 guard range.location != NSNotFound else { break }
                 var hasLink = false
@@ -145,7 +179,7 @@ private enum CharacterReferenceSynchronizer {
                     let previewStart = max(0, range.location - 14)
                     let previewEnd = min(text.length, NSMaxRange(range) + 14)
                     let preview = text.substring(with: NSRange(location: previewStart, length: previewEnd - previewStart))
-                    result.append(UnlinkedReferenceCandidate(
+                    allCandidates.append(UnlinkedReferenceCandidate(
                         section: section,
                         range: range,
                         sourceName: source,
@@ -157,8 +191,8 @@ private enum CharacterReferenceSynchronizer {
                 let next = NSMaxRange(range)
                 searchRange = NSRange(location: next, length: text.length - next)
             }
-            return result
         }
+        return allCandidates
     }
 
     static func apply(_ candidates: [UnlinkedReferenceCandidate], in book: Book, context: ModelContext) -> Set<UUID> {
@@ -852,7 +886,11 @@ struct CharacterListView: View {
         guard !query.isEmpty else { return source }
         return source.filter { character in
             character.realName.localizedCaseInsensitiveContains(query) ||
-            character.notes?.localizedCaseInsensitiveContains(query) == true
+            character.notes?.localizedCaseInsensitiveContains(query) == true ||
+            allAliases.contains {
+                $0.character?.id == character.id &&
+                $0.name.localizedCaseInsensitiveContains(query)
+            }
         }
     }
 
@@ -957,6 +995,7 @@ struct CharacterDetailView: View {
     @Query private var allEvents: [Event]
     @State private var realNameBeforeEditing = ""
     @State private var unlinkedCandidates: [UnlinkedReferenceCandidate] = []
+    @State private var unlinkedScanTask: Task<Void, Never>?
 
     private var profile: CharacterProfile? {
         allProfiles.first { $0.character?.id == character.id }
@@ -1086,6 +1125,7 @@ struct CharacterDetailView: View {
                 .padding(12)
             }
         }
+        .onDisappear { unlinkedScanTask?.cancel() }
     }
 
     @ViewBuilder
@@ -1158,12 +1198,7 @@ struct CharacterDetailView: View {
                 context: modelContext
             )
         }
-        unlinkedCandidates += CharacterReferenceSynchronizer.unlinkedCandidates(
-            from: old,
-            to: new,
-            sourceLabel: sourceLabel,
-            in: book
-        )
+        scheduleUnlinkedScan(from: old, to: new, sourceLabel: sourceLabel)
     }
 
     private func commitAliasNameChange(_ alias: CharacterAlias, from oldName: String, to newName: String) {
@@ -1178,12 +1213,28 @@ struct CharacterDetailView: View {
             in: book,
             context: modelContext
         )
-        unlinkedCandidates += CharacterReferenceSynchronizer.unlinkedCandidates(
-            from: old,
-            to: new,
-            sourceLabel: "別名",
-            in: book
-        )
+        scheduleUnlinkedScan(from: old, to: new, sourceLabel: "別名")
+    }
+
+    private func scheduleUnlinkedScan(from oldName: String, to newName: String, sourceLabel: String) {
+        unlinkedScanTask?.cancel()
+        unlinkedCandidates.removeAll()
+        unlinkedScanTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return
+            }
+            let candidates = await CharacterReferenceSynchronizer.unlinkedCandidates(
+                from: oldName,
+                to: newName,
+                sourceLabel: sourceLabel,
+                in: book
+            )
+            guard !Task.isCancelled else { return }
+            unlinkedCandidates = candidates
+            unlinkedScanTask = nil
+        }
     }
 
     private func applySelectedUnlinkedChanges() {
@@ -1264,7 +1315,14 @@ private struct CharacterReferenceSectionsView: View {
     }
 
     var body: some View {
-        let sections = WritingReferenceScanner.sections(for: character, aliases: allAliases, in: book)
+        let linkedSections = WritingReferenceScanner.linkedSections(for: character, in: book)
+        let linkedSectionIDs = Set(linkedSections.map(\.id))
+        let possibleSections = WritingReferenceScanner.possibleMentionSections(
+            for: character,
+            aliases: allAliases,
+            in: book,
+            excluding: linkedSectionIDs
+        )
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("正文引用", systemImage: "link")
@@ -1278,30 +1336,44 @@ private struct CharacterReferenceSectionsView: View {
                 .buttonStyle(.plain)
                 .help(isCollapsed ? "展開正文引用" : "收合正文引用")
             }
-            if !isCollapsed && sections.isEmpty {
-                Text("尚未在正文中找到此角色名稱")
+            if !isCollapsed && linkedSections.isEmpty && possibleSections.isEmpty {
+                Text("尚未在正文中找到此角色")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !isCollapsed {
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(sections) { section in
-                            Button("第 \(sectionNumber(section, in: book)) 節｜\(section.title)") {
-                                onSelectSection?(section)
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(linkedSections) { section in
+                            sectionButton(section)
+                        }
+                        if !possibleSections.isEmpty {
+                            Text("可能提及")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.top, linkedSections.isEmpty ? 0 : 3)
+                            ForEach(possibleSections) { section in
+                                sectionButton(section)
+                                    .foregroundStyle(.secondary)
                             }
-                            .buttonStyle(.link)
-                            .font(.caption)
-                            .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 96)
+                .frame(maxHeight: 120)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func sectionButton(_ section: Section) -> some View {
+        Button("第 \(sectionNumber(section, in: book)) 節｜\(section.title)") {
+            onSelectSection?(section)
+        }
+        .buttonStyle(.link)
+        .font(.caption)
+        .lineLimit(1)
     }
 
     private func sectionNumber(_ section: Section, in book: Book) -> Int {

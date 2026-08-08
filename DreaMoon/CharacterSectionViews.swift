@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 
 struct InsetTextEditor: View {
     @Binding var text: String
@@ -167,13 +168,47 @@ struct CharacterAliasSectionView: View {
                 CharacterSectionEmptyState(title: "尚無別名", detail: "可加入化名、稱號或其他常用名稱。")
             } else {
                 ForEach(aliases) { alias in
-                    AliasRow(alias: alias, onRename: onRename, onDelete: { modelContext.delete(alias) })
+                    AliasRow(alias: alias, onRename: onRename, onDelete: { deleteAlias(alias) })
                 }
             }
             Button { modelContext.insert(CharacterAlias(name: "新別名", character: character)) } label: {
                 Label("新增別名", systemImage: "plus")
             }
             .buttonStyle(.borderless)
+        }
+    }
+
+    private func deleteAlias(_ alias: CharacterAlias) {
+        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        var changedSectionIDs = Set<UUID>()
+        if let book = character.book {
+            for section in book.volumes.flatMap(\.sections) {
+                let attributed = NSMutableAttributedString(attributedString: NSAttributedString(section.content))
+                var ranges: [NSRange] = []
+                attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+                    guard let value,
+                          let reference = CharacterReferenceLink.reference(from: value),
+                          reference.characterID == character.id,
+                          reference.source == .alias(alias.id) else { return }
+                    ranges.append(range)
+                }
+                guard !ranges.isEmpty else { continue }
+                let legacyLink = CharacterReferenceLink.url(
+                    for: CharacterReference(characterID: character.id, source: .legacy)
+                )
+                for range in ranges {
+                    attributed.addAttribute(.link, value: legacyLink, range: range)
+                }
+                section.content = AttributedString(attributed)
+                section.updatedAt = Date()
+                changedSectionIDs.insert(section.id)
+            }
+            if !changedSectionIDs.isEmpty { book.updatedAt = Date() }
+        }
+        modelContext.delete(alias)
+        try? modelContext.save()
+        if !changedSectionIDs.isEmpty {
+            NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
         }
     }
 }

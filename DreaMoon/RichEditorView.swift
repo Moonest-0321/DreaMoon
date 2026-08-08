@@ -233,6 +233,12 @@ final class DreaMoonTextView: CompositionAwareTextView {
         }
         super.keyDown(with: event)
     }
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        // 角色呼叫只要被直接編輯，就先完整解除該呼叫的連結。
+        // 文字照常修改，但不留下會在日後改名時重複展開的破碎連結。
+        coordinator?.prepareCharacterLinksForEditing(affectedCharRange)
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+    }
     convenience init() {
         self.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: nil)
         if let container = self.textContainer {
@@ -444,7 +450,7 @@ struct RichEditorView: NSViewRepresentable {
     var onOpenSelectedText: ((String) -> Bool)? = nil
     var onOpenCharacterReference: ((UUID) -> Bool)? = nil
     var canCreateCharacter: ((String) -> Bool)? = nil
-    var onCreateCharacter: ((String) -> Bool)? = nil
+    var onCreateCharacter: ((String) -> CharacterReference?)? = nil
     var resolveCharacterReference: ((String) -> CharacterReference?)? = nil
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -597,7 +603,7 @@ struct RichEditorView: NSViewRepresentable {
         var onOpenSelectedText: ((String) -> Bool)?
         var onOpenCharacterReference: ((UUID) -> Bool)?
         var canCreateCharacterHandler: ((String) -> Bool)?
-        var onCreateCharacter: ((String) -> Bool)?
+        var onCreateCharacter: ((String) -> CharacterReference?)?
         var resolveCharacterReference: ((String) -> CharacterReference?)?
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
         private var lastReportedHeadingState: Bool?
@@ -710,21 +716,31 @@ struct RichEditorView: NSViewRepresentable {
         }
         @discardableResult
         func createCharacter(named text: String) -> Bool {
-            onCreateCharacter?(text) ?? false
+            guard let reference = onCreateCharacter?(text) else { return false }
+            linkSelectedCharacter(to: reference)
+            return true
         }
         func canLinkCharacter(named text: String) -> Bool {
             resolveCharacterReference?(text) != nil
         }
         func linkSelectedCharacter() {
-            guard let tv = textView, let storage = tv.textStorage else { return }
+            guard let tv = textView else { return }
             let selectedRange = tv.selectedRange()
-            guard selectedRange.length > 0, NSMaxRange(selectedRange) <= storage.length else { return }
             let fullText = tv.string as NSString
+            guard selectedRange.length > 0, NSMaxRange(selectedRange) <= fullText.length else { return }
             let selectedText = fullText.substring(with: selectedRange)
             let trimmedText = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let reference = resolveCharacterReference?(trimmedText) else { return }
+            linkSelectedCharacter(to: reference)
+        }
+        private func linkSelectedCharacter(to reference: CharacterReference) {
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let selectedRange = tv.selectedRange()
+            guard selectedRange.length > 0, NSMaxRange(selectedRange) <= storage.length else { return }
+            let selectedText = (tv.string as NSString).substring(with: selectedRange)
+            let trimmedText = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
             let relativeRange = (selectedText as NSString).range(of: trimmedText)
-            guard relativeRange.location != NSNotFound else { return }
+            guard !trimmedText.isEmpty, relativeRange.location != NSNotFound else { return }
             let linkRange = NSRange(
                 location: selectedRange.location + relativeRange.location,
                 length: relativeRange.length
@@ -736,8 +752,57 @@ struct RichEditorView: NSViewRepresentable {
             guard let tv = textView, let storage = tv.textStorage else { return }
             let range = tv.selectedRange()
             guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-            storage.removeAttribute(.link, range: range)
+            for linkRange in characterLinkRanges(intersecting: range, in: storage) {
+                storage.removeAttribute(.link, range: linkRange)
+            }
             tv.didChangeText()
+        }
+        func prepareCharacterLinksForEditing(_ range: NSRange) {
+            guard let storage = textView?.textStorage else { return }
+            for linkRange in characterLinkRanges(intersecting: range, in: storage) {
+                storage.removeAttribute(.link, range: linkRange)
+            }
+        }
+        private func characterLinkRanges(intersecting range: NSRange, in storage: NSTextStorage) -> [NSRange] {
+            guard storage.length > 0 else { return [] }
+
+            // 插入點只有位於連結內部時才解除；位於尾端時應讓作者自然接著寫。
+            if range.length == 0 {
+                guard range.location > 0, range.location < storage.length else { return [] }
+                var effectiveRange = NSRange(location: 0, length: 0)
+                let value = storage.attribute(
+                    .link,
+                    at: range.location,
+                    longestEffectiveRange: &effectiveRange,
+                    in: NSRange(location: 0, length: storage.length)
+                )
+                guard range.location > effectiveRange.location,
+                      range.location < NSMaxRange(effectiveRange),
+                      let value,
+                      CharacterReferenceLink.characterID(from: value) != nil else { return [] }
+                return [effectiveRange]
+            }
+
+            let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: storage.length))
+            guard safeRange.length > 0 else { return [] }
+            var result: [NSRange] = []
+            var cursor = safeRange.location
+            while cursor < NSMaxRange(safeRange) {
+                var effectiveRange = NSRange(location: cursor, length: 1)
+                let value = storage.attribute(
+                    .link,
+                    at: cursor,
+                    longestEffectiveRange: &effectiveRange,
+                    in: NSRange(location: 0, length: storage.length)
+                )
+                if let value,
+                   CharacterReferenceLink.characterID(from: value) != nil,
+                   !result.contains(effectiveRange) {
+                    result.append(effectiveRange)
+                }
+                cursor = max(cursor + 1, NSMaxRange(effectiveRange))
+            }
+            return result
         }
         private var activeMentionRange: NSRange?
         private var mentionMenuWorkItem: DispatchWorkItem?
