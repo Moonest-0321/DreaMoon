@@ -3,6 +3,10 @@ import SwiftData
 import AppKit
 
 struct WritingReferenceScanner {
+    struct CategorizedSections {
+        let linked: [Section]
+        let possible: [Section]
+    }
     static func plainText(_ section: Section) -> String {
         NSAttributedString(section.content).string
     }
@@ -24,32 +28,48 @@ struct WritingReferenceScanner {
         }
     }
 
-    static func linkedSections(for character: Character, in book: Book) -> [Section] {
-        allSections(in: book).filter { containsLinkedReference(to: character.id, in: $0) }
-    }
-
-    static func possibleMentionSections(
-        for character: Character,
-        aliases: [CharacterAlias],
-        in book: Book,
-        excluding linkedIDs: Set<UUID>
-    ) -> [Section] {
-        let names = characterNames(for: character, aliases: aliases)
-        return allSections(in: book).filter { section in
-            !linkedIDs.contains(section.id) && names.contains { contains($0, in: section) }
-        }
-    }
-
     static func containsLinkedReference(to characterID: UUID, in section: Section) -> Bool {
+        linkedCharacterIDs(in: section).contains(characterID)
+    }
+
+    static func linkedCharacterIDs(in section: Section) -> Set<UUID> {
         let attributed = NSAttributedString(section.content)
-        var found = false
-        attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, _, stop in
-            if let value, CharacterReferenceLink.characterID(from: value) == characterID {
-                found = true
-                stop.pointee = true
+        var ids = Set<UUID>()
+        attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, _, _ in
+            if let value, let characterID = CharacterReferenceLink.characterID(from: value) {
+                ids.insert(characterID)
             }
         }
-        return found
+        return ids
+    }
+
+    static func categorizedSections(
+        for character: Character,
+        aliases: [CharacterAlias],
+        in book: Book
+    ) async -> CategorizedSections {
+        let names = characterNames(for: character, aliases: aliases)
+        var linked: [Section] = []
+        var possible: [Section] = []
+        for (index, section) in allSections(in: book).enumerated() {
+            guard !Task.isCancelled else { return CategorizedSections(linked: [], possible: []) }
+            if index > 0 && index.isMultiple(of: 4) { await Task.yield() }
+
+            let attributed = NSAttributedString(section.content)
+            var hasLinkedReference = false
+            attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, _, stop in
+                if let value, CharacterReferenceLink.characterID(from: value) == character.id {
+                    hasLinkedReference = true
+                    stop.pointee = true
+                }
+            }
+            if hasLinkedReference {
+                linked.append(section)
+            } else if names.contains(where: { attributed.string.localizedCaseInsensitiveContains($0) }) {
+                possible.append(section)
+            }
+        }
+        return CategorizedSections(linked: linked, possible: possible)
     }
 
     static func contains(_ character: Character, aliases: [CharacterAlias], in section: Section) -> Bool {
@@ -195,7 +215,7 @@ private enum CharacterReferenceSynchronizer {
         return allCandidates
     }
 
-    static func apply(_ candidates: [UnlinkedReferenceCandidate], in book: Book, context: ModelContext) -> Set<UUID> {
+    static func apply(_ candidates: [UnlinkedReferenceCandidate], in book: Book, context: ModelContext) throws -> Set<UUID> {
         let selected = candidates.filter(\.isSelected)
         guard !selected.isEmpty else { return [] }
         var changedSectionIDs = Set<UUID>()
@@ -231,7 +251,7 @@ private enum CharacterReferenceSynchronizer {
 
         guard !changedSectionIDs.isEmpty else { return [] }
         book.updatedAt = Date()
-        try? context.save()
+        try context.save()
         NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
         return changedSectionIDs
     }
@@ -242,11 +262,11 @@ private enum CharacterReferenceSynchronizer {
         to newName: String,
         in book: Book,
         context: ModelContext
-    ) {
+    ) throws {
         let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !old.isEmpty, !name.isEmpty else { return }
-        updateLinkedReferences(
+        try updateLinkedReferences(
             for: character,
             replacement: name,
             in: book,
@@ -269,12 +289,12 @@ private enum CharacterReferenceSynchronizer {
         to newName: String,
         in book: Book,
         context: ModelContext
-    ) {
+    ) throws {
         guard let character = alias.character else { return }
         let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !old.isEmpty, !name.isEmpty else { return }
-        updateLinkedReferences(
+        try updateLinkedReferences(
             for: character,
             replacement: name,
             in: book,
@@ -297,7 +317,7 @@ private enum CharacterReferenceSynchronizer {
         in book: Book,
         context: ModelContext,
         shouldReplace: (CharacterReference, String) -> Bool
-    ) {
+    ) throws {
         var changedSectionIDs = Set<UUID>()
 
         for section in WritingReferenceScanner.allSections(in: book) {
@@ -328,7 +348,7 @@ private enum CharacterReferenceSynchronizer {
 
         guard !changedSectionIDs.isEmpty else { return }
         book.updatedAt = Date()
-        try? context.save()
+        try context.save()
         NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
     }
 }
@@ -833,6 +853,7 @@ struct CharacterListContainerView: View {
     let onCreated: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    @State private var deletionErrorMessage: String?
 
     private var characters: [Character] {
         allCharacters.filter { $0.book?.id == book.id }
@@ -852,10 +873,22 @@ struct CharacterListContainerView: View {
                 do {
                     try PersistentModelDeletion.deleteCharacter(character, in: modelContext)
                 } catch {
-                    print("❌ 角色刪除失敗：\(error.localizedDescription)")
+                    modelContext.rollback()
+                    deletionErrorMessage = "角色刪除失敗，資料未變更。"
                 }
             }
             )
+            .alert(
+                "無法刪除角色",
+                isPresented: Binding(
+                    get: { deletionErrorMessage != nil },
+                    set: { if !$0 { deletionErrorMessage = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) { deletionErrorMessage = nil }
+            } message: {
+                Text(deletionErrorMessage ?? "請稍後再試。")
+            }
     }
 
     private func addCharacter() {
@@ -876,12 +909,19 @@ struct CharacterListView: View {
     let onDelete: (Character) -> Void
     @State private var searchText = ""
     @State private var showCurrentSectionOnly = false
+    @State private var deleteTarget: Character?
     @Query private var allAliases: [CharacterAlias]
 
     private var filteredCharacters: [Character] {
-        let source = showCurrentSectionOnly && currentSection != nil
-            ? characters.filter { WritingReferenceScanner.contains($0, aliases: allAliases, in: currentSection!) }
-            : characters
+        let source: [Character]
+        if showCurrentSectionOnly, let currentSection {
+            let linkedIDs = WritingReferenceScanner.linkedCharacterIDs(in: currentSection)
+            source = linkedIDs.isEmpty
+                ? characters.filter { WritingReferenceScanner.contains($0, aliases: allAliases, in: currentSection) }
+                : characters.filter { linkedIDs.contains($0.id) }
+        } else {
+            source = characters
+        }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
         return source.filter { character in
@@ -931,8 +971,8 @@ struct CharacterListView: View {
                     CharacterRow(character: character)
                         .contentShape(Rectangle())
                         .onTapGesture { onSelect(character) }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) { onDelete(character) } label: {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { deleteTarget = character } label: {
                                 Label("刪除", systemImage: "trash")
                             }
                         }
@@ -949,6 +989,22 @@ struct CharacterListView: View {
             }
             .buttonStyle(.plain)
             .background(Color.accentColor.opacity(0.1))
+        }
+        .alert(
+            "刪除角色？",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            presenting: deleteTarget
+        ) { character in
+            Button("取消", role: .cancel) { deleteTarget = nil }
+            Button("刪除", role: .destructive) {
+                deleteTarget = nil
+                onDelete(character)
+            }
+        } message: { character in
+            Text("將刪除「\(character.realName.isEmpty ? "未命名角色" : character.realName)」的設定、關係與事件關聯；正文文字會保留，但角色連結會解除。此操作無法復原。")
         }
     }
 }
@@ -996,6 +1052,7 @@ struct CharacterDetailView: View {
     @State private var realNameBeforeEditing = ""
     @State private var unlinkedCandidates: [UnlinkedReferenceCandidate] = []
     @State private var unlinkedScanTask: Task<Void, Never>?
+    @State private var referenceErrorMessage: String?
 
     private var profile: CharacterProfile? {
         allProfiles.first { $0.character?.id == character.id }
@@ -1026,6 +1083,23 @@ struct CharacterDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     characterHeader
+
+                    if let referenceErrorMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(referenceErrorMessage)
+                                .font(.caption)
+                                .lineLimit(2)
+                            Spacer()
+                            Button { self.referenceErrorMessage = nil } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(9)
+                        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                    }
 
                     if !unlinkedCandidates.isEmpty {
                         UnlinkedReferenceReviewView(
@@ -1190,13 +1264,19 @@ struct CharacterDetailView: View {
         guard old != new, !old.isEmpty, !new.isEmpty else { return }
         NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
         if updatesLinkedReferences {
-            CharacterReferenceSynchronizer.updateLinkedNames(
-                for: character,
-                from: old,
-                to: new,
-                in: book,
-                context: modelContext
-            )
+            do {
+                try CharacterReferenceSynchronizer.updateLinkedNames(
+                    for: character,
+                    from: old,
+                    to: new,
+                    in: book,
+                    context: modelContext
+                )
+            } catch {
+                modelContext.rollback()
+                referenceErrorMessage = "角色名稱同步失敗，變更已復原。"
+                return
+            }
         }
         scheduleUnlinkedScan(from: old, to: new, sourceLabel: sourceLabel)
     }
@@ -1206,13 +1286,19 @@ struct CharacterDetailView: View {
         let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard old != new, !old.isEmpty, !new.isEmpty else { return }
         NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
-        CharacterReferenceSynchronizer.updateLinkedAlias(
-            alias,
-            from: old,
-            to: new,
-            in: book,
-            context: modelContext
-        )
+        do {
+            try CharacterReferenceSynchronizer.updateLinkedAlias(
+                alias,
+                from: old,
+                to: new,
+                in: book,
+                context: modelContext
+            )
+        } catch {
+            modelContext.rollback()
+            referenceErrorMessage = "別名同步失敗，變更已復原。"
+            return
+        }
         scheduleUnlinkedScan(from: old, to: new, sourceLabel: "別名")
     }
 
@@ -1238,8 +1324,13 @@ struct CharacterDetailView: View {
     }
 
     private func applySelectedUnlinkedChanges() {
-        _ = CharacterReferenceSynchronizer.apply(unlinkedCandidates, in: book, context: modelContext)
-        unlinkedCandidates.removeAll()
+        do {
+            _ = try CharacterReferenceSynchronizer.apply(unlinkedCandidates, in: book, context: modelContext)
+            unlinkedCandidates.removeAll()
+        } catch {
+            modelContext.rollback()
+            referenceErrorMessage = "正文名稱替換失敗，內容已復原。"
+        }
     }
 
     @ViewBuilder
@@ -1306,6 +1397,9 @@ private struct CharacterReferenceSectionsView: View {
     let onSelectSection: ((Section) -> Void)?
     @Query private var allAliases: [CharacterAlias]
     @AppStorage private var isCollapsed: Bool
+    @State private var linkedSections: [Section] = []
+    @State private var possibleSections: [Section] = []
+    @State private var hasLoadedReferences = false
 
     init(character: Character, book: Book, onSelectSection: ((Section) -> Void)?) {
         self.character = character
@@ -1315,14 +1409,6 @@ private struct CharacterReferenceSectionsView: View {
     }
 
     var body: some View {
-        let linkedSections = WritingReferenceScanner.linkedSections(for: character, in: book)
-        let linkedSectionIDs = Set(linkedSections.map(\.id))
-        let possibleSections = WritingReferenceScanner.possibleMentionSections(
-            for: character,
-            aliases: allAliases,
-            in: book,
-            excluding: linkedSectionIDs
-        )
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("正文引用", systemImage: "link")
@@ -1336,7 +1422,7 @@ private struct CharacterReferenceSectionsView: View {
                 .buttonStyle(.plain)
                 .help(isCollapsed ? "展開正文引用" : "收合正文引用")
             }
-            if !isCollapsed && linkedSections.isEmpty && possibleSections.isEmpty {
+            if !isCollapsed && hasLoadedReferences && linkedSections.isEmpty && possibleSections.isEmpty {
                 Text("尚未在正文中找到此角色")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1365,6 +1451,30 @@ private struct CharacterReferenceSectionsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .task(id: referenceScanID) {
+            guard !isCollapsed else { return }
+            hasLoadedReferences = false
+            let result = await WritingReferenceScanner.categorizedSections(
+                for: character,
+                aliases: allAliases,
+                in: book
+            )
+            guard !Task.isCancelled else { return }
+            linkedSections = result.linked
+            possibleSections = result.possible
+            hasLoadedReferences = true
+        }
+    }
+
+    private var referenceScanID: String {
+        let latestSectionUpdate = WritingReferenceScanner.allSections(in: book)
+            .map(\.updatedAt.timeIntervalSinceReferenceDate)
+            .max() ?? 0
+        let latestAliasUpdate = allAliases
+            .filter { $0.character?.id == character.id }
+            .map(\.updatedAt.timeIntervalSinceReferenceDate)
+            .max() ?? 0
+        return "\(character.id.uuidString)|\(latestSectionUpdate)|\(latestAliasUpdate)|\(character.realName)|\(isCollapsed)"
     }
 
     private func sectionButton(_ section: Section) -> some View {

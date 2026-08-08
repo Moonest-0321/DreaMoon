@@ -159,6 +159,7 @@ struct CharacterAliasSectionView: View {
     var onRename: (CharacterAlias, String, String) -> Void = { _, _, _ in }
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
+    @State private var deletionErrorMessage: String?
 
     private var aliases: [CharacterAlias] { allAliases.filter { $0.character?.id == character.id } }
 
@@ -175,6 +176,17 @@ struct CharacterAliasSectionView: View {
                 Label("新增別名", systemImage: "plus")
             }
             .buttonStyle(.borderless)
+        }
+        .alert(
+            "無法刪除別名",
+            isPresented: Binding(
+                get: { deletionErrorMessage != nil },
+                set: { if !$0 { deletionErrorMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) { deletionErrorMessage = nil }
+        } message: {
+            Text(deletionErrorMessage ?? "請稍後再試。")
         }
     }
 
@@ -206,7 +218,13 @@ struct CharacterAliasSectionView: View {
             if !changedSectionIDs.isEmpty { book.updatedAt = Date() }
         }
         modelContext.delete(alias)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            deletionErrorMessage = "別名刪除失敗，正文與角色資料均未變更。"
+            return
+        }
         if !changedSectionIDs.isEmpty {
             NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
         }

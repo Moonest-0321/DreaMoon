@@ -103,6 +103,11 @@ private struct CharacterMentionPayload {
     let reference: CharacterReference
     let insertionName: String
 }
+
+private struct CharacterLinkUndoRecord {
+    let range: NSRange
+    let value: Any
+}
 fileprivate func isHeadingFont(_ font: NSFont?) -> Bool {
     guard let font else { return false }
     return font.pointSize == 18 && font.fontDescriptor.symbolicTraits.contains(.bold)
@@ -752,16 +757,62 @@ struct RichEditorView: NSViewRepresentable {
             guard let tv = textView, let storage = tv.textStorage else { return }
             let range = tv.selectedRange()
             guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-            for linkRange in characterLinkRanges(intersecting: range, in: storage) {
-                storage.removeAttribute(.link, range: linkRange)
-            }
+            removeCharacterLinks(
+                in: characterLinkRanges(intersecting: range, in: storage),
+                from: storage,
+                registersUndo: true
+            )
             tv.didChangeText()
         }
         func prepareCharacterLinksForEditing(_ range: NSRange) {
             guard let storage = textView?.textStorage else { return }
-            for linkRange in characterLinkRanges(intersecting: range, in: storage) {
-                storage.removeAttribute(.link, range: linkRange)
+            removeCharacterLinks(
+                in: characterLinkRanges(intersecting: range, in: storage),
+                from: storage,
+                registersUndo: true
+            )
+        }
+        private func removeCharacterLinks(
+            in ranges: [NSRange],
+            from storage: NSTextStorage,
+            registersUndo: Bool
+        ) {
+            guard !ranges.isEmpty else { return }
+            let records = ranges.compactMap { range -> CharacterLinkUndoRecord? in
+                guard range.length > 0,
+                      NSMaxRange(range) <= storage.length,
+                      let value = storage.attribute(.link, at: range.location, effectiveRange: nil) else { return nil }
+                return CharacterLinkUndoRecord(range: range, value: value)
             }
+            guard !records.isEmpty else { return }
+            if registersUndo, let undoManager = textView?.undoManager {
+                undoManager.registerUndo(withTarget: self) { coordinator in
+                    coordinator.restoreCharacterLinks(records)
+                }
+                undoManager.setActionName("編輯角色呼叫")
+            }
+            for record in records {
+                storage.removeAttribute(.link, range: record.range)
+            }
+        }
+        private func restoreCharacterLinks(_ records: [CharacterLinkUndoRecord]) {
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let validRecords = records.filter {
+                $0.range.length > 0 && NSMaxRange($0.range) <= storage.length
+            }
+            guard !validRecords.isEmpty else { return }
+            if let undoManager = tv.undoManager {
+                let ranges = validRecords.map(\.range)
+                undoManager.registerUndo(withTarget: self) { coordinator in
+                    guard let currentStorage = coordinator.textView?.textStorage else { return }
+                    coordinator.removeCharacterLinks(in: ranges, from: currentStorage, registersUndo: true)
+                    coordinator.textView?.didChangeText()
+                }
+            }
+            for record in validRecords {
+                storage.addAttribute(.link, value: record.value, range: record.range)
+            }
+            tv.didChangeText()
         }
         private func characterLinkRanges(intersecting range: NSRange, in storage: NSTextStorage) -> [NSRange] {
             guard storage.length > 0 else { return [] }
