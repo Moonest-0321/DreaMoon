@@ -5,7 +5,7 @@ import Foundation
 /// remain compatible when the cover feature is introduced.
 @MainActor
 enum BookCoverStore {
-    private static let directoryName = "DreaMoon/Covers"
+    private static let directoryName = "Sailune/Covers"
     private static let imageCache = NSCache<NSUUID, NSImage>()
     private static var missingCoverIDs = Set<UUID>()
 

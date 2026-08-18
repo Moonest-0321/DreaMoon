@@ -40,9 +40,11 @@ struct CharacterReference: Equatable {
 }
 
 enum CharacterReferenceLink {
+    private static let currentScheme = "sailune"
+
     static func url(for reference: CharacterReference) -> URL {
         var components = URLComponents()
-        components.scheme = "dreamoon"
+        components.scheme = currentScheme
         components.host = "character"
         components.path = "/\(reference.characterID.uuidString)"
         switch reference.source {
@@ -70,7 +72,8 @@ enum CharacterReferenceLink {
             url = nil
         }
         guard let url,
-              url.scheme == "dreamoon",
+              let scheme = url.scheme?.lowercased(),
+              scheme == currentScheme,
               url.host == "character",
               let characterID = UUID(uuidString: url.lastPathComponent) else { return nil }
         let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -118,7 +121,7 @@ final class EditorBridge {
     weak var coordinator: RichEditorView.Coordinator?
     var isSearchMode = false
     func requestFindNext() {
-        NotificationCenter.default.post(name: .dreaMoonFindNext, object: nil)
+        NotificationCenter.default.post(name: .sailuneFindNext, object: nil)
     }
     func requestToggleHeading() { coordinator?.toggleSceneHeading() }
     func focusEditor() { coordinator?.focusEditor() }
@@ -201,7 +204,7 @@ class CompositionAwareTextView: NSTextView {
 }
 
 // MARK: - 自訂 NSTextView 子類
-final class DreaMoonTextView: CompositionAwareTextView {
+final class SailuneTextView: CompositionAwareTextView {
     weak var coordinator: RichEditorView.Coordinator?
     override var acceptsFirstResponder: Bool { true }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
@@ -436,10 +439,10 @@ final class DreaMoonTextView: CompositionAwareTextView {
 }
 
 extension Notification.Name {
-    static let dreaMoonPreviousSection = Notification.Name("dreaMoon.previousSection")
-    static let dreaMoonNextSection = Notification.Name("dreaMoon.nextSection")
-    static let dreaMoonWillChangeCharacterReferences = Notification.Name("dreaMoon.willChangeCharacterReferences")
-    static let dreaMoonCharacterReferencesChanged = Notification.Name("dreaMoon.characterReferencesChanged")
+    static let sailunePreviousSection = Notification.Name("sailune.previousSection")
+    static let sailuneNextSection = Notification.Name("sailune.nextSection")
+    static let sailuneWillChangeCharacterReferences = Notification.Name("sailune.willChangeCharacterReferences")
+    static let sailuneCharacterReferencesChanged = Notification.Name("sailune.characterReferencesChanged")
 }
 
 // MARK: - 富文本編輯器
@@ -543,7 +546,7 @@ struct RichEditorView: NSViewRepresentable {
             coord.select(range: pendingSelection)
         }
     }
-    private func makeScrollViewAndTextView() -> (NSScrollView, DreaMoonTextView) {
+    private func makeScrollViewAndTextView() -> (NSScrollView, SailuneTextView) {
         let textStorage = NSTextStorage()
         let layoutManager = CompositionUnderlineLayoutManager()
         layoutManager.allowsNonContiguousLayout = true
@@ -551,7 +554,7 @@ struct RichEditorView: NSViewRepresentable {
         textContainer.widthTracksTextView = true
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
-        let textView = DreaMoonTextView(
+        let textView = SailuneTextView(
             frame: NSRect(x: 0, y: 0, width: 800, height: 600),
             textContainer: textContainer
         )
@@ -750,7 +753,53 @@ struct RichEditorView: NSViewRepresentable {
                 location: selectedRange.location + relativeRange.location,
                 length: relativeRange.length
             )
-            storage.addAttribute(.link, value: CharacterReferenceLink.url(for: reference), range: linkRange)
+            let linkedText = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: linkRange))
+            linkedText.addAttribute(
+                .link,
+                value: CharacterReferenceLink.url(for: reference),
+                range: NSRange(location: 0, length: linkedText.length)
+            )
+            replaceAttributedText(
+                in: linkRange,
+                with: linkedText,
+                selectedRangeAfterChange: selectedRange,
+                actionName: "連結角色"
+            )
+        }
+
+        private func replaceAttributedText(
+            in range: NSRange,
+            with replacement: NSAttributedString,
+            selectedRangeAfterChange: NSRange,
+            actionName: String
+        ) {
+            guard let tv = textView,
+                  let storage = tv.textStorage,
+                  range.location >= 0,
+                  NSMaxRange(range) <= storage.length else { return }
+
+            let original = storage.attributedSubstring(from: range)
+            let selectionBeforeChange = tv.selectedRange()
+            let replacementRange = NSRange(location: range.location, length: replacement.length)
+            if let undoManager = tv.undoManager {
+                undoManager.registerUndo(withTarget: self) { coordinator in
+                    coordinator.replaceAttributedText(
+                        in: replacementRange,
+                        with: original,
+                        selectedRangeAfterChange: selectionBeforeChange,
+                        actionName: actionName
+                    )
+                }
+                undoManager.setActionName(actionName)
+            }
+
+            storage.replaceCharacters(in: range, with: replacement)
+            let selectionLocation = min(max(0, selectedRangeAfterChange.location), storage.length)
+            let safeSelection = NSRange(
+                location: selectionLocation,
+                length: min(selectedRangeAfterChange.length, storage.length - selectionLocation)
+            )
+            tv.setSelectedRange(safeSelection)
             tv.didChangeText()
         }
         func unlinkSelectedCharacter() {
@@ -923,14 +972,14 @@ struct RichEditorView: NSViewRepresentable {
 
             var attributes = tv.typingAttributes
             attributes[.link] = CharacterReferenceLink.url(for: payload.reference)
-            storage.replaceCharacters(
-                in: mentionRange,
-                with: NSAttributedString(string: insertionName, attributes: attributes)
-            )
             let nextLocation = mentionRange.location + (insertionName as NSString).length
-            tv.setSelectedRange(NSRange(location: nextLocation, length: 0))
+            replaceAttributedText(
+                in: mentionRange,
+                with: NSAttributedString(string: insertionName, attributes: attributes),
+                selectedRangeAfterChange: NSRange(location: nextLocation, length: 0),
+                actionName: "插入角色呼叫"
+            )
             activeMentionRange = nil
-            tv.didChangeText()
             syncTypingAttributesToCursor()
         }
 

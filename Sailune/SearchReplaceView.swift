@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 extension Notification.Name {
-    static let dreaMoonFindNext = Notification.Name("DreaMoon.FindNextSearchResult")
+    static let sailuneFindNext = Notification.Name("Sailune.FindNextSearchResult")
 }
 
 enum SearchScope: String, CaseIterable, Identifiable {
@@ -136,7 +136,7 @@ struct SearchReplaceView: View {
         .onDisappear {
             bridge.isSearchMode = false
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonFindNext)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sailuneFindNext)) { _ in
             advanceSearch()
         }
         .onChange(of: query) { _, _ in refresh() }

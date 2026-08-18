@@ -13,6 +13,7 @@ extension Timeline: StoreUUIDModel { }
 extension Node: StoreUUIDModel { }
 extension Character: StoreUUIDModel { }
 extension Item: StoreUUIDModel { }
+extension ItemHistory: StoreUUIDModel { }
 extension Organization: StoreUUIDModel { }
 extension CharacterProfile: StoreUUIDModel { }
 extension CharacterAlias: StoreUUIDModel { }
@@ -337,7 +338,7 @@ enum PersistentModelDeletion {
 
     static func deleteCharacter(_ character: Character, in context: ModelContext, save: Bool = true) throws {
         let characterID = character.id
-        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        NotificationCenter.default.post(name: .sailuneWillChangeCharacterReferences, object: nil)
         var changedSectionIDs = Set<UUID>()
 
         // 刪除設定集資料時保留作者的正文，只移除已失效的角色連結樣式。
@@ -400,7 +401,7 @@ enum PersistentModelDeletion {
         if save {
             try context.save()
             if !changedSectionIDs.isEmpty {
-                NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+                NotificationCenter.default.post(name: .sailuneCharacterReferencesChanged, object: changedSectionIDs)
             }
         }
     }

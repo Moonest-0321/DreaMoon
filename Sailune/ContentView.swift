@@ -114,7 +114,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("DreaMoon")
+            .navigationTitle("Sailune")
             .searchable(text: $searchText, prompt: "搜尋書名或作者")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {

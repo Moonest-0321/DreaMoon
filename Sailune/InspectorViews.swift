@@ -252,7 +252,7 @@ private enum CharacterReferenceSynchronizer {
         guard !changedSectionIDs.isEmpty else { return [] }
         book.updatedAt = Date()
         try context.save()
-        NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+        NotificationCenter.default.post(name: .sailuneCharacterReferencesChanged, object: changedSectionIDs)
         return changedSectionIDs
     }
 
@@ -349,7 +349,7 @@ private enum CharacterReferenceSynchronizer {
         guard !changedSectionIDs.isEmpty else { return }
         book.updatedAt = Date()
         try context.save()
-        NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+        NotificationCenter.default.post(name: .sailuneCharacterReferencesChanged, object: changedSectionIDs)
     }
 }
 
@@ -433,14 +433,14 @@ enum InspectorRoute: Hashable {
     case list
     case detail(Character)
     case graph(Character)
-    case itemDetail(Item, Character)
+    case itemDetail(Item, Character?)
 
     func hash(into hasher: inout Hasher) {
         switch self {
         case .list: hasher.combine(0)
         case .detail(let c): hasher.combine(1); hasher.combine(c.id)
         case .graph(let c): hasher.combine(2); hasher.combine(c.id)
-        case .itemDetail(let item, let source): hasher.combine(3); hasher.combine(item.id); hasher.combine(source.id)
+        case .itemDetail(let item, let source): hasher.combine(3); hasher.combine(item.id); hasher.combine(source?.id)
         }
     }
 
@@ -450,7 +450,7 @@ enum InspectorRoute: Hashable {
         case (.detail(let a), .detail(let b)): return a.id == b.id
         case (.graph(let a), .graph(let b)): return a.id == b.id
         case (.itemDetail(let a, let sourceA), .itemDetail(let b, let sourceB)):
-            return a.id == b.id && sourceA.id == sourceB.id
+            return a.id == b.id && sourceA?.id == sourceB?.id
         default: return false
         }
     }
@@ -512,7 +512,12 @@ struct InspectorRootView: View {
                 } else if selectedTab == .ability {
                     AbilityListContainerView(book: book)
                 } else {
-                    ItemListContainerView(book: book, currentSection: currentSection, onSelectSection: onSelectSection)
+                    ItemListContainerView(
+                        book: book,
+                        currentSection: currentSection,
+                        onSelectSection: onSelectSection,
+                        onOpen: { route = .itemDetail($0, nil) }
+                    )
                 }
             case .detail(let character):
                 CharacterDetailView(
@@ -534,7 +539,7 @@ struct InspectorRootView: View {
                 ItemDetailView(
                     item: item,
                     book: book,
-                    onBack: { route = .detail(sourceCharacter) },
+                    onBack: { route = sourceCharacter.map(InspectorRoute.detail) ?? .list },
                     onSelectSection: onSelectSection
                 )
             }
@@ -555,9 +560,13 @@ private struct ItemListContainerView: View {
     let book: Book
     let currentSection: Section?
     let onSelectSection: ((Section) -> Void)?
+    let onOpen: (Item) -> Void
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Item.updatedAt, order: .reverse) private var allItems: [Item]
     @State private var searchText = ""
     @State private var showCurrentSectionOnly = false
+    @State private var showNewItemSheet = false
+    @State private var newItemName = ""
 
     private var items: [Item] {
         let bookItems = allItems.filter { $0.book?.id == book.id }
@@ -602,12 +611,38 @@ private struct ItemListContainerView: View {
                     ContentUnavailableView("尚無符合的物品", systemImage: "shippingbox")
                 } else {
                     ForEach(items) { item in
-                        ItemReferenceRow(item: item, book: book, onSelectSection: onSelectSection)
+                    ItemReferenceRow(item: item, book: book, onSelectSection: onSelectSection, onOpen: onOpen)
                     }
                 }
             }
             .listStyle(.plain)
 
+            Button("新增物品", systemImage: "plus") { showNewItemSheet = true }
+            .buttonStyle(.borderedProminent)
+            .padding(12)
+        }
+        .sheet(isPresented: $showNewItemSheet) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("新增物品").font(.headline)
+                TextField("物品名稱", text: $newItemName).textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("取消") { showNewItemSheet = false }
+                    Spacer()
+                    Button("建立") {
+                        let name = newItemName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return }
+                        let item = Item(name: name, book: book)
+                        modelContext.insert(item)
+                        newItemName = ""
+                        showNewItemSheet = false
+                        onOpen(item)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(width: 320)
         }
     }
 }
@@ -616,6 +651,7 @@ private struct ItemReferenceRow: View {
     @Bindable var item: Item
     let book: Book
     let onSelectSection: ((Section) -> Void)?
+    let onOpen: (Item) -> Void
 
     private var referencedSections: [Section] {
         WritingReferenceScanner.sections(for: item, in: book)
@@ -623,10 +659,16 @@ private struct ItemReferenceRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextField("物品名稱", text: $item.name)
-                .textFieldStyle(.roundedBorder)
-            TextField("描述", text: $item.itemDescription)
-                .textFieldStyle(.roundedBorder)
+            Button(action: { onOpen(item) }) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.name.isEmpty ? "未命名物品" : item.name).font(.headline)
+                    if !item.category.isEmpty { Text(item.category).font(.caption).foregroundStyle(.secondary) }
+                    if !item.itemDescription.isEmpty { Text(item.itemDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             if referencedSections.isEmpty {
                 Text("尚未在正文中出現")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -653,7 +695,7 @@ private struct ItemReferenceRow: View {
             if !item.characterItems.isEmpty {
                 let linkedNames = item.characterItems.compactMap { $0.character?.realName.isEmpty == false ? $0.character?.realName : nil }
                 if !linkedNames.isEmpty {
-                    Text("關聯角色：" + linkedNames.joined(separator: "、"))
+                    Text("持有角色：" + linkedNames.joined(separator: "、"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -677,6 +719,10 @@ private struct ItemDetailView: View {
     let book: Book
     let onBack: () -> Void
     let onSelectSection: ((Section) -> Void)?
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    @Query(sort: \ItemLevel.sortOrder) private var allLevels: [ItemLevel]
+    @State private var selectedHolderID: UUID?
 
     private var referencedSections: [Section] {
         WritingReferenceScanner.sections(for: item, in: book)
@@ -684,12 +730,15 @@ private struct ItemDetailView: View {
     private var linkedCharacters: [Character] {
         item.characterItems.compactMap(\.character)
     }
+    private var levels: [ItemLevel] {
+        allLevels.filter { $0.itemID == item.id }.sorted { $0.sortOrder < $1.sortOrder }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: onBack) {
-                    Label("返回角色", systemImage: "chevron.left")
+                    Label("返回", systemImage: "chevron.left")
                 }
                 .buttonStyle(.plain)
                 Spacer()
@@ -700,47 +749,49 @@ private struct ItemDetailView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label("物品設定", systemImage: "shippingbox")
-                        .font(.headline)
-
-                    TextField("物品名稱", text: $item.name)
-                        .textFieldStyle(.roundedBorder)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("描述")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        InsetTextEditor(text: $item.itemDescription, minHeight: 120)
+                    Label("物品設定", systemImage: "shippingbox").font(.headline)
+                    GroupBox("基本資訊") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextField("名稱", text: $item.name).textFieldStyle(.roundedBorder)
+                            TextField("分類（可自由填寫）", text: $item.category).textFieldStyle(.roundedBorder)
+                            itemEditor("概要", text: $item.itemDescription, minHeight: 80)
+                        }
                     }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("關聯角色")
-                            .font(.caption.weight(.semibold))
-                        Text(linkedCharacters.isEmpty
-                             ? "尚未由任何角色持有"
-                             : linkedCharacters.map { $0.realName.isEmpty ? "未命名角色" : $0.realName }.joined(separator: "、"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("正文引用")
-                            .font(.caption.weight(.semibold))
-                        if referencedSections.isEmpty {
-                            Text("尚未在正文中出現")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(referencedSections) { section in
-                                Button(section.title.isEmpty ? "未命名節" : section.title) {
-                                    onSelectSection?(section)
+                    GroupBox("外觀與材質") { itemEditor("自由描述外型、材質與辨識特徵", text: $item.appearanceAndMaterial, minHeight: 100) }
+                    GroupBox("用途") { itemEditor("物品的使用方式與故事用途", text: $item.usage, minHeight: 90) }
+                    ItemLevelEditor(item: item, levels: levels)
+                    GroupBox("持有角色") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if item.characterItems.isEmpty { Text("尚未設定").foregroundStyle(.secondary) }
+                            ForEach(item.characterItems) { relation in
+                                @Bindable var relation = relation
+                                HStack {
+                                    Text(relation.character?.realName.isEmpty == false ? relation.character!.realName : "未命名角色")
+                                    Spacer()
+                                    Stepper("數量 \(relation.quantity)", value: $relation.quantity, in: 0...9999).frame(width: 130)
+                                    Button(role: .destructive) { modelContext.delete(relation) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
                                 }
-                                .buttonStyle(.link)
-                                .font(.caption)
+                            }
+                            HStack {
+                                Picker("加入持有角色", selection: $selectedHolderID) {
+                                    Text("選擇角色").tag(Optional<UUID>.none)
+                                    ForEach(availableHolders) { Text($0.realName.isEmpty ? "未命名角色" : $0.realName).tag(Optional($0.id)) }
+                                }
+                                Button("加入", action: addHolder).disabled(selectedHolderID == nil)
                             }
                         }
+                    }
+                    ItemUnifiedHistoryEditor(item: item, book: book)
+                    GroupBox("正文引用") {
+                        if referencedSections.isEmpty { Text("尚未在正文中出現").foregroundStyle(.secondary) }
+                        else { ForEach(referencedSections) { section in
+                            Button("第 \(sectionNumber(section)) 節｜\(section.title.isEmpty ? "未命名節" : section.title)") { onSelectSection?(section) }.buttonStyle(.link)
+                        } }
+                    }
+                    HStack {
+                        Button("複製為新物品", systemImage: "plus.square.on.square", action: duplicate)
+                        Spacer()
+                        Button("刪除物品", systemImage: "trash", role: .destructive, action: deleteItem)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -749,6 +800,111 @@ private struct ItemDetailView: View {
         }
         .onChange(of: item.name) { item.updatedAt = Date() }
         .onChange(of: item.itemDescription) { item.updatedAt = Date() }
+    }
+
+    private var availableHolders: [Character] {
+        allCharacters.filter { character in
+            character.book?.id == book.id && !item.characterItems.contains { $0.character?.id == character.id }
+        }
+    }
+    private func itemEditor(_ label: String, text: Binding<String>, minHeight: CGFloat) -> some View { VStack(alignment: .leading, spacing: 4) { Text(label).font(.caption).foregroundStyle(.secondary); InsetTextEditor(text: text, minHeight: minHeight) } }
+    private func addHolder() { guard let id = selectedHolderID, let character = availableHolders.first(where: { $0.id == id }) else { return }; modelContext.insert(CharacterItem(character: character, item: item)); selectedHolderID = nil }
+    private func duplicate() {
+        let copy = Item(name: item.name.isEmpty ? "新物品（副本）" : "\(item.name)（副本）", itemDescription: item.itemDescription, category: item.category, appearanceAndMaterial: item.appearanceAndMaterial, usage: item.usage, positiveAbility: item.positiveAbility, negativeAbility: item.negativeAbility, book: book)
+        modelContext.insert(copy)
+        for level in levels {
+            modelContext.insert(ItemLevel(itemID: copy.id, sortOrder: level.sortOrder, name: level.name, itemName: level.itemName, ability: level.ability, cost: level.cost, note: level.note))
+        }
+    }
+    private func deleteItem() {
+        for level in levels { modelContext.delete(level) }
+        modelContext.delete(item)
+        onBack()
+    }
+    private func sectionNumber(_ section: Section) -> Int { guard let volume = section.volume else { return 1 }; return volume.sections.sorted { $0.sortOrder < $1.sortOrder }.firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1 }
+}
+
+/// This editor only defines possible stages. It intentionally does not expose
+/// a selected/current stage, character-specific stages, or automatic effects.
+private struct ItemLevelEditor: View {
+    let item: Item
+    let levels: [ItemLevel]
+    @Environment(\.modelContext) private var modelContext
+
+    var body: some View {
+        GroupBox("物品等級") {
+            VStack(alignment: .leading, spacing: 10) {
+                if levels.isEmpty {
+                    Text("尚未建立等級；等級僅作為設定資料，不會套用到持有角色。")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+                ForEach(Array(levels.enumerated()), id: \.element.id) { index, level in
+                    ItemLevelRow(
+                        level: level,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < levels.count - 1,
+                        onMoveUp: { move(level, by: -1) },
+                        onMoveDown: { move(level, by: 1) },
+                        onDelete: { modelContext.delete(level) }
+                    )
+                }
+                Button("新增等級", systemImage: "plus") {
+                    modelContext.insert(ItemLevel(itemID: item.id, sortOrder: (levels.map(\.sortOrder).max() ?? -1) + 1, name: "新等級"))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func move(_ level: ItemLevel, by offset: Int) {
+        guard let source = levels.firstIndex(where: { $0.id == level.id }) else { return }
+        let destination = source + offset
+        guard levels.indices.contains(destination) else { return }
+        let other = levels[destination]
+        let order = level.sortOrder
+        level.sortOrder = other.sortOrder
+        other.sortOrder = order
+        level.updatedAt = Date()
+        other.updatedAt = Date()
+    }
+}
+
+private struct ItemLevelRow: View {
+    @Bindable var level: ItemLevel
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("等級名稱（必填）", text: $level.name).textFieldStyle(.roundedBorder)
+                Button(action: onMoveUp) { Image(systemName: "arrow.up") }.buttonStyle(.plain).disabled(!canMoveUp)
+                Button(action: onMoveDown) { Image(systemName: "arrow.down") }.buttonStyle(.plain).disabled(!canMoveDown)
+                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
+            }
+            TextField("物品名稱（選填）", text: $level.itemName).textFieldStyle(.roundedBorder)
+            levelEditor("能力", text: $level.ability)
+            levelEditor("代價", text: $level.cost)
+            levelEditor("其他", text: $level.note)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .onChange(of: level.name) { level.updatedAt = Date() }
+        .onChange(of: level.itemName) { level.updatedAt = Date() }
+        .onChange(of: level.ability) { level.updatedAt = Date() }
+        .onChange(of: level.cost) { level.updatedAt = Date() }
+        .onChange(of: level.note) { level.updatedAt = Date() }
+    }
+
+    private func levelEditor(_ label: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            InsetTextEditor(text: text, minHeight: 56)
+        }
     }
 }
 
@@ -1262,7 +1418,7 @@ struct CharacterDetailView: View {
         let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard old != new, !old.isEmpty, !new.isEmpty else { return }
-        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        NotificationCenter.default.post(name: .sailuneWillChangeCharacterReferences, object: nil)
         if updatesLinkedReferences {
             do {
                 try CharacterReferenceSynchronizer.updateLinkedNames(
@@ -1285,7 +1441,7 @@ struct CharacterDetailView: View {
         let old = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard old != new, !old.isEmpty, !new.isEmpty else { return }
-        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        NotificationCenter.default.post(name: .sailuneWillChangeCharacterReferences, object: nil)
         do {
             try CharacterReferenceSynchronizer.updateLinkedAlias(
                 alias,
@@ -1405,7 +1561,7 @@ private struct CharacterReferenceSectionsView: View {
         self.character = character
         self.book = book
         self.onSelectSection = onSelectSection
-        _isCollapsed = AppStorage(wrappedValue: false, "dreaMoon.characterDetail.\(character.id.uuidString).正文引用.collapsed")
+        _isCollapsed = AppStorage(wrappedValue: false, "sailune.characterDetail.\(character.id.uuidString).正文引用.collapsed")
     }
 
     var body: some View {
@@ -1507,7 +1663,7 @@ private struct CollapsibleDetailSection<Content: View>: View {
         self.content = content
         _isCollapsed = AppStorage(
             wrappedValue: false,
-            "dreaMoon.characterDetail.\(characterID.uuidString).\(title).collapsed"
+            "sailune.characterDetail.\(characterID.uuidString).\(title).collapsed"
         )
     }
 

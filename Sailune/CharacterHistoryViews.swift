@@ -295,6 +295,68 @@ struct ItemHistoryEditor: View {
     }
 }
 
+struct ItemUnifiedHistoryEditor: View {
+    @Bindable var item: Item
+    let book: Book
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    private var histories: [ItemHistory] { item.histories.sorted { $0.sortOrder < $1.sortOrder } }
+    private var characters: [Character] { allCharacters.filter { $0.book?.id == book.id } }
+
+    var body: some View {
+        GroupBox("物品歷史") {
+            VStack(alignment: .leading, spacing: 10) {
+                if histories.isEmpty { Text("尚無歷史紀錄").foregroundStyle(.secondary) }
+                ForEach(histories) { history in
+                    ItemUnifiedHistoryRow(history: history, book: book, characters: characters, onDelete: { modelContext.delete(history) })
+                }
+                Button("新增歷史", systemImage: "plus", action: addHistory)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func addHistory() {
+        let history = ItemHistory(sortOrder: (histories.map(\.sortOrder).max() ?? -1) + 1, item: item)
+        item.histories.append(history)
+        modelContext.insert(history)
+    }
+}
+
+private struct ItemUnifiedHistoryRow: View {
+    @Bindable var history: ItemHistory
+    let book: Book
+    let characters: [Character]
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                CharacterNodePicker(book: book, node: $history.node)
+                Menu {
+                    ForEach(characters) { character in
+                        Toggle(character.realName.isEmpty ? "未命名角色" : character.realName, isOn: selected(character))
+                    }
+                } label: {
+                    Label(history.relatedCharacters.isEmpty ? "關聯角色（選填）" : "關聯角色：\(history.relatedCharacters.map { $0.realName }.joined(separator: "、"))", systemImage: "person.2")
+                }
+                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
+            }
+            InsetTextEditor(text: $history.content, minHeight: 72)
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .onChange(of: history.content) { history.updatedAt = Date() }
+    }
+
+    private func selected(_ character: Character) -> Binding<Bool> {
+        Binding(get: { history.relatedCharacters.contains { $0.id == character.id } }, set: { enabled in
+            if enabled { history.relatedCharacters.append(character) }
+            else { history.relatedCharacters.removeAll { $0.id == character.id } }
+            history.updatedAt = Date()
+        })
+    }
+}
+
 private struct ItemHistoryRow: View {
     @Bindable var history: CharacterItemHistory
     let book: Book

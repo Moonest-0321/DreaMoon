@@ -191,7 +191,7 @@ struct CharacterAliasSectionView: View {
     }
 
     private func deleteAlias(_ alias: CharacterAlias) {
-        NotificationCenter.default.post(name: .dreaMoonWillChangeCharacterReferences, object: nil)
+        NotificationCenter.default.post(name: .sailuneWillChangeCharacterReferences, object: nil)
         var changedSectionIDs = Set<UUID>()
         if let book = character.book {
             for section in book.volumes.flatMap(\.sections) {
@@ -226,7 +226,7 @@ struct CharacterAliasSectionView: View {
             return
         }
         if !changedSectionIDs.isEmpty {
-            NotificationCenter.default.post(name: .dreaMoonCharacterReferencesChanged, object: changedSectionIDs)
+            NotificationCenter.default.post(name: .sailuneCharacterReferencesChanged, object: changedSectionIDs)
         }
     }
 }
@@ -529,7 +529,7 @@ struct CharacterItemSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if characterItems.isEmpty {
-                CharacterSectionEmptyState(title: "尚無持有物品", detail: "可管理物品描述、數量與歷史。")
+                CharacterSectionEmptyState(title: "尚無持有物品", detail: "可在物品設定中管理描述、數量與統一歷史。")
             } else {
                 ForEach(characterItems) { characterItem in
                     ItemRow(
@@ -596,11 +596,9 @@ private struct ItemRow: View {
                 Stepper("數量 \(characterItem.quantity)", value: $characterItem.quantity, in: 0...9999).frame(width: 130)
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
-            if let item = characterItem.item {
-                @Bindable var item = item
-                TextField("描述", text: $item.itemDescription).textFieldStyle(.roundedBorder)
+            if let item = characterItem.item, !item.itemDescription.isEmpty {
+                Text(item.itemDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
-            ItemHistoryEditor(characterItem: characterItem, book: book)
         }
     }
 }

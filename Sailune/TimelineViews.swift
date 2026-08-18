@@ -3,20 +3,20 @@ import SwiftData
 
 // MARK: - 角色顯示名（直接取 realName）
 
-private func dreaMoonDisplayName(_ character: Character) -> String {
+private func sailuneDisplayName(_ character: Character) -> String {
     let name = character.realName.trimmingCharacters(in: .whitespacesAndNewlines)
     return name.isEmpty ? "角色·\(character.id.uuidString.prefix(4))" : name
 }
 
 // MARK: - 右欄頂端分段
 
-private enum DreaMoonInspectorTab: String, CaseIterable, Identifiable {
+private enum SailuneInspectorTab: String, CaseIterable, Identifiable {
     case settings = "設定集"
     case timeline = "時間軸"
     var id: String { rawValue }
 }
 
-private enum DreaMoonTimelineGranularity: String, CaseIterable, Identifiable {
+private enum SailuneTimelineGranularity: String, CaseIterable, Identifiable {
     case year = "年", month = "月", day = "日"
     var id: String { rawValue }
 }
@@ -28,12 +28,12 @@ struct InspectorWithTimeline: View {
     var focusedCharacter: Character? = nil
     var focusRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
-    @State private var tab: DreaMoonInspectorTab = .settings
+    @State private var tab: SailuneInspectorTab = .settings
 
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
-                ForEach(DreaMoonInspectorTab.allCases) { t in
+                ForEach(SailuneInspectorTab.allCases) { t in
                     Text(t.rawValue).tag(t)
                 }
             }
@@ -114,7 +114,7 @@ private struct EventGroup: Identifiable {
     let character: Character?
     let events: [Event]
     var displayName: String {
-        character.map { dreaMoonDisplayName($0) } ?? "未指定角色"
+        character.map { sailuneDisplayName($0) } ?? "未指定角色"
     }
 }
 
@@ -136,7 +136,7 @@ struct TimelinePanelView: View {
     @Query private var allCharacters: [Character]
 
     @State private var selectedTimelineID: UUID? = nil
-    @State private var granularity: DreaMoonTimelineGranularity = .month
+    @State private var granularity: SailuneTimelineGranularity = .month
     @State private var expandedCells: Set<String> = []
     @State private var showingEraChange = false
     @State private var editingEra: Era? = nil
@@ -172,7 +172,7 @@ struct TimelinePanelView: View {
     }
 
     private var sortedCharacters: [Character] {
-        allCharacters.sorted { dreaMoonDisplayName($0) < dreaMoonDisplayName($1) }
+        allCharacters.sorted { sailuneDisplayName($0) < sailuneDisplayName($1) }
     }
 
     private var bookTimelines: [Timeline] {
@@ -345,7 +345,7 @@ struct TimelinePanelView: View {
                 .padding(.horizontal, 12)
             }
             Picker("", selection: $granularity) {
-                ForEach(DreaMoonTimelineGranularity.allCases) { g in
+                ForEach(SailuneTimelineGranularity.allCases) { g in
                     Text(g.rawValue).tag(g)
                 }
             }
@@ -564,7 +564,7 @@ struct TimelinePanelView: View {
                                     HStack(spacing: 6) {
                                         Image(systemName: sel ? "checkmark.square.fill" : "square")
                                             .foregroundStyle(sel ? Color.accentColor : .secondary)
-                                        Text(dreaMoonDisplayName(c)).font(.caption)
+                                        Text(sailuneDisplayName(c)).font(.caption)
                                         Spacer()
                                     }
                                 }
@@ -821,7 +821,7 @@ private struct EventRow: View {
                                         HStack(spacing: 6) {
                                             Image(systemName: sel ? "checkmark.square.fill" : "square")
                                                 .foregroundStyle(sel ? Color.accentColor : .secondary)
-                                            Text(dreaMoonDisplayName(c)).font(.caption2)
+                                            Text(sailuneDisplayName(c)).font(.caption2)
                                             Spacer()
                                         }
                                     }
@@ -1277,7 +1277,7 @@ struct CharacterTimelineProjectionView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(dreaMoonDisplayName(character))
+            Text(sailuneDisplayName(character))
                 .font(.system(.headline, design: .serif))
                 .lineLimit(1)
             Spacer(minLength: 6)

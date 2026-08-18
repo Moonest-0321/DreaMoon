@@ -12,11 +12,11 @@ private final class EditorKeyboardMonitor {
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard modifiers.contains(.option) else { return event }
             if event.keyCode == 123 {
-                NotificationCenter.default.post(name: .dreaMoonPreviousSection, object: nil)
+                NotificationCenter.default.post(name: .sailunePreviousSection, object: nil)
                 return nil
             }
             if event.keyCode == 124 {
-                NotificationCenter.default.post(name: .dreaMoonNextSection, object: nil)
+                NotificationCenter.default.post(name: .sailuneNextSection, object: nil)
                 return nil
             }
             return event
@@ -135,18 +135,18 @@ struct EditorWorkspaceView: View {
         .sheet(isPresented: $showingShortcutHelp) {
             ShortcutHelpView()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonPreviousSection)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sailunePreviousSection)) { _ in
             navigate(to: neighboringSections.previous)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonNextSection)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sailuneNextSection)) { _ in
             navigate(to: neighboringSections.next)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonWillChangeCharacterReferences)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sailuneWillChangeCharacterReferences)) { _ in
             // 名稱同步會直接改寫 Section.content；先提交作者正在輸入的內容，
             // 避免背景同步以較舊的模型內容覆蓋編輯器。
             bridge.flushPendingSave()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dreaMoonCharacterReferencesChanged)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .sailuneCharacterReferencesChanged)) { notification in
             guard let sectionIDs = notification.object as? Set<UUID>,
                   let selectedSection,
                   sectionIDs.contains(selectedSection.id) else { return }
@@ -703,8 +703,8 @@ struct EditorCenterView: View {
     @State private var saveState: EditorSaveState = .saved
     @State private var isContentLoading = false
     @State private var selectedText = ""
-    @AppStorage("dreaMoon.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
-    @AppStorage("dreaMoon.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
+    @AppStorage("sailune.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
+    @AppStorage("sailune.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
     @State private var showingInlineAutosaveHint = false
     @FocusState private var titleFieldFocused: Bool
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
