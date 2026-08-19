@@ -192,96 +192,8 @@ enum NovelWriterSchemaV3: VersionedSchema {
     }
 }
 
-enum NovelWriterSchemaV4: VersionedSchema {
-    static var versionIdentifier = Schema.Version(4, 0, 0)
-
-    static var models: [any PersistentModel.Type] {
-        [
-            Sailune.Book.self, Sailune.Volume.self, Sailune.Section.self,
-            Sailune.AuthorProfile.self, Sailune.Character.self,
-            Sailune.KinshipRelation.self, Sailune.Era.self,
-            Sailune.Timeline.self, Sailune.Node.self, Sailune.Event.self,
-            Item.self, Sailune.CharacterProfile.self,
-            Sailune.CharacterAlias.self,
-            Sailune.Organization.self, Sailune.CharacterOrganization.self,
-            Sailune.OrganizationIdentityHistory.self,
-            Sailune.CharacterAbility.self, Sailune.AbilityStageHistory.self,
-            Sailune.CharacterAppearance.self, Sailune.CharacterPsychology.self,
-            CharacterItem.self, CharacterItemHistory.self,
-            Sailune.CharacterRelationship.self, Sailune.RelationshipHistory.self,
-            Sailune.CharacterSummary.self
-        ]
-    }
-
-    // Exact snapshots of the three released V4 entities whose live models
-    // were later expanded during development. All other V4 entities above are
-    // unchanged and therefore safely reuse their live definitions.
-    @Model
-    final class Item {
-        @Attribute(.unique) var id: UUID
-        var name: String
-        var itemDescription: String
-        var createdAt: Date
-        var updatedAt: Date
-        var book: Sailune.Book?
-
-        @Relationship(deleteRule: .cascade, inverse: \CharacterItem.item)
-        var characterItems: [CharacterItem]
-
-        init(id: UUID = UUID(), name: String, itemDescription: String = "", book: Sailune.Book? = nil) {
-            self.id = id
-            self.name = name
-            self.itemDescription = itemDescription
-            self.createdAt = Date()
-            self.updatedAt = Date()
-            self.book = book
-            self.characterItems = []
-        }
-    }
-
-    @Model
-    final class CharacterItem {
-        @Attribute(.unique) var id: UUID
-        var quantity: Int
-        var character: Sailune.Character?
-        var item: Item?
-
-        @Relationship(deleteRule: .cascade, inverse: \CharacterItemHistory.characterItem)
-        var history: [CharacterItemHistory]
-
-        init(id: UUID = UUID(), quantity: Int = 1, character: Sailune.Character? = nil, item: Item? = nil) {
-            self.id = id
-            self.quantity = quantity
-            self.character = character
-            self.item = item
-            self.history = []
-        }
-    }
-
-    @Model
-    final class CharacterItemHistory {
-        @Attribute(.unique) var id: UUID
-        var content: String
-        var sortOrder: Int
-        var createdAt: Date
-        var updatedAt: Date
-        var node: Sailune.Node?
-        var characterItem: CharacterItem?
-
-        init(id: UUID = UUID(), content: String, sortOrder: Int = 0, node: Sailune.Node? = nil, characterItem: CharacterItem? = nil) {
-            self.id = id
-            self.content = content
-            self.sortOrder = sortOrder
-            self.createdAt = Date()
-            self.updatedAt = Date()
-            self.node = node
-            self.characterItem = characterItem
-        }
-    }
-}
-
-/// V5 is additive. ItemLevel uses Item's stable UUID rather than changing the
-/// V4 Item entity, which keeps the on-device migration lightweight and safe.
+/// V5 keeps ItemLevel linked through Item's stable UUID rather than adding a
+/// fragile inverse relationship to the legacy Item entity.
 enum NovelWriterSchemaV5: VersionedSchema {
     static var versionIdentifier = Schema.Version(5, 0, 0)
 
@@ -304,27 +216,16 @@ enum NovelWriterSchemaV5: VersionedSchema {
     }
 }
 
-enum NovelWriterMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] {
-        [NovelWriterSchemaV4.self, NovelWriterSchemaV5.self]
-    }
-
-    static var stages: [MigrationStage] {
-        [.lightweight(fromVersion: NovelWriterSchemaV4.self, toVersion: NovelWriterSchemaV5.self)]
-    }
-}
-
-// The released V3 schema referenced live app model types, so it is not a safe
-// immutable source for a SwiftData MigrationStage. V3 -> V4 is intentionally
-// handled by the validated store bridge below. The next schema version must
-// add a real V4 -> V5 MigrationStage and leave NovelWriterSchemaV4 unchanged.
+// V3 and V2 stores are imported into a separate V5 store. Keeping legacy model
+// types out of the V5 process prevents SwiftData's global model registry from
+// confusing same-named Item and CharacterItem classes.
 
 private struct LegacyImportValidationError: LocalizedError {
     let entityName: String
     let missingIDs: Set<UUID>
 
     var errorDescription: String? {
-        "V4 \(entityName) 匯入不完整，缺少 \(missingIDs.count) 筆資料"
+        "舊版 \(entityName) 匯入不完整，缺少 \(missingIDs.count) 筆資料"
     }
 }
 

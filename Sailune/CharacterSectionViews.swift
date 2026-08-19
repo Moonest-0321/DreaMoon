@@ -593,11 +593,20 @@ private struct ItemRow: View {
                         .help("前往物品設定")
                     }
                 }
-                Stepper("數量 \(characterItem.quantity)", value: $characterItem.quantity, in: 0...9999).frame(width: 130)
+                Stepper("數量 \(characterItem.quantity)", value: $characterItem.quantity, in: 1...9999).frame(width: 130)
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
             if let item = characterItem.item, !item.itemDescription.isEmpty {
                 Text(item.itemDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .onChange(of: characterItem.item?.name) {
+            characterItem.item?.updatedAt = Date()
+        }
+        .onDisappear {
+            guard let item = characterItem.item else { return }
+            if item.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                item.name = "未命名物品"
             }
         }
     }

@@ -723,6 +723,9 @@ private struct ItemDetailView: View {
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @Query(sort: \ItemLevel.sortOrder) private var allLevels: [ItemLevel]
     @State private var selectedHolderID: UUID?
+    @State private var showDeleteConfirmation = false
+    @State private var showCopyConfirmation = false
+    @State private var copiedItemName = ""
 
     private var referencedSections: [Section] {
         WritingReferenceScanner.sections(for: item, in: book)
@@ -753,6 +756,11 @@ private struct ItemDetailView: View {
                     GroupBox("基本資訊") {
                         VStack(alignment: .leading, spacing: 8) {
                             TextField("名稱", text: $item.name).textFieldStyle(.roundedBorder)
+                            if item.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Label("物品名稱不可空白", systemImage: "exclamationmark.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
                             TextField("分類（可自由填寫）", text: $item.category).textFieldStyle(.roundedBorder)
                             itemEditor("概要", text: $item.itemDescription, minHeight: 80)
                         }
@@ -768,7 +776,7 @@ private struct ItemDetailView: View {
                                 HStack {
                                     Text(relation.character?.realName.isEmpty == false ? relation.character!.realName : "未命名角色")
                                     Spacer()
-                                    Stepper("數量 \(relation.quantity)", value: $relation.quantity, in: 0...9999).frame(width: 130)
+                                    Stepper("數量 \(relation.quantity)", value: $relation.quantity, in: 1...9999).frame(width: 130)
                                     Button(role: .destructive) { modelContext.delete(relation) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
                                 }
                             }
@@ -791,7 +799,7 @@ private struct ItemDetailView: View {
                     HStack {
                         Button("複製為新物品", systemImage: "plus.square.on.square", action: duplicate)
                         Spacer()
-                        Button("刪除物品", systemImage: "trash", role: .destructive, action: deleteItem)
+                        Button("刪除物品", systemImage: "trash", role: .destructive) { showDeleteConfirmation = true }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -800,6 +808,25 @@ private struct ItemDetailView: View {
         }
         .onChange(of: item.name) { item.updatedAt = Date() }
         .onChange(of: item.itemDescription) { item.updatedAt = Date() }
+        .onChange(of: item.category) { item.updatedAt = Date() }
+        .onChange(of: item.appearanceAndMaterial) { item.updatedAt = Date() }
+        .onChange(of: item.usage) { item.updatedAt = Date() }
+        .onDisappear {
+            if item.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                item.name = "未命名物品"
+            }
+        }
+        .confirmationDialog("確定刪除「\(item.name)」？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("刪除物品", role: .destructive, action: deleteItem)
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("持有關係、物品歷史與等級資料將一併刪除；正文內容本身會保留。")
+        }
+        .alert("已複製為新物品", isPresented: $showCopyConfirmation) {
+            Button("好") { }
+        } message: {
+            Text("已建立「\(copiedItemName)」。持有人、歷史與正文引用未被複製。")
+        }
     }
 
     private var availableHolders: [Character] {
@@ -810,11 +837,9 @@ private struct ItemDetailView: View {
     private func itemEditor(_ label: String, text: Binding<String>, minHeight: CGFloat) -> some View { VStack(alignment: .leading, spacing: 4) { Text(label).font(.caption).foregroundStyle(.secondary); InsetTextEditor(text: text, minHeight: minHeight) } }
     private func addHolder() { guard let id = selectedHolderID, let character = availableHolders.first(where: { $0.id == id }) else { return }; modelContext.insert(CharacterItem(character: character, item: item)); selectedHolderID = nil }
     private func duplicate() {
-        let copy = Item(name: item.name.isEmpty ? "新物品（副本）" : "\(item.name)（副本）", itemDescription: item.itemDescription, category: item.category, appearanceAndMaterial: item.appearanceAndMaterial, usage: item.usage, positiveAbility: item.positiveAbility, negativeAbility: item.negativeAbility, book: book)
-        modelContext.insert(copy)
-        for level in levels {
-            modelContext.insert(ItemLevel(itemID: copy.id, sortOrder: level.sortOrder, name: level.name, itemName: level.itemName, ability: level.ability, cost: level.cost, note: level.note))
-        }
+        let copy = ItemOperations.duplicate(item, levels: levels, in: book, context: modelContext)
+        copiedItemName = copy.name
+        showCopyConfirmation = true
     }
     private func deleteItem() {
         for level in levels { modelContext.delete(level) }
@@ -886,6 +911,11 @@ private struct ItemLevelRow: View {
                 Button(action: onMoveDown) { Image(systemName: "arrow.down") }.buttonStyle(.plain).disabled(!canMoveDown)
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
+            if level.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("等級名稱不可空白", systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             TextField("物品名稱（選填）", text: $level.itemName).textFieldStyle(.roundedBorder)
             levelEditor("能力", text: $level.ability)
             levelEditor("代價", text: $level.cost)
@@ -898,6 +928,11 @@ private struct ItemLevelRow: View {
         .onChange(of: level.ability) { level.updatedAt = Date() }
         .onChange(of: level.cost) { level.updatedAt = Date() }
         .onChange(of: level.note) { level.updatedAt = Date() }
+        .onDisappear {
+            if level.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                level.name = "未命名等級"
+            }
+        }
     }
 
     private func levelEditor(_ label: String, text: Binding<String>) -> some View {

@@ -316,7 +316,7 @@ struct ItemUnifiedHistoryEditor: View {
     }
 
     private func addHistory() {
-        let history = ItemHistory(sortOrder: (histories.map(\.sortOrder).max() ?? -1) + 1, item: item)
+        let history = ItemHistory(content: "新歷史", sortOrder: (histories.map(\.sortOrder).max() ?? -1) + 1, item: item)
         item.histories.append(history)
         modelContext.insert(history)
     }
@@ -342,10 +342,20 @@ private struct ItemUnifiedHistoryRow: View {
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
             InsetTextEditor(text: $history.content, minHeight: 72)
+            if history.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("歷史描述不可空白", systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
         .padding(8)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         .onChange(of: history.content) { history.updatedAt = Date() }
+        .onDisappear {
+            if history.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                history.content = "未填寫描述"
+            }
+        }
     }
 
     private func selected(_ character: Character) -> Binding<Bool> {

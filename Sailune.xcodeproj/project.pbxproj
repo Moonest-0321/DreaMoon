@@ -22,6 +22,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		85A5AA833015D44D007D17F6 /* SailuneTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SailuneTests;
+			sourceTree = "<group>";
+		};
 		85C96CB7300E6FDF0089544C /* Sailune */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Sailune;
@@ -51,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				85C96CB7300E6FDF0089544C /* Sailune */,
+				85A5AA833015D44D007D17F6 /* SailuneTests */,
 				85C96CB6300E6FDF0089544C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -79,6 +85,9 @@
 			);
 			dependencies = (
 				85A5AA7F3015D44D007D17F6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				85A5AA833015D44D007D17F6 /* SailuneTests */,
 			);
 			name = SailuneTests;
 			packageProductDependencies = (

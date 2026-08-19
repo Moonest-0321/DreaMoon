@@ -3,8 +3,21 @@ import SwiftData
 
 @main
 struct SailuneApp: App {
+    private enum StartupState {
+        case ready(ModelContainer)
+        case failed(String)
+    }
+
+    private struct StartupStageError: LocalizedError {
+        let stage: String
+        let underlying: Error
+
+        var errorDescription: String? {
+            "\(stage)：\(SailuneApp.errorDetails(underlying))"
+        }
+    }
     
-    // V4 uses a new store because the released V3 schema used live models.
+    // V5 uses a separate store so schema failures never mutate an older store.
     private static var storeURL: URL {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -21,10 +34,6 @@ struct SailuneApp: App {
         return appSupportURL.appendingPathComponent("Sailune-v5.store")
     }
 
-    private static var legacyV4StoreURL: URL {
-        storeURL.deletingLastPathComponent().appendingPathComponent("Sailune-v4.store")
-    }
-
     private static var legacyV3StoreURL: URL {
         storeURL.deletingLastPathComponent().appendingPathComponent("Sailune-v3.store")
     }
@@ -34,20 +43,29 @@ struct SailuneApp: App {
     }
 
     private enum LegacyStoreSource {
-        case v4(ModelContainer)
         case v3(ModelContainer)
         case v2(ModelContainer)
     }
     
-    var sharedModelContainer: ModelContainer = {
-        // Open the released schema before V4. SwiftData caches model metadata
+    private let startupState: StartupState
+
+    init() {
+        do {
+            startupState = .ready(try Self.makeModelContainer())
+        } catch {
+            startupState = .failed(error.localizedDescription)
+        }
+    }
+
+    private static func makeModelContainer() throws -> ModelContainer {
+        // Open the released schema before V5. SwiftData caches model metadata
         // for shared top-level model types, so reversing this order makes it
-        // attempt to open the V3 store with V4's expanded model graph.
+        // attempt to open the V3 store with V5's expanded model graph.
         let legacySource: LegacyStoreSource?
         do {
             legacySource = try openLegacyStoreIfPresent()
         } catch {
-            fatalError("V3/V2 舊資料庫載入失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "舊資料庫載入失敗", underlying: error)
         }
 
         let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
@@ -57,40 +75,40 @@ struct SailuneApp: App {
         do {
             container = try ModelContainer(for: schema, configurations: [config])
         } catch {
-            fatalError("V5 SwiftData 容器載入失敗（Sailune-v5.store）: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "V5 資料庫載入失敗（Sailune-v5.store）", underlying: error)
         }
         do {
             try importLegacyStore(legacySource, into: container)
         } catch {
-            fatalError("舊資料匯入 V5 失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "舊資料匯入 V5 失敗", underlying: error)
         }
         do {
             try PersistentStoreRepair.run(in: container.mainContext)
         } catch {
-            fatalError("書籍懸空資料修復失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "書籍懸空資料修復失敗", underlying: error)
         }
         do {
             try V4DataBackfill.migrateLegacyPsychology(in: container.mainContext)
         } catch {
-            fatalError("Psychology 舊資料轉換失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "心理資料轉換失敗", underlying: error)
         }
         do {
             try V4DataBackfill.migrateLegacyItemHistories(in: container.mainContext)
         } catch {
-            fatalError("物品舊歷史轉換失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "物品舊歷史轉換失敗", underlying: error)
         }
         do {
             try V5DataBackfill.removeOrphanedItemLevels(in: container.mainContext)
         } catch {
-            fatalError("物品等級資料修復失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "物品等級資料修復失敗", underlying: error)
         }
         do {
             try V4DataBackfill.ensureInitialWritingStructure(in: container.mainContext)
         } catch {
-            fatalError("初始寫作結構補齊失敗: \(Self.errorDetails(error))")
+            throw StartupStageError(stage: "初始寫作結構補齊失敗", underlying: error)
         }
         return container
-    }()
+    }
 
     private static func errorDetails(_ error: Error) -> String {
         let nsError = error as NSError
@@ -99,14 +117,6 @@ struct SailuneApp: App {
 
     private static func openLegacyStoreIfPresent() throws -> LegacyStoreSource? {
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: legacyV4StoreURL.path) {
-            let schema = Schema(versionedSchema: NovelWriterSchemaV4.self)
-            let config = ModelConfiguration(schema: schema, url: legacyV4StoreURL)
-            let container = try ModelContainer(for: schema, configurations: [config])
-            if try !container.mainContext.fetch(FetchDescriptor<Book>()).isEmpty {
-                return .v4(container)
-            }
-        }
         if fileManager.fileExists(atPath: legacyV3StoreURL.path) {
             let schema = Schema(versionedSchema: NovelWriterSchemaV3.self)
             let config = ModelConfiguration(schema: schema, url: legacyV3StoreURL)
@@ -126,8 +136,6 @@ struct SailuneApp: App {
         importContext.autosaveEnabled = false
 
         switch source {
-        case .v4(let container):
-            try LegacyV4StoreImporter.importIfNeeded(from: container.mainContext, to: importContext)
         case .v3(let container):
             try LegacyV3StoreImporter.importIfNeeded(from: container.mainContext, to: importContext)
         case .v2(let container):
@@ -139,9 +147,40 @@ struct SailuneApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            switch startupState {
+            case .ready(let container):
+                ContentView().modelContainer(container)
+            case .failed(let message):
+                DatabaseStartupFailureView(message: message)
+            }
         }
-        .modelContainer(sharedModelContainer)
+    }
+}
+
+private struct DatabaseStartupFailureView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "externaldrive.badge.exclamationmark")
+                .font(.system(size: 42))
+                .foregroundStyle(.orange)
+            Text("資料庫無法開啟").font(.title2.bold())
+            Text("原始資料庫不會被刪除或覆寫。請保留此畫面中的錯誤資訊，以便進行修復。")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                Text(message)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 180)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(28)
+        .frame(minWidth: 520, minHeight: 330)
     }
 }
 
@@ -154,9 +193,25 @@ enum V5DataBackfill {
         let itemIDs = Set(try context.fetch(FetchDescriptor<Item>()).map(\.id))
         let levels = try context.fetch(FetchDescriptor<ItemLevel>())
         let orphans = levels.filter { !itemIDs.contains($0.itemID) }
-        guard !orphans.isEmpty else { return }
         for level in orphans { context.delete(level) }
-        try context.save()
+        let invalidHoldings = try context.fetch(FetchDescriptor<CharacterItem>()).filter { $0.quantity < 1 }
+        for holding in invalidHoldings { holding.quantity = 1 }
+        let unnamedItems = try context.fetch(FetchDescriptor<Item>()).filter {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        for item in unnamedItems { item.name = "未命名物品" }
+        let orphanIDs = Set(orphans.map(\.id))
+        let unnamedLevels = levels.filter {
+            !orphanIDs.contains($0.id) && $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        for level in unnamedLevels { level.name = "未命名等級" }
+        let emptyHistories = try context.fetch(FetchDescriptor<ItemHistory>()).filter {
+            $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        for history in emptyHistories { history.content = "未填寫描述" }
+        if !orphans.isEmpty || !invalidHoldings.isEmpty || !unnamedItems.isEmpty || !unnamedLevels.isEmpty || !emptyHistories.isEmpty {
+            try context.save()
+        }
     }
 }
 

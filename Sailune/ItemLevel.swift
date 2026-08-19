@@ -3,7 +3,7 @@ import SwiftData
 
 /// A predefined description of a possible item phase.  It deliberately has no
 /// "current" flag and is linked by ID instead of a SwiftData relationship so
-/// adding it does not alter the released V4 Item table.
+/// the legacy Item table remains stable.
 @Model
 final class ItemLevel {
     @Attribute(.unique) var id: UUID
