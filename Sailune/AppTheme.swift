@@ -16,4 +16,27 @@ extension NSColor {
 
 extension Color {
     static let appBackground: Color = Color(nsColor: .appBackgroundDynamic)
+    /// Shared surface for the outline and inspector. Both side panels use the
+    /// same flat material; cards are reserved for content inside a panel.
+    static let workspacePanelBackground = Color(nsColor: .controlBackgroundColor)
+}
+
+private struct WorkspaceFloatingPanel: ViewModifier {
+    private let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+
+    func body(content: Content) -> some View {
+        content
+            .background(.regularMaterial, in: shape)
+            .clipShape(shape)
+            .overlay(shape.stroke(Color.secondary.opacity(0.14), lineWidth: 1))
+            .padding(8)
+    }
+}
+
+extension View {
+    /// Gives the inspector the same floating panel hierarchy as the system
+    /// navigation sidebar, while leaving cards inside the panel unchanged.
+    func workspaceFloatingPanel() -> some View {
+        modifier(WorkspaceFloatingPanel())
+    }
 }

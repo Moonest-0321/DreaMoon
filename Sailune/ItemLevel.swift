@@ -39,3 +39,23 @@ final class ItemLevel {
         self.updatedAt = Date()
     }
 }
+
+extension ItemLevel {
+    /// A compact, read-only description used by the collapsed level list.
+    /// It is derived from existing fields, so V3.1 does not add a new stored
+    /// property or change the item-level data contract.
+    var compactOverview: String {
+        let parts = [
+            labeled("名稱", itemName),
+            labeled("能力", ability),
+            labeled("代價", cost),
+            labeled("其他", note)
+        ].compactMap { $0 }
+        return parts.isEmpty ? "尚未填寫概述" : parts.joined(separator: " · ")
+    }
+
+    private func labeled(_ label: String, _ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : "\(label)：\(trimmed)"
+    }
+}

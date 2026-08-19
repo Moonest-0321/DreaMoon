@@ -40,6 +40,7 @@ struct InspectorWithTimeline: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            .background(Color.workspacePanelBackground)
             Divider()
             switch tab {
             case .settings:
@@ -54,6 +55,7 @@ struct InspectorWithTimeline: View {
                 TimelinePanelView(book: book)
             }
         }
+        .background(Color.workspacePanelBackground)
         .onAppear { showFocusedCharacter() }
         .onChange(of: focusedCharacter?.id) { _, _ in showFocusedCharacter() }
         .onChange(of: focusRequestID) { _, _ in showFocusedCharacter() }

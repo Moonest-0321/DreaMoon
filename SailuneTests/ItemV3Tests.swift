@@ -173,4 +173,21 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(WritingReferenceScanner.sections(for: source, in: book).map(\.id), [section.id])
         XCTAssertTrue(WritingReferenceScanner.sections(for: copy, in: book).isEmpty)
     }
+
+    func testLevelCompactOverviewUsesExistingFieldsOnly() throws {
+        let level = ItemLevel(
+            itemID: UUID(),
+            name: "覺醒",
+            itemName: "霜紋長劍",
+            ability: "提高寒冷耐受力",
+            cost: "持續消耗體力",
+            note: "劍身出現白色紋路"
+        )
+
+        XCTAssertEqual(
+            level.compactOverview,
+            "名稱：霜紋長劍 · 能力：提高寒冷耐受力 · 代價：持續消耗體力 · 其他：劍身出現白色紋路"
+        )
+        XCTAssertEqual(ItemLevel(itemID: UUID(), name: "初始").compactOverview, "尚未填寫概述")
+    }
 }

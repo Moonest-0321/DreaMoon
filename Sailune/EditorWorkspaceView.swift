@@ -123,6 +123,7 @@ struct EditorWorkspaceView: View {
                             selectedSection = section
                         }
                     )
+                    .workspaceFloatingPanel()
                     .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
                 }
         }
@@ -324,7 +325,7 @@ struct EditorSidebarView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color.appBackground) // ⚠️ 若報錯請改為 Color(NSColor.controlBackgroundColor)
+            .background(Color.workspacePanelBackground)
             Divider()
             List {
                 ForEach(book.volumes.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { volume in
@@ -346,8 +347,11 @@ struct EditorSidebarView: View {
                     }
                 }
             }
-            .listStyle(.sidebar)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.workspacePanelBackground)
         }
+        .background(Color.workspacePanelBackground)
         .alert("確認刪除",
                isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
                presenting: deleteTarget) { target in

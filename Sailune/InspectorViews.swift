@@ -616,6 +616,8 @@ private struct ItemListContainerView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.workspacePanelBackground)
 
             Button("新增物品", systemImage: "plus") { showNewItemSheet = true }
             .buttonStyle(.borderedProminent)
@@ -855,6 +857,7 @@ private struct ItemLevelEditor: View {
     let item: Item
     let levels: [ItemLevel]
     @Environment(\.modelContext) private var modelContext
+    @State private var editingLevelIDs: Set<UUID> = []
 
     var body: some View {
         GroupBox("物品等級") {
@@ -864,22 +867,58 @@ private struct ItemLevelEditor: View {
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
+                if !levels.isEmpty {
+                    HStack(spacing: 10) {
+                        Text("序號").frame(width: 42, alignment: .leading)
+                        Text("等級").frame(width: 110, alignment: .leading)
+                        Text("概述")
+                        Spacer(minLength: 20)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                }
                 ForEach(Array(levels.enumerated()), id: \.element.id) { index, level in
                     ItemLevelRow(
                         level: level,
+                        sequenceNumber: index + 1,
+                        isEditing: editingBinding(for: level),
                         canMoveUp: index > 0,
                         canMoveDown: index < levels.count - 1,
                         onMoveUp: { move(level, by: -1) },
                         onMoveDown: { move(level, by: 1) },
-                        onDelete: { modelContext.delete(level) }
+                        onDelete: { delete(level) }
                     )
                 }
-                Button("新增等級", systemImage: "plus") {
-                    modelContext.insert(ItemLevel(itemID: item.id, sortOrder: (levels.map(\.sortOrder).max() ?? -1) + 1, name: "新等級"))
-                }
+                Button("新增等級", systemImage: "plus", action: addLevel)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func editingBinding(for level: ItemLevel) -> Binding<Bool> {
+        Binding(
+            get: { editingLevelIDs.contains(level.id) },
+            set: { isEditing in
+                if isEditing { editingLevelIDs.insert(level.id) }
+                else { editingLevelIDs.remove(level.id) }
+            }
+        )
+    }
+
+    private func addLevel() {
+        let level = ItemLevel(
+            itemID: item.id,
+            sortOrder: (levels.map(\.sortOrder).max() ?? -1) + 1,
+            name: "新等級"
+        )
+        modelContext.insert(level)
+        editingLevelIDs.insert(level.id)
+    }
+
+    private func delete(_ level: ItemLevel) {
+        editingLevelIDs.remove(level.id)
+        modelContext.delete(level)
     }
 
     private func move(_ level: ItemLevel, by offset: Int) {
@@ -897,6 +936,8 @@ private struct ItemLevelEditor: View {
 
 private struct ItemLevelRow: View {
     @Bindable var level: ItemLevel
+    let sequenceNumber: Int
+    @Binding var isEditing: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
     let onMoveUp: () -> Void
@@ -904,7 +945,64 @@ private struct ItemLevelRow: View {
     let onDelete: () -> Void
 
     var body: some View {
+        Group {
+            if isEditing {
+                editor
+            } else {
+                summary
+            }
+        }
+        .onChange(of: level.name) { level.updatedAt = Date() }
+        .onChange(of: level.itemName) { level.updatedAt = Date() }
+        .onChange(of: level.ability) { level.updatedAt = Date() }
+        .onChange(of: level.cost) { level.updatedAt = Date() }
+        .onChange(of: level.note) { level.updatedAt = Date() }
+        .onDisappear {
+            if level.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                level.name = "未命名等級"
+            }
+        }
+    }
+
+    private var summary: some View {
+        Button {
+            isEditing = true
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text(String(format: "%02d", sequenceNumber))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .leading)
+                Text(displayName)
+                    .fontWeight(.medium)
+                    .frame(width: 110, alignment: .leading)
+                Text(level.compactOverview)
+                    .foregroundStyle(level.compactOverview == "尚未填寫概述" ? .tertiary : .secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("序號 \(sequenceNumber)，等級 \(displayName)，概述 \(level.compactOverview)")
+        .accessibilityHint("點擊進入編輯畫面")
+    }
+
+    private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("序號 \(String(format: "%02d", sequenceNumber))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("完成", action: finishEditing)
+                    .buttonStyle(.borderedProminent)
+            }
             HStack {
                 TextField("等級名稱（必填）", text: $level.name).textFieldStyle(.roundedBorder)
                 Button(action: onMoveUp) { Image(systemName: "arrow.up") }.buttonStyle(.plain).disabled(!canMoveUp)
@@ -922,17 +1020,19 @@ private struct ItemLevelRow: View {
             levelEditor("其他", text: $level.note)
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .onChange(of: level.name) { level.updatedAt = Date() }
-        .onChange(of: level.itemName) { level.updatedAt = Date() }
-        .onChange(of: level.ability) { level.updatedAt = Date() }
-        .onChange(of: level.cost) { level.updatedAt = Date() }
-        .onChange(of: level.note) { level.updatedAt = Date() }
-        .onDisappear {
-            if level.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                level.name = "未命名等級"
-            }
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func finishEditing() {
+        if level.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            level.name = "未命名等級"
         }
+        isEditing = false
+    }
+
+    private var displayName: String {
+        let trimmed = level.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "未命名等級" : trimmed
     }
 
     private func levelEditor(_ label: String, text: Binding<String>) -> some View {
@@ -1171,6 +1271,8 @@ struct CharacterListView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.workspacePanelBackground)
 
             Divider()
             Button(action: onAdd) {
