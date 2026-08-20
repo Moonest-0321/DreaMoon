@@ -597,6 +597,7 @@ struct CharacterItemSectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(ItemCopyStore.self) private var copyStore
     @Query(sort: \Item.name) private var allItems: [Item]
+    @State private var selectedItemID: UUID?
     private var holdings: [ItemCopyHolding] {
         copyStore.holdings.filter { $0.characterID == character.id }
     }
@@ -606,6 +607,12 @@ struct CharacterItemSectionView: View {
     }
     private var bookItems: [Item] {
         allItems.filter { $0.book?.id == book.id }
+    }
+    private var selectedItem: Item? { selectedItemID.flatMap { id in bookItems.first { $0.id == id } } }
+    private var availableCopies: [ItemCopy] {
+        guard let selectedItem else { return [] }
+        let heldCopyIDs = Set(copyStore.holdings.map(\.copyID))
+        return copyStore.copies.filter { $0.itemID == selectedItem.id && !heldCopyIDs.contains($0.id) }
     }
 
     var body: some View {
@@ -624,34 +631,27 @@ struct CharacterItemSectionView: View {
                     }
                 }
             }
-            HStack(spacing: 12) {
-                Button("新增物品", systemImage: "plus", action: addNewItem)
-                    .buttonStyle(.borderless)
-
-                if !bookItems.isEmpty {
-                    Menu {
-                        ForEach(bookItems) { item in
-                            Button(item.name.isEmpty ? "未命名物品的新副本" : "\(item.name)的新副本") {
-                                addCopy(of: item)
-                            }
-                        }
-                    } label: {
-                        Label("新增既有物品的副本", systemImage: "plus.square.on.square")
+            GroupBox("連接既有物品") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("物品名稱", selection: $selectedItemID) {
+                        Text("選擇物品").tag(Optional<UUID>.none)
+                        ForEach(bookItems) { item in Text(item.name.isEmpty ? "未命名物品" : item.name).tag(Optional(item.id)) }
                     }
-                    .menuStyle(.borderlessButton)
+                    if selectedItem != nil {
+                        Picker("副本", selection: Binding(get: { Optional<UUID>.none }, set: { id in
+                            guard let id, let copy = availableCopies.first(where: { $0.id == id }) else { return }
+                            copyStore.setHolder(copyID: copy.id, characterID: character.id)
+                            selectedItemID = nil
+                        })) {
+                            Text(availableCopies.isEmpty ? "沒有可連接的副本" : "選擇副本").tag(Optional<UUID>.none)
+                            ForEach(availableCopies) { copy in Text(copy.displayName(for: selectedItem!)).tag(Optional(copy.id)) }
+                        }
+                    }
+                    Text("只能連接既有物品與既有副本；建立、命名與改名請到物品設定。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
-    }
-
-    private func addNewItem() {
-        let item = Item(name: "新物品", book: book)
-        modelContext.insert(item)
-        addCopy(of: item)
-    }
-
-    private func addCopy(of item: Item) {
-        copyStore.createCopy(itemID: item.id, holderID: character.id)
     }
 
     private func removeHolder(from copy: ItemCopy) {
@@ -660,8 +660,7 @@ struct CharacterItemSectionView: View {
 }
 
 private struct ItemCopyCharacterRow: View {
-    @Bindable var copy: ItemCopy
-    @Environment(ItemCopyStore.self) private var copyStore
+    let copy: ItemCopy
     let item: Item
     let onOpenItem: ((Item) -> Void)?
     let onRemoveHolder: () -> Void
@@ -669,8 +668,8 @@ private struct ItemCopyCharacterRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                TextField("副本名稱（留空沿用物品名稱）", text: $copy.name)
-                    .textFieldStyle(.roundedBorder)
+                Text(copy.displayName(for: item)).fontWeight(.medium)
+                Spacer()
                 if let onOpenItem {
                     Button { onOpenItem(item) } label: {
                         Image(systemName: "chevron.right")
@@ -682,7 +681,7 @@ private struct ItemCopyCharacterRow: View {
                     .help("前往物品設定")
                 }
                 Button(role: .destructive, action: onRemoveHolder) {
-                    Image(systemName: "person.crop.circle.badge.minus")
+                    Image(systemName: "trash")
                 }
                 .buttonStyle(.plain)
                 .help("移除持有人；副本仍保留")
@@ -693,10 +692,6 @@ private struct ItemCopyCharacterRow: View {
             if !item.itemDescription.isEmpty {
                 Text(item.itemDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
-        }
-        .onChange(of: copy.name) {
-            copy.updatedAt = Date()
-            copyStore.save()
         }
     }
 }

@@ -558,7 +558,8 @@ struct InspectorRootView: View {
                     item: item,
                     copy: copy,
                     book: book,
-                    onBack: { route = .itemDetail(item, sourceCharacter) }
+                    onBack: { route = .itemDetail(item, sourceCharacter) },
+                    onOpenCharacter: { route = .detail($0) }
                 )
             case .abilityDetail(let ability):
                 AbilityDetailView(ability: ability, book: book, onBack: { route = .list }, onOpenCharacter: { route = .detail($0) })
@@ -866,19 +867,16 @@ private struct ItemDetailView: View {
         HStack(spacing: 8) {
             Button { onOpenCopy(copy) } label: {
                 HStack(spacing: 10) {
-                    Text("\(number)")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, alignment: .trailing)
-                    Text(copy.displayName(for: item))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "chevron.right")
-                        .foregroundStyle(.tertiary)
-                        .font(.caption.weight(.semibold))
+                    Text("\(number)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(width: 28, alignment: .trailing)
+                    Text(copy.displayName(for: item)).frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption.weight(.semibold))
                 }
-                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button { copyStore.moveCopy(copy, by: -1) } label: {
                 Image(systemName: "arrow.up")
@@ -912,6 +910,7 @@ private struct ItemCopyDetailView: View {
     @Bindable var copy: ItemCopy
     let book: Book
     let onBack: () -> Void
+    let onOpenCharacter: (Character) -> Void
     @Environment(ItemCopyStore.self) private var copyStore
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @Query(sort: \ItemLevel.sortOrder) private var allLevels: [ItemLevel]
@@ -964,10 +963,16 @@ private struct ItemCopyDetailView: View {
                             .onChange(of: copy.name) { copy.updatedAt = Date(); copyStore.save() }
                     }
                     GroupBox("所屬者") {
-                        Picker("目前所屬者", selection: holderBinding) {
-                            Text("無人持有").tag(Optional<UUID>.none)
-                            ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
-                                Text(character.realName.isEmpty ? "未命名角色" : character.realName).tag(Optional(character.id))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("目前所屬者", selection: holderBinding) {
+                                Text("無人持有").tag(Optional<UUID>.none)
+                                ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
+                                    Text(character.realName.isEmpty ? "未命名角色" : character.realName).tag(Optional(character.id))
+                                }
+                            }
+                            if let holder = holderBinding.wrappedValue.flatMap({ id in allCharacters.first { $0.id == id } }) {
+                                Button(holder.realName.isEmpty ? "未命名角色" : holder.realName) { onOpenCharacter(holder) }
+                                    .buttonStyle(.link)
                             }
                         }
                     }
