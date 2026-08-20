@@ -274,6 +274,32 @@ final class ItemCopyStore {
         save()
     }
 
+    /// Called before an ItemLevel is deleted from the main store. This keeps
+    /// the separate level-selection store valid immediately, not just after
+    /// the next-launch repair pass.
+    func clearCurrentLevelSelections(levelID: UUID) {
+        for selection in levelSelections where selection.levelID == levelID {
+            levelSelectionContext.delete(selection)
+        }
+        levelSelections.removeAll { $0.levelID == levelID }
+        save()
+    }
+
+    func moveCopy(_ copy: ItemCopy, by offset: Int) {
+        let itemCopies = copies.filter { $0.itemID == copy.itemID }.sorted { $0.sortOrder < $1.sortOrder }
+        guard let source = itemCopies.firstIndex(where: { $0.id == copy.id }) else { return }
+        let destination = source + offset
+        guard itemCopies.indices.contains(destination) else { return }
+        let other = itemCopies[destination]
+        let order = copy.sortOrder
+        copy.sortOrder = other.sortOrder
+        other.sortOrder = order
+        copy.updatedAt = Date()
+        other.updatedAt = Date()
+        copies.sort { $0.sortOrder < $1.sortOrder }
+        save()
+    }
+
     private func clearCurrentLevel(copyID: UUID, saveImmediately: Bool) {
         for selection in levelSelections where selection.copyID == copyID {
             levelSelectionContext.delete(selection)
@@ -283,7 +309,7 @@ final class ItemCopyStore {
     }
 
     @discardableResult
-    func addHistory(copyID: UUID, content: String = "新歷史") -> ItemCopyHistory {
+    func addHistory(copyID: UUID, content: String = "") -> ItemCopyHistory {
         let copyHistories = histories.filter { $0.copyID == copyID }
         let history = ItemCopyHistory(
             copyID: copyID,
@@ -378,21 +404,19 @@ enum V6ItemCopyBackfill {
                 }
             }
 
-            for copy in copies {
-                for history in item.histories.sorted(by: { $0.sortOrder < $1.sortOrder }) {
-                    let migrated = ItemCopyHistory(
-                        copyID: copy.id,
-                        content: history.content,
-                        sortOrder: history.sortOrder,
-                        nodeID: history.node?.id,
-                        relatedCharacterIDs: history.relatedCharacters.map(\.id)
-                    )
-                    migrated.createdAt = history.createdAt
-                    migrated.updatedAt = history.updatedAt
-                    destination.insert(migrated)
-                }
+            // Legacy ItemHistory was shared by a quantity relation. Keep it
+            // on the first converted copy only; all additional copies start
+            // empty and can acquire their own history from here onward.
+            if let baseCopy = copies.first {
+                insertLegacyHistories(item.histories, into: baseCopy, destination: destination)
             }
         }
+
+        // V6.0 briefly copied a shared legacy history onto every converted
+        // copy. Remove only exact, timestamp-matching duplicates that can be
+        // proven to originate from that legacy row; user-created histories
+        // are never touched.
+        try removeProvenLegacyDuplicates(items: items, destination: destination)
 
         let validCopyIDs = Set(validExistingCopies.map(\.id)).union(
             try destination.fetch(FetchDescriptor<ItemCopy>())
@@ -410,5 +434,53 @@ enum V6ItemCopyBackfill {
         }
 
         if destination.hasChanges { try destination.save() }
+    }
+
+    private static func insertLegacyHistories(
+        _ histories: [ItemHistory],
+        into copy: ItemCopy,
+        destination: ModelContext
+    ) {
+        for history in histories.sorted(by: { $0.sortOrder < $1.sortOrder }) {
+            let migrated = ItemCopyHistory(
+                copyID: copy.id,
+                content: history.content,
+                sortOrder: history.sortOrder,
+                nodeID: history.node?.id,
+                relatedCharacterIDs: history.relatedCharacters.map(\.id)
+            )
+            migrated.createdAt = history.createdAt
+            migrated.updatedAt = history.updatedAt
+            destination.insert(migrated)
+        }
+    }
+
+    private static func removeProvenLegacyDuplicates(
+        items: [Item],
+        destination: ModelContext
+    ) throws {
+        let copies = try destination.fetch(FetchDescriptor<ItemCopy>())
+        let histories = try destination.fetch(FetchDescriptor<ItemCopyHistory>())
+        let historiesByCopy = Dictionary(grouping: histories, by: \.copyID)
+
+        for item in items {
+            let itemCopies = copies.filter { $0.itemID == item.id }.sorted { $0.sortOrder < $1.sortOrder }
+            guard itemCopies.count > 1 else { continue }
+            let legacy = item.histories
+            guard !legacy.isEmpty else { continue }
+
+            for copy in itemCopies.dropFirst() {
+                for candidate in historiesByCopy[copy.id] ?? [] where legacy.contains(where: { legacyHistory in
+                    candidate.content == legacyHistory.content &&
+                    candidate.sortOrder == legacyHistory.sortOrder &&
+                    candidate.nodeID == legacyHistory.node?.id &&
+                    candidate.relatedCharacterIDs == legacyHistory.relatedCharacters.map(\.id) &&
+                    candidate.createdAt == legacyHistory.createdAt &&
+                    candidate.updatedAt == legacyHistory.updatedAt
+                }) {
+                    destination.delete(candidate)
+                }
+            }
+        }
     }
 }

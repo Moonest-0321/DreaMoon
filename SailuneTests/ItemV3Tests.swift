@@ -128,6 +128,40 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertTrue(store.copies.contains { $0.id == copy.id && $0.itemID == firstItem.id })
     }
 
+    func testDeletingLevelClearsCurrentLevelImmediately() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let item = Item(name: "短劍")
+        let level = ItemLevel(itemID: item.id, name: "初始")
+        context.insert(item)
+        context.insert(level)
+        try context.save()
+
+        let store = try ItemCopyStore(container: container)
+        let copy = store.createCopy(itemID: item.id)
+        store.setCurrentLevel(copyID: copy.id, levelID: level.id)
+        store.clearCurrentLevelSelections(levelID: level.id)
+
+        XCTAssertNil(store.currentLevelID(for: copy.id))
+    }
+
+    func testCopiesCanMoveWithoutChangingTheirParentItem() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let item = Item(name: "短劍")
+        context.insert(item)
+        try context.save()
+
+        let store = try ItemCopyStore(container: container)
+        let first = store.createCopy(itemID: item.id, name: "第一把")
+        let second = store.createCopy(itemID: item.id, name: "第二把")
+        store.moveCopy(second, by: -1)
+
+        XCTAssertEqual(store.copies.filter { $0.itemID == item.id }.map(\.id), [second.id, first.id])
+        XCTAssertEqual(first.itemID, item.id)
+        XCTAssertEqual(second.itemID, item.id)
+    }
+
     func testLevelContentDoesNotChangeMainItemName() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -205,8 +239,9 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(copies.count, 3)
         XCTAssertEqual(copyHoldings.count, 3)
         XCTAssertTrue(copyHoldings.allSatisfy { $0.characterID == holder.id })
-        XCTAssertEqual(histories.count, 3)
-        XCTAssertTrue(histories.allSatisfy { $0.content == "在藥房取得。" })
+        XCTAssertEqual(histories.count, 1)
+        XCTAssertEqual(histories.first?.copyID, copies.sorted { $0.sortOrder < $1.sortOrder }.first?.id)
+        XCTAssertEqual(histories.first?.content, "在藥房取得。")
     }
 
     func testMultipleHoldersAndUnifiedHistoryPersistTogether() throws {

@@ -837,7 +837,12 @@ private struct ItemDetailView: View {
                     Text("尚未建立副本").foregroundStyle(.secondary)
                 }
                 ForEach(Array(copies.enumerated()), id: \.element.id) { index, copy in
-                    copyListRow(copy, number: index + 1)
+                    copyListRow(
+                        copy,
+                        number: index + 1,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < copies.count - 1
+                    )
                 }
                 Button("新增副本", systemImage: "plus", action: addCopy)
                     .buttonStyle(.borderless)
@@ -845,22 +850,43 @@ private struct ItemDetailView: View {
         }
     }
 
-    private func copyListRow(_ copy: ItemCopy, number: Int) -> some View {
-        Button { onOpenCopy(copy) } label: {
-            HStack(spacing: 10) {
-                Text("\(number)")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, alignment: .trailing)
-                Text(copy.displayName(for: item))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
-                    .font(.caption.weight(.semibold))
+    private func copyListRow(
+        _ copy: ItemCopy,
+        number: Int,
+        canMoveUp: Bool,
+        canMoveDown: Bool
+    ) -> some View {
+        HStack(spacing: 8) {
+            Button { onOpenCopy(copy) } label: {
+                HStack(spacing: 10) {
+                    Text("\(number)")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
+                    Text(copy.displayName(for: item))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.tertiary)
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
+            .buttonStyle(.plain)
+
+            Button { copyStore.moveCopy(copy, by: -1) } label: {
+                Image(systemName: "arrow.up")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canMoveUp)
+            .help("上移副本")
+
+            Button { copyStore.moveCopy(copy, by: 1) } label: {
+                Image(systemName: "arrow.down")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canMoveDown)
+            .help("下移副本")
         }
-        .buttonStyle(.plain)
     }
 
     private func itemEditor(_ label: String, text: Binding<String>, minHeight: CGFloat) -> some View { VStack(alignment: .leading, spacing: 4) { Text(label).font(.caption).foregroundStyle(.secondary); InsetTextEditor(text: text, minHeight: minHeight) } }
@@ -890,7 +916,26 @@ private struct ItemCopyDetailView: View {
             .firstIndex(where: { $0.id == copy.id }).map { $0 + 1 } ?? 1
     }
     private var levels: [ItemLevel] { allLevels.filter { $0.itemID == item.id }.sorted { $0.sortOrder < $1.sortOrder } }
-    private var histories: [ItemCopyHistory] { copyStore.histories.filter { $0.copyID == copy.id }.sorted { $0.sortOrder < $1.sortOrder } }
+    private var histories: [ItemCopyHistory] {
+        let nodesByID = Dictionary(uniqueKeysWithValues: allNodes.map { ($0.id, $0) })
+        return copyStore.histories
+            .filter { $0.copyID == copy.id }
+            .sorted { lhs, rhs in
+                let lhsNode = lhs.nodeID.flatMap { nodesByID[$0] }
+                let rhsNode = rhs.nodeID.flatMap { nodesByID[$0] }
+                switch (lhsNode, rhsNode) {
+                case let (left?, right?):
+                    if left.absoluteOrdinal != right.absoluteOrdinal {
+                        return left.absoluteOrdinal < right.absoluteOrdinal
+                    }
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): break
+                }
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -983,6 +1028,7 @@ private struct ItemLevelEditor: View {
     let item: Item
     let levels: [ItemLevel]
     @Environment(\.modelContext) private var modelContext
+    @Environment(ItemCopyStore.self) private var copyStore
     @State private var editingLevelIDs: Set<UUID> = []
 
     var body: some View {
@@ -1044,6 +1090,7 @@ private struct ItemLevelEditor: View {
 
     private func delete(_ level: ItemLevel) {
         editingLevelIDs.remove(level.id)
+        copyStore.clearCurrentLevelSelections(levelID: level.id)
         modelContext.delete(level)
     }
 
