@@ -349,45 +349,118 @@ struct CharacterAbilitySectionView: View {
     let book: Book
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CharacterAbility.createdAt) private var allAbilities: [CharacterAbility]
+    @Environment(AbilityProgressStore.self) private var abilityStore
 
-    private var abilities: [CharacterAbility] { allAbilities.filter { $0.character?.id == character.id } }
+    private var abilities: [CharacterAbility] { allAbilities.filter { ability in
+        abilityStore.bookLinks.contains { $0.abilityID == ability.id && $0.bookID == book.id }
+            || ability.character?.book?.id == book.id
+    } }
+    private var connections: [CharacterAbilityConnection] { abilityStore.connections.filter { $0.characterID == character.id } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if abilities.isEmpty {
-                CharacterSectionEmptyState(title: "尚無能力資料", detail: "可記錄能力名稱、目前階段與摘要。")
+            if connections.isEmpty {
+                CharacterSectionEmptyState(title: "尚無能力資料", detail: "從下方連接已建立的能力；等級與時間序會只屬於此角色。")
             } else {
-                ForEach(abilities) { ability in AbilityRow(ability: ability, book: book, onDelete: { modelContext.delete(ability) }) }
+                ForEach(connections) { connection in
+                    CharacterAbilityConnectionRow(connection: connection, book: book, onDelete: { abilityStore.deleteConnection(connection) })
+                }
             }
-            Button { modelContext.insert(CharacterAbility(name: "新能力", character: character)) } label: {
-                Label("新增能力", systemImage: "plus")
+            Menu {
+                let connectedIDs = Set(connections.map(\.abilityID))
+                ForEach(abilities.filter { !connectedIDs.contains($0.id) }) { ability in
+                    Button(ability.name.isEmpty ? "未命名能力" : ability.name) {
+                        abilityStore.connect(characterID: character.id, abilityID: ability.id)
+                    }
+                }
+            } label: {
+                Label("連接能力", systemImage: "link.badge.plus")
             }
             .buttonStyle(.borderless)
+            .disabled(abilities.isEmpty)
         }
     }
 }
 
-private struct AbilityRow: View {
-    @Bindable var ability: CharacterAbility
+private struct CharacterAbilityConnectionRow: View {
+    @Bindable var connection: CharacterAbilityConnection
     let book: Book
     let onDelete: () -> Void
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Query private var allAbilities: [CharacterAbility]
+    private var levels: [AbilityLevel] { abilityStore.levels.filter { $0.abilityID == connection.abilityID }.sorted { $0.sortOrder < $1.sortOrder } }
+    private var history: [CharacterAbilityHistory] { abilityStore.histories.filter { $0.connectionID == connection.id }.sorted { $0.sortOrder < $1.sortOrder } }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                TextField("能力名稱", text: $ability.name).textFieldStyle(.roundedBorder)
-                TextField("目前階段", text: $ability.currentStage).textFieldStyle(.roundedBorder)
+                Text(allAbilities.first { $0.id == connection.abilityID }?.name ?? "未命名能力")
+                    .fontWeight(.medium)
+                Spacer()
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
-            TextField("階段描述", text: $ability.stageDescription).textFieldStyle(.roundedBorder)
-            TextField("摘要", text: $ability.summary).textFieldStyle(.roundedBorder)
-            AbilityHistoryEditor(ability: ability, book: book)
+            Picker("目前等級", selection: Binding(get: { connection.currentLevelID }, set: { connection.currentLevelID = $0; abilityStore.save() })) {
+                Text("未設定").tag(Optional<UUID>.none)
+                ForEach(levels) { Text($0.name.isEmpty ? "未命名等級" : $0.name).tag(Optional($0.id)) }
+            }
+            CharacterAbilityTimelineEditor(connection: connection, book: book, levels: levels, history: history)
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .onChange(of: ability.name) { ability.updatedAt = Date() }
-        .onChange(of: ability.currentStage) { ability.updatedAt = Date() }
-        .onChange(of: ability.stageDescription) { ability.updatedAt = Date() }
-        .onChange(of: ability.summary) { ability.updatedAt = Date() }
+    }
+}
+
+private struct CharacterAbilityTimelineEditor: View {
+    let connection: CharacterAbilityConnection
+    let book: Book
+    let levels: [AbilityLevel]
+    let history: [CharacterAbilityHistory]
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Query private var allNodes: [Node]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("時間序").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(Array(history.enumerated()), id: \.element.id) { index, entry in
+                @Bindable var entry = entry
+                HStack {
+                    Picker("變更為", selection: levelBinding(for: entry)) {
+                        Text("選擇等級").tag(Optional<UUID>.none)
+                        ForEach(levels) { level in
+                            Text(level.name.isEmpty ? "未命名等級" : level.name).tag(Optional(level.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 180)
+                    Text(changeLabel(at: index))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(changeLabel(at: index) == "上升" ? .green : changeLabel(at: index) == "下降" ? .orange : .secondary)
+                        .frame(width: 34, alignment: .leading)
+                    CharacterNodePicker(book: book, node: Binding(get: { entry.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { entry.nodeID = $0?.id; abilityStore.save() }))
+                    Button(role: .destructive) { abilityStore.deleteHistory(entry) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
+                }
+            }
+            Button("新增時間序", systemImage: "plus") {
+                abilityStore.addHistory(connectionID: connection.id)
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private func levelBinding(for entry: CharacterAbilityHistory) -> Binding<UUID?> {
+        Binding(
+            get: { UUID(uuidString: entry.content) },
+            set: { entry.content = $0?.uuidString ?? ""; entry.updatedAt = Date(); abilityStore.save() }
+        )
+    }
+
+    private func changeLabel(at index: Int) -> String {
+        guard let currentID = UUID(uuidString: history[index].content),
+              let current = levels.firstIndex(where: { $0.id == currentID }) else { return "未設定" }
+        guard index > 0,
+              let previousID = UUID(uuidString: history[index - 1].content),
+              let previous = levels.firstIndex(where: { $0.id == previousID }) else { return "設定" }
+        if current > previous { return "上升" }
+        if current < previous { return "下降" }
+        return "維持"
     }
 }
 

@@ -435,6 +435,7 @@ enum InspectorRoute: Hashable {
     case graph(Character)
     case itemDetail(Item, Character?)
     case itemCopyDetail(Item, ItemCopy, Character?)
+    case abilityDetail(CharacterAbility)
 
     func hash(into hasher: inout Hasher) {
         switch self {
@@ -444,6 +445,8 @@ enum InspectorRoute: Hashable {
         case .itemDetail(let item, let source): hasher.combine(3); hasher.combine(item.id); hasher.combine(source?.id)
         case .itemCopyDetail(let item, let copy, let source):
             hasher.combine(4); hasher.combine(item.id); hasher.combine(copy.id); hasher.combine(source?.id)
+        case .abilityDetail(let ability):
+            hasher.combine(5); hasher.combine(ability.id)
         }
     }
 
@@ -456,6 +459,7 @@ enum InspectorRoute: Hashable {
             return a.id == b.id && sourceA?.id == sourceB?.id
         case (.itemCopyDetail(let itemA, let copyA, let sourceA), .itemCopyDetail(let itemB, let copyB, let sourceB)):
             return itemA.id == itemB.id && copyA.id == copyB.id && sourceA?.id == sourceB?.id
+        case (.abilityDetail(let a), .abilityDetail(let b)): return a.id == b.id
         default: return false
         }
     }
@@ -515,7 +519,7 @@ struct InspectorRootView: View {
                         onCreated: { route = .detail($0) }
                     )
                 } else if selectedTab == .ability {
-                    AbilityListContainerView(book: book)
+                    AbilityListContainerView(book: book, onOpen: { route = .abilityDetail($0) })
                 } else {
                     ItemListContainerView(
                         book: book,
@@ -555,6 +559,8 @@ struct InspectorRootView: View {
                     book: book,
                     onBack: { route = .itemDetail(item, sourceCharacter) }
                 )
+            case .abilityDetail(let ability):
+                AbilityDetailView(ability: ability, book: book, onBack: { route = .list })
             }
         }
         .onAppear { showFocusedCharacter() }
@@ -1266,15 +1272,105 @@ private struct WritingReferenceSummaryView: View {
     }
 }
 
+private struct AbilityDetailView: View {
+    @Bindable var ability: CharacterAbility
+    let book: Book
+    let onBack: () -> Void
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+
+    private var levels: [AbilityLevel] { abilityStore.levels.filter { $0.abilityID == ability.id }.sorted { $0.sortOrder < $1.sortOrder } }
+    private var connections: [CharacterAbilityConnection] { abilityStore.connections.filter { $0.abilityID == ability.id } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Button(action: onBack) { Label("返回", systemImage: "chevron.left") }.buttonStyle(.plain); Spacer() }
+                .padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .controlBackgroundColor))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("能力設定", systemImage: "sparkles").font(.headline)
+                    GroupBox("能力名稱") { TextField("名稱", text: $ability.name).textFieldStyle(.roundedBorder) }
+                    abilityLevels
+                    GroupBox("連接角色") {
+                        VStack(alignment: .leading, spacing: 7) {
+                            if connections.isEmpty { Text("尚未連接角色；請到角色詳細資料連接能力。").font(.caption).foregroundStyle(.secondary) }
+                            ForEach(connections) { connection in
+                                let name = allCharacters.first { $0.id == connection.characterID }?.realName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                                let level = levels.first { $0.id == connection.currentLevelID }?.name ?? "未設定等級"
+                                HStack { Text(name.isEmpty ? "未命名角色" : name); Spacer(); Text(level).foregroundStyle(.secondary) }
+                            }
+                            Menu("連接角色") {
+                                let connectedIDs = Set(connections.map(\.characterID))
+                                ForEach(allCharacters.filter { $0.book?.id == book.id && !connectedIDs.contains($0.id) }) { character in
+                                    Button(character.realName.isEmpty ? "未命名角色" : character.realName) {
+                                        abilityStore.connect(characterID: character.id, abilityID: ability.id)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    Button("刪除能力", systemImage: "trash", role: .destructive) { deleteAbility() }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+        }
+        .onChange(of: ability.name) { ability.updatedAt = Date() }
+        .onDisappear { if ability.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ability.name = "未命名能力" } }
+    }
+
+    private var abilityLevels: some View {
+        GroupBox("能力等級") {
+            VStack(alignment: .leading, spacing: 8) {
+                if levels.isEmpty { Text("尚未建立等級").font(.caption).foregroundStyle(.secondary) }
+                ForEach(Array(levels.enumerated()), id: \.element.id) { index, level in
+                    @Bindable var level = level
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("\(String(format: "%02d", index + 1))").monospacedDigit().foregroundStyle(.secondary)
+                            TextField("等級名稱", text: $level.name).textFieldStyle(.roundedBorder)
+                            Button(role: .destructive) { abilityStore.deleteAbilityLevel(level) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
+                        }
+                        TextField("能力描述", text: $level.descriptionText).textFieldStyle(.roundedBorder)
+                        TextField("代價", text: $level.cost).textFieldStyle(.roundedBorder)
+                        TextField("其他", text: $level.note).textFieldStyle(.roundedBorder)
+                    }
+                    .padding(8).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                    .onChange(of: level.name) { level.updatedAt = Date() }
+                    .onChange(of: level.descriptionText) { level.updatedAt = Date() }
+                    .onChange(of: level.cost) { level.updatedAt = Date() }
+                    .onChange(of: level.note) { level.updatedAt = Date() }
+                }
+                Button("新增等級", systemImage: "plus") {
+                    abilityStore.addLevel(abilityID: ability.id)
+                }.buttonStyle(.borderless)
+            }
+        }
+    }
+
+    private func deleteAbility() {
+        abilityStore.deleteAbility(abilityID: ability.id)
+        modelContext.delete(ability)
+        onBack()
+    }
+}
+
 private struct AbilityListContainerView: View {
     let book: Book
+    let onOpen: (CharacterAbility) -> Void
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AbilityProgressStore.self) private var abilityStore
     @Query(sort: \CharacterAbility.createdAt) private var allAbilities: [CharacterAbility]
     @Query(sort: \Character.createdAt) private var allCharacters: [Character]
 
     private var characters: [Character] { allCharacters.filter { $0.book?.id == book.id } }
     private var abilities: [CharacterAbility] {
         let ids = Set(characters.map(\.id))
-        return allAbilities.filter { $0.character.map { ids.contains($0.id) } ?? false }
+        return allAbilities.filter { ability in
+            abilityStore.bookLinks.contains { $0.abilityID == ability.id && $0.bookID == book.id }
+                || (ability.character.map { ids.contains($0.id) } ?? false)
+        }
     }
 
     var body: some View {
@@ -1286,7 +1382,7 @@ private struct AbilityListContainerView: View {
                         .foregroundStyle(.secondary)
                     Text("尚無能力資料")
                         .font(.headline)
-                    Text(characters.isEmpty ? "先新增角色，再從角色詳細資料建立能力。" : "可從角色詳細資料建立第一項能力。")
+                    Text("建立能力後，再到角色詳細資料中連接它。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -1294,16 +1390,25 @@ private struct AbilityListContainerView: View {
                 .padding(24)
             } else {
                 List(abilities) { ability in
+                    Button { onOpen(ability) } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(ability.name.isEmpty ? "未命名能力" : ability.name).font(.headline)
-                        Text(ability.character?.realName.isEmpty == false ? ability.character!.realName : "未命名角色")
+                        Text("查看等級與連接角色")
                             .font(.caption).foregroundStyle(.secondary)
-                        if !ability.currentStage.isEmpty { Text(ability.currentStage).font(.caption2).foregroundStyle(.tertiary) }
                     }
                     .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .listStyle(.plain)
             }
+            Divider()
+            Button("新增能力", systemImage: "plus") {
+                let ability = CharacterAbility(name: "新能力")
+                modelContext.insert(ability)
+                abilityStore.register(abilityID: ability.id, bookID: book.id)
+            }
+            .padding(10)
         }
     }
 }

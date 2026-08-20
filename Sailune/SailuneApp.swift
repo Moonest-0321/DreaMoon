@@ -4,7 +4,7 @@ import SwiftData
 @main
 struct SailuneApp: App {
     private enum StartupState {
-        case ready(ModelContainer, ItemCopyStore)
+        case ready(ModelContainer, ItemCopyStore, AbilityProgressStore)
         case failed(String)
     }
 
@@ -56,6 +56,7 @@ struct SailuneApp: App {
         return storeURL.deletingLastPathComponent()
             .appendingPathComponent("\(baseName)-item-copy-level-selections.store")
     }
+    private static var abilityProgressStoreURL: URL { storeURL.deletingLastPathComponent().appendingPathComponent("\(storeURL.deletingPathExtension().lastPathComponent)-ability-progress.store") }
 
     private enum LegacyStoreSource {
         case v3(ModelContainer)
@@ -66,14 +67,14 @@ struct SailuneApp: App {
 
     init() {
         do {
-            let (container, copyStore) = try Self.makeModelContainer()
-            startupState = .ready(container, copyStore)
+            let (container, copyStore, abilityStore) = try Self.makeModelContainer()
+            startupState = .ready(container, copyStore, abilityStore)
         } catch {
             startupState = .failed(error.localizedDescription)
         }
     }
 
-    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore) {
+    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore, AbilityProgressStore) {
         // Open the released schema before V5. SwiftData caches model metadata
         // for shared top-level model types, so reversing this order makes it
         // attempt to open the V3 store with V5's expanded model graph.
@@ -153,7 +154,14 @@ struct SailuneApp: App {
         } catch {
             throw StartupStageError(stage: "初始寫作結構補齊失敗", underlying: error)
         }
-        return (container, copyStore)
+        let abilityStore: AbilityProgressStore
+        do {
+            let schema = Schema(versionedSchema: AbilityProgressSchemaV1.self)
+            let abilityContainer = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: abilityProgressStoreURL)])
+            abilityStore = try AbilityProgressStore(container: abilityContainer)
+            abilityStore.migrateLegacy(try container.mainContext.fetch(FetchDescriptor<CharacterAbility>()))
+        } catch { throw StartupStageError(stage: "能力進度資料庫載入失敗", underlying: error) }
+        return (container, copyStore, abilityStore)
     }
 
     private static func errorDetails(_ error: Error) -> String {
@@ -194,8 +202,8 @@ struct SailuneApp: App {
     var body: some Scene {
         WindowGroup {
             switch startupState {
-            case .ready(let container, let copyStore):
-                SailuneRootView(container: container, copyStore: copyStore)
+            case .ready(let container, let copyStore, let abilityStore):
+                SailuneRootView(container: container, copyStore: copyStore, abilityStore: abilityStore)
             case .failed(let message):
                 DatabaseStartupFailureView(message: message)
             }
@@ -206,11 +214,13 @@ struct SailuneApp: App {
 private struct SailuneRootView: View {
     let container: ModelContainer
     @Bindable var copyStore: ItemCopyStore
+    @Bindable var abilityStore: AbilityProgressStore
 
     var body: some View {
         ContentView()
             .modelContainer(container)
             .environment(copyStore)
+            .environment(abilityStore)
             .alert("物品副本無法儲存", isPresented: persistenceErrorBinding) {
                 Button("好") { copyStore.clearPersistenceError() }
             } message: {
