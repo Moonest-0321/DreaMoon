@@ -434,6 +434,7 @@ enum InspectorRoute: Hashable {
     case detail(Character)
     case graph(Character)
     case itemDetail(Item, Character?)
+    case itemCopyDetail(Item, ItemCopy, Character?)
 
     func hash(into hasher: inout Hasher) {
         switch self {
@@ -441,6 +442,8 @@ enum InspectorRoute: Hashable {
         case .detail(let c): hasher.combine(1); hasher.combine(c.id)
         case .graph(let c): hasher.combine(2); hasher.combine(c.id)
         case .itemDetail(let item, let source): hasher.combine(3); hasher.combine(item.id); hasher.combine(source?.id)
+        case .itemCopyDetail(let item, let copy, let source):
+            hasher.combine(4); hasher.combine(item.id); hasher.combine(copy.id); hasher.combine(source?.id)
         }
     }
 
@@ -451,6 +454,8 @@ enum InspectorRoute: Hashable {
         case (.graph(let a), .graph(let b)): return a.id == b.id
         case (.itemDetail(let a, let sourceA), .itemDetail(let b, let sourceB)):
             return a.id == b.id && sourceA?.id == sourceB?.id
+        case (.itemCopyDetail(let itemA, let copyA, let sourceA), .itemCopyDetail(let itemB, let copyB, let sourceB)):
+            return itemA.id == itemB.id && copyA.id == copyB.id && sourceA?.id == sourceB?.id
         default: return false
         }
     }
@@ -540,7 +545,15 @@ struct InspectorRootView: View {
                     item: item,
                     book: book,
                     onBack: { route = sourceCharacter.map(InspectorRoute.detail) ?? .list },
+                    onOpenCopy: { route = .itemCopyDetail(item, $0, sourceCharacter) },
                     onSelectSection: onSelectSection
+                )
+            case .itemCopyDetail(let item, let copy, let sourceCharacter):
+                ItemCopyDetailView(
+                    item: item,
+                    copy: copy,
+                    book: book,
+                    onBack: { route = .itemDetail(item, sourceCharacter) }
                 )
             }
         }
@@ -732,12 +745,11 @@ private struct ItemDetailView: View {
     @Bindable var item: Item
     let book: Book
     let onBack: () -> Void
+    let onOpenCopy: (ItemCopy) -> Void
     let onSelectSection: ((Section) -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Environment(ItemCopyStore.self) private var copyStore
-    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @Query(sort: \ItemLevel.sortOrder) private var allLevels: [ItemLevel]
-    @Query private var allNodes: [Node]
     @State private var showDeleteConfirmation = false
 
     private var referencedSections: [Section] {
@@ -784,14 +796,6 @@ private struct ItemDetailView: View {
                     ItemLevelEditor(item: item, levels: levels)
                     GroupBox("外觀與材質") { itemEditor("自由描述外型、材質與辨識特徵", text: $item.appearanceAndMaterial, minHeight: 100) }
                     GroupBox("用途") { itemEditor("物品的使用方式與故事用途", text: $item.usage, minHeight: 90) }
-                    Divider().padding(.vertical, 4)
-                    if copies.isEmpty {
-                        ContentUnavailableView("請先新增副本", systemImage: "square.stack.3d.up")
-                    } else {
-                        ForEach(Array(copies.enumerated()), id: \.element.id) { index, copy in
-                            copySpecificSections(copy, number: index + 1)
-                        }
-                    }
                     GroupBox("正文引用") {
                         if referencedSections.isEmpty { Text("尚未在正文中出現").foregroundStyle(.secondary) }
                         else { ForEach(referencedSections) { section in
@@ -827,7 +831,7 @@ private struct ItemDetailView: View {
     }
 
     private var itemCopiesSection: some View {
-        GroupBox("副本（每筆固定計為 1 件）") {
+        GroupBox("副本") {
             VStack(alignment: .leading, spacing: 10) {
                 if copies.isEmpty {
                     Text("尚未建立副本").foregroundStyle(.secondary)
@@ -842,166 +846,25 @@ private struct ItemDetailView: View {
     }
 
     private func copyListRow(_ copy: ItemCopy, number: Int) -> some View {
-        @Bindable var copy = copy
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("副本 \(number)").font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(role: .destructive) {
-                    deleteCopy(copy)
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.plain)
-                .help("刪除副本")
-            }
-            TextField("獨立名稱（留空沿用「\(item.name)」）", text: $copy.name)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: copy.name) {
-                    copy.updatedAt = Date()
-                    copyStore.save()
-                }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder
-    private func copySpecificSections(_ copy: ItemCopy, number: Int) -> some View {
-        GroupBox("副本 \(number) 的獨立資料") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("此副本固定使用「\(item.name.isEmpty ? "未命名物品" : item.name)」的設定。")
-                    .font(.caption)
+        Button { onOpenCopy(copy) } label: {
+            HStack(spacing: 10) {
+                Text("\(number)")
+                    .font(.subheadline.monospacedDigit())
                     .foregroundStyle(.secondary)
-                ownerEditor(copy)
-                currentLevelEditor(copy)
-                Divider()
-                Text("時間序").font(.subheadline.weight(.semibold))
-                copyHistoryEditor(copy)
+                    .frame(width: 28, alignment: .trailing)
+                Text(copy.displayName(for: item))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+                    .font(.caption.weight(.semibold))
             }
+            .padding(.vertical, 4)
         }
-    }
-
-    private func ownerEditor(_ copy: ItemCopy) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("所屬者").font(.subheadline.weight(.semibold))
-            Picker("目前所屬者", selection: holderBinding(for: copy)) {
-                Text("無人持有").tag(Optional<UUID>.none)
-                ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
-                    Text(character.realName.isEmpty ? "未命名角色" : character.realName)
-                        .tag(Optional(character.id))
-                }
-            }
-        }
-    }
-
-    private func currentLevelEditor(_ copy: ItemCopy) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("當下等級").font(.subheadline.weight(.semibold))
-            Picker("手動選擇", selection: currentLevelBinding(for: copy)) {
-                Text("未設定").tag(Optional<UUID>.none)
-                ForEach(levels) { level in
-                    Text(level.name.isEmpty ? "未命名等級" : level.name)
-                        .tag(Optional(level.id))
-                }
-            }
-            Text("僅記錄此副本目前使用的等級，不會自動改變物品名稱、能力、代價或時間序。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func copyHistoryEditor(_ copy: ItemCopy) -> some View {
-        let histories = copyStore.histories.filter { $0.copyID == copy.id }.sorted { $0.sortOrder < $1.sortOrder }
-        return VStack(alignment: .leading, spacing: 8) {
-            if histories.isEmpty {
-                Text("尚無歷史").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(histories) { history in
-                @Bindable var history = history
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        TextField("發生的事情", text: $history.content)
-                            .textFieldStyle(.roundedBorder)
-                        Button(role: .destructive) { copyStore.deleteHistory(history) } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    HStack(spacing: 8) {
-                        Text("時間定位").font(.caption).foregroundStyle(.secondary)
-                        CharacterNodePicker(book: book, node: nodeBinding(for: history))
-                    }
-                    Menu {
-                        ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
-                            Button {
-                                toggle(character.id, in: history)
-                            } label: {
-                                if history.relatedCharacterIDs.contains(character.id) {
-                                    Label(character.realName.isEmpty ? "未命名角色" : character.realName, systemImage: "checkmark")
-                                } else {
-                                    Text(character.realName.isEmpty ? "未命名角色" : character.realName)
-                                }
-                            }
-                        }
-                    } label: {
-                        let names = relatedNames(for: history)
-                        Label(names.isEmpty ? "關聯角色" : names.joined(separator: "、"), systemImage: "person.2")
-                    }
-                }
-                .padding(8)
-                .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                .onChange(of: history.content) {
-                    history.updatedAt = Date()
-                    copyStore.save()
-                }
-            }
-            Button("新增歷史", systemImage: "plus") {
-                copyStore.addHistory(copyID: copy.id)
-            }
-            .buttonStyle(.borderless)
-        }
+        .buttonStyle(.plain)
     }
 
     private func itemEditor(_ label: String, text: Binding<String>, minHeight: CGFloat) -> some View { VStack(alignment: .leading, spacing: 4) { Text(label).font(.caption).foregroundStyle(.secondary); InsetTextEditor(text: text, minHeight: minHeight) } }
     private func addCopy() { copyStore.createCopy(itemID: item.id) }
-    private func deleteCopy(_ copy: ItemCopy) {
-        copyStore.deleteCopy(copy)
-    }
-    private func holderBinding(for copy: ItemCopy) -> Binding<UUID?> {
-        Binding(
-            get: { copyStore.holdings.first(where: { $0.copyID == copy.id })?.characterID },
-            set: { copyStore.setHolder(copyID: copy.id, characterID: $0) }
-        )
-    }
-    private func currentLevelBinding(for copy: ItemCopy) -> Binding<UUID?> {
-        Binding(
-            get: { copyStore.currentLevelID(for: copy.id) },
-            set: { copyStore.setCurrentLevel(copyID: copy.id, levelID: $0) }
-        )
-    }
-    private func nodeBinding(for history: ItemCopyHistory) -> Binding<Node?> {
-        Binding(
-            get: { history.nodeID.flatMap { id in allNodes.first { $0.id == id } } },
-            set: {
-                history.nodeID = $0?.id
-                history.updatedAt = Date()
-                copyStore.save()
-            }
-        )
-    }
-    private func toggle(_ characterID: UUID, in history: ItemCopyHistory) {
-        var ids = history.relatedCharacterIDs
-        if let index = ids.firstIndex(of: characterID) { ids.remove(at: index) }
-        else { ids.append(characterID) }
-        history.relatedCharacterIDs = ids
-        history.updatedAt = Date()
-        copyStore.save()
-    }
-    private func relatedNames(for history: ItemCopyHistory) -> [String] {
-        let ids = Set(history.relatedCharacterIDs)
-        return allCharacters.filter { ids.contains($0.id) }.map { $0.realName.isEmpty ? "未命名角色" : $0.realName }
-    }
     private func deleteItem() {
         for level in levels { modelContext.delete(level) }
         copyStore.deleteCopies(itemID: item.id)
@@ -1009,6 +872,109 @@ private struct ItemDetailView: View {
         onBack()
     }
     private func sectionNumber(_ section: Section) -> Int { guard let volume = section.volume else { return 1 }; return volume.sections.sorted { $0.sortOrder < $1.sortOrder }.firstIndex(where: { $0.id == section.id }).map { $0 + 1 } ?? 1 }
+}
+
+private struct ItemCopyDetailView: View {
+    let item: Item
+    @Bindable var copy: ItemCopy
+    let book: Book
+    let onBack: () -> Void
+    @Environment(ItemCopyStore.self) private var copyStore
+    @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
+    @Query(sort: \ItemLevel.sortOrder) private var allLevels: [ItemLevel]
+    @Query private var allNodes: [Node]
+    @State private var showDeleteConfirmation = false
+
+    private var copyNumber: Int {
+        copyStore.copies.filter { $0.itemID == item.id }.sorted { $0.sortOrder < $1.sortOrder }
+            .firstIndex(where: { $0.id == copy.id }).map { $0 + 1 } ?? 1
+    }
+    private var levels: [ItemLevel] { allLevels.filter { $0.itemID == item.id }.sorted { $0.sortOrder < $1.sortOrder } }
+    private var histories: [ItemCopyHistory] { copyStore.histories.filter { $0.copyID == copy.id }.sorted { $0.sortOrder < $1.sortOrder } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: onBack) { Label("返回物品", systemImage: "chevron.left") }.buttonStyle(.plain)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("副本 \(copyNumber)", systemImage: "square.stack.3d.up") .font(.headline)
+                    Text("固定使用「\(item.name.isEmpty ? "未命名物品" : item.name)」的共用設定。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    GroupBox("副本名稱") {
+                        TextField("名稱（留空沿用物品名稱）", text: $copy.name)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: copy.name) { copy.updatedAt = Date(); copyStore.save() }
+                    }
+                    GroupBox("所屬者") {
+                        Picker("目前所屬者", selection: holderBinding) {
+                            Text("無人持有").tag(Optional<UUID>.none)
+                            ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
+                                Text(character.realName.isEmpty ? "未命名角色" : character.realName).tag(Optional(character.id))
+                            }
+                        }
+                    }
+                    GroupBox("當下等級") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("手動選擇", selection: currentLevelBinding) {
+                                Text("未設定").tag(Optional<UUID>.none)
+                                ForEach(levels) { level in Text(level.name.isEmpty ? "未命名等級" : level.name).tag(Optional(level.id)) }
+                            }
+                            Text("僅記錄此副本目前使用的等級，不會自動改變物品名稱、能力、代價或時間序。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    GroupBox("時間序") { historyEditor }
+                    Button("刪除副本", systemImage: "trash", role: .destructive) { showDeleteConfirmation = true }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+        }
+        .confirmationDialog("確定刪除副本 \(copyNumber)？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("刪除副本", role: .destructive) { copyStore.deleteCopy(copy); onBack() }
+            Button("取消", role: .cancel) { }
+        }
+    }
+
+    private var holderBinding: Binding<UUID?> { Binding(get: { copyStore.holdings.first(where: { $0.copyID == copy.id })?.characterID }, set: { copyStore.setHolder(copyID: copy.id, characterID: $0) }) }
+    private var currentLevelBinding: Binding<UUID?> { Binding(get: { copyStore.currentLevelID(for: copy.id) }, set: { copyStore.setCurrentLevel(copyID: copy.id, levelID: $0) }) }
+    private var historyEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if histories.isEmpty { Text("尚無歷史").font(.caption).foregroundStyle(.secondary) }
+            ForEach(histories) { history in
+                @Bindable var history = history
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("發生的事情", text: $history.content).textFieldStyle(.roundedBorder)
+                        Button(role: .destructive) { copyStore.deleteHistory(history) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
+                    }
+                    HStack(spacing: 8) {
+                        Text("時間定位").font(.caption).foregroundStyle(.secondary)
+                        CharacterNodePicker(book: book, node: Binding(get: { history.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { history.nodeID = $0?.id; history.updatedAt = Date(); copyStore.save() }))
+                    }
+                    Menu {
+                        ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
+                            Button { toggle(character.id, in: history) } label: {
+                                history.relatedCharacterIDs.contains(character.id)
+                                    ? Label(character.realName.isEmpty ? "未命名角色" : character.realName, systemImage: "checkmark")
+                                    : Label(character.realName.isEmpty ? "未命名角色" : character.realName, systemImage: "")
+                            }
+                        }
+                    } label: { Label(relatedNames(for: history).isEmpty ? "關聯角色" : relatedNames(for: history).joined(separator: "、"), systemImage: "person.2") }
+                }
+                .padding(8).background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                .onChange(of: history.content) { history.updatedAt = Date(); copyStore.save() }
+            }
+            Button("新增歷史", systemImage: "plus") { copyStore.addHistory(copyID: copy.id) }.buttonStyle(.borderless)
+        }
+    }
+    private func toggle(_ id: UUID, in history: ItemCopyHistory) { var ids = history.relatedCharacterIDs; if let index = ids.firstIndex(of: id) { ids.remove(at: index) } else { ids.append(id) }; history.relatedCharacterIDs = ids; history.updatedAt = Date(); copyStore.save() }
+    private func relatedNames(for history: ItemCopyHistory) -> [String] { let ids = Set(history.relatedCharacterIDs); return allCharacters.filter { ids.contains($0.id) }.map { $0.realName.isEmpty ? "未命名角色" : $0.realName } }
 }
 
 /// This editor only defines possible stages. It intentionally does not expose
