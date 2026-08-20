@@ -4,7 +4,7 @@ import SwiftData
 @main
 struct SailuneApp: App {
     private enum StartupState {
-        case ready(ModelContainer)
+        case ready(ModelContainer, ItemCopyStore)
         case failed(String)
     }
 
@@ -42,6 +42,21 @@ struct SailuneApp: App {
         storeURL.deletingLastPathComponent().appendingPathComponent("Sailune.store")
     }
 
+    /// Copy data deliberately lives outside the released V5 store. The name is
+    /// derived from an override during tests so test and production data can
+    /// never be mixed.
+    private static var itemCopyStoreURL: URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        return storeURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName)-item-copies.store")
+    }
+
+    private static var itemCopyLevelSelectionStoreURL: URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        return storeURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName)-item-copy-level-selections.store")
+    }
+
     private enum LegacyStoreSource {
         case v3(ModelContainer)
         case v2(ModelContainer)
@@ -51,13 +66,14 @@ struct SailuneApp: App {
 
     init() {
         do {
-            startupState = .ready(try Self.makeModelContainer())
+            let (container, copyStore) = try Self.makeModelContainer()
+            startupState = .ready(container, copyStore)
         } catch {
             startupState = .failed(error.localizedDescription)
         }
     }
 
-    private static func makeModelContainer() throws -> ModelContainer {
+    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore) {
         // Open the released schema before V5. SwiftData caches model metadata
         // for shared top-level model types, so reversing this order makes it
         // attempt to open the V3 store with V5's expanded model graph.
@@ -68,14 +84,14 @@ struct SailuneApp: App {
             throw StartupStageError(stage: "舊資料庫載入失敗", underlying: error)
         }
 
-        let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
-        let config = ModelConfiguration(schema: schema, url: storeURL)
+        let mainSchema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+        let mainConfig = ModelConfiguration(schema: mainSchema, url: storeURL)
         
         let container: ModelContainer
         do {
-            container = try ModelContainer(for: schema, configurations: [config])
+            container = try ModelContainer(for: mainSchema, configurations: [mainConfig])
         } catch {
-            throw StartupStageError(stage: "V5 資料庫載入失敗（Sailune-v5.store）", underlying: error)
+            throw StartupStageError(stage: "V5 主資料庫載入失敗（Sailune-v5.store）", underlying: error)
         }
         do {
             try importLegacyStore(legacySource, into: container)
@@ -102,12 +118,42 @@ struct SailuneApp: App {
         } catch {
             throw StartupStageError(stage: "物品等級資料修復失敗", underlying: error)
         }
+        let copyStore: ItemCopyStore
+        do {
+            let copySchema = Schema(versionedSchema: ItemCopySchemaV1.self)
+            let copyConfig = ModelConfiguration(schema: copySchema, url: itemCopyStoreURL)
+            let copyContainer = try ModelContainer(for: copySchema, configurations: [copyConfig])
+            let selectionSchema = Schema(versionedSchema: ItemCopyLevelSelectionSchemaV1.self)
+            let selectionConfig = ModelConfiguration(
+                schema: selectionSchema,
+                url: itemCopyLevelSelectionStoreURL
+            )
+            let selectionContainer = try ModelContainer(
+                for: selectionSchema,
+                configurations: [selectionConfig]
+            )
+            try V6ItemCopyBackfill.run(
+                source: container.mainContext,
+                destination: copyContainer.mainContext
+            )
+            try ItemCopyLevelSelectionRepair.run(
+                source: container.mainContext,
+                copyContext: copyContainer.mainContext,
+                selectionContext: selectionContainer.mainContext
+            )
+            copyStore = try ItemCopyStore(
+                container: copyContainer,
+                levelSelectionContainer: selectionContainer
+            )
+        } catch {
+            throw StartupStageError(stage: "獨立物品副本或當下等級資料庫載入失敗", underlying: error)
+        }
         do {
             try V4DataBackfill.ensureInitialWritingStructure(in: container.mainContext)
         } catch {
             throw StartupStageError(stage: "初始寫作結構補齊失敗", underlying: error)
         }
-        return container
+        return (container, copyStore)
     }
 
     private static func errorDetails(_ error: Error) -> String {
@@ -148,12 +194,35 @@ struct SailuneApp: App {
     var body: some Scene {
         WindowGroup {
             switch startupState {
-            case .ready(let container):
-                ContentView().modelContainer(container)
+            case .ready(let container, let copyStore):
+                SailuneRootView(container: container, copyStore: copyStore)
             case .failed(let message):
                 DatabaseStartupFailureView(message: message)
             }
         }
+    }
+}
+
+private struct SailuneRootView: View {
+    let container: ModelContainer
+    @Bindable var copyStore: ItemCopyStore
+
+    var body: some View {
+        ContentView()
+            .modelContainer(container)
+            .environment(copyStore)
+            .alert("物品副本無法儲存", isPresented: persistenceErrorBinding) {
+                Button("好") { copyStore.clearPersistenceError() }
+            } message: {
+                Text(copyStore.persistenceErrorMessage ?? "未知錯誤")
+            }
+    }
+
+    private var persistenceErrorBinding: Binding<Bool> {
+        Binding(
+            get: { copyStore.persistenceErrorMessage != nil },
+            set: { if !$0 { copyStore.clearPersistenceError() } }
+        )
     }
 }
 

@@ -5,54 +5,127 @@ import SwiftData
 @MainActor
 final class ItemV3Tests: XCTestCase {
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+        let schema = Schema(
+            NovelWriterSchemaV5.models + [
+                ItemCopy.self, ItemCopyHolding.self, ItemCopyHistory.self,
+                ItemCopyLevelSelection.self
+            ]
+        )
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, configurations: [configuration])
     }
 
-    func testDuplicateCopiesSettingsAndLevelsOnly() throws {
+    private func createV5Store(at url: URL) throws {
+        let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, url: url)]
+        )
+        let context = container.mainContext
+        let book = Book(title: "遷移測試", author: "作者")
+        let character = Character(realName: "持有人", book: book)
+        let item = Item(name: "制式藥水", book: book)
+        context.insert(book)
+        context.insert(character)
+        context.insert(item)
+        context.insert(CharacterItem(quantity: 2, character: character, item: item))
+        try context.save()
+    }
+
+    func testExistingV5StoreOpensUnchangedBesideCopyStore() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+        let identifier = UUID().uuidString
+        let mainURL = directory.appendingPathComponent("Sailune-v5-main-\(identifier).store")
+        let copyURL = directory.appendingPathComponent("Sailune-v5-copies-\(identifier).store")
+        defer {
+            for url in [mainURL, copyURL] {
+                for suffix in ["", "-shm", "-wal"] {
+                    try? FileManager.default.removeItem(atPath: url.path + suffix)
+                }
+            }
+        }
+
+        try createV5Store(at: mainURL)
+
+        let mainSchema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+        let copySchema = Schema(versionedSchema: ItemCopySchemaV1.self)
+        let mainContainer: ModelContainer
+        let copyContainer: ModelContainer
+        do {
+            mainContainer = try ModelContainer(
+                for: mainSchema,
+                configurations: [ModelConfiguration(schema: mainSchema, url: mainURL)]
+            )
+            copyContainer = try ModelContainer(
+                for: copySchema,
+                configurations: [ModelConfiguration(schema: copySchema, url: copyURL)]
+            )
+        } catch {
+            let nsError = error as NSError
+            XCTFail("V5 主庫與副本庫共同載入失敗：\(nsError.domain) \(nsError.code) \(nsError.userInfo)")
+            return
+        }
+        try V6ItemCopyBackfill.run(
+            source: mainContainer.mainContext,
+            destination: copyContainer.mainContext
+        )
+
+        XCTAssertEqual(try mainContainer.mainContext.fetchCount(FetchDescriptor<Item>()), 1)
+        XCTAssertEqual(try mainContainer.mainContext.fetchCount(FetchDescriptor<CharacterItem>()), 1)
+        XCTAssertEqual(try copyContainer.mainContext.fetchCount(FetchDescriptor<ItemCopy>()), 2)
+        XCTAssertEqual(try copyContainer.mainContext.fetchCount(FetchDescriptor<ItemCopyHolding>()), 2)
+    }
+
+    func testAddingCopyKeepsOneSharedItemAndIndependentName() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let book = Book(title: "測試小說", author: "作者")
-        let holder = Character(realName: "持有人", book: book)
-        let source = Item(
+        let item = Item(
             name: "霜紋長劍",
             itemDescription: "概要",
             category: "武器",
             appearanceAndMaterial: "深銀色劍身",
             usage: "近身戰鬥",
-            positiveAbility: "舊版正向欄位",
-            negativeAbility: "舊版負向欄位",
             book: book
         )
-        let holding = CharacterItem(quantity: 3, character: holder, item: source)
-        let history = ItemHistory(content: "在遺跡中發現。", item: source, relatedCharacters: [holder])
-        let first = ItemLevel(itemID: source.id, sortOrder: 0, name: "初始", itemName: "無名鐵劍", ability: "無", cost: "容易損壞", note: "尚無霜紋")
-        let second = ItemLevel(itemID: source.id, sortOrder: 1, name: "覺醒", itemName: "霜紋長劍", ability: "耐寒", cost: "消耗體力", note: "出現霜紋")
         context.insert(book)
-        context.insert(holder)
-        context.insert(source)
-        context.insert(holding)
-        context.insert(history)
-        context.insert(first)
-        context.insert(second)
-        source.characterItems.append(holding)
-        source.histories.append(history)
-
-        let copy = ItemOperations.duplicate(source, levels: [second, first], in: book, context: context)
+        context.insert(item)
+        let first = ItemCopyOperations.create(for: item, existingCopies: [], context: context)
+        let second = ItemCopyOperations.create(for: item, existingCopies: [first], context: context, name: "守衛隊長之劍")
         try context.save()
 
-        let copiedLevels = try context.fetch(FetchDescriptor<ItemLevel>())
-            .filter { $0.itemID == copy.id }
-            .sorted { $0.sortOrder < $1.sortOrder }
-        XCTAssertEqual(copy.category, "武器")
-        XCTAssertEqual(copy.appearanceAndMaterial, "深銀色劍身")
-        XCTAssertEqual(copy.usage, "近身戰鬥")
-        XCTAssertTrue(copy.positiveAbility.isEmpty)
-        XCTAssertTrue(copy.negativeAbility.isEmpty)
-        XCTAssertEqual(copiedLevels.map(\.name), ["初始", "覺醒"])
-        XCTAssertTrue(copy.characterItems.isEmpty)
-        XCTAssertTrue(copy.histories.isEmpty)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Item>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ItemCopy>()), 2)
+        XCTAssertEqual(first.displayName(for: item), "霜紋長劍")
+        XCTAssertEqual(second.displayName(for: item), "守衛隊長之劍")
+        XCTAssertEqual(second.sortOrder, 1)
+    }
+
+    func testCopyKeepsItsParentItemAndManualLevel() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "測試小說", author: "作者")
+        let firstItem = Item(name: "短劍", book: book)
+        let firstLevel = ItemLevel(itemID: firstItem.id, name: "初始")
+        let holder = Character(realName: "艾琳", book: book)
+        context.insert(book)
+        context.insert(firstItem)
+        context.insert(firstLevel)
+        context.insert(holder)
+        try context.save()
+
+        let store = try ItemCopyStore(container: container)
+        let copy = store.createCopy(itemID: firstItem.id, name: "艾琳的劍", holderID: holder.id)
+        let history = store.addHistory(copyID: copy.id, content: "在遺跡中取得。")
+        store.setCurrentLevel(copyID: copy.id, levelID: firstLevel.id)
+        XCTAssertEqual(store.currentLevelID(for: copy.id), firstLevel.id)
+
+        XCTAssertEqual(copy.itemID, firstItem.id)
+        XCTAssertEqual(copy.name, "艾琳的劍")
+        XCTAssertEqual(store.holdings.first(where: { $0.copyID == copy.id })?.characterID, holder.id)
+        XCTAssertEqual(store.histories.first(where: { $0.id == history.id })?.content, "在遺跡中取得。")
+        XCTAssertEqual(store.currentLevelID(for: copy.id), firstLevel.id)
+        XCTAssertTrue(store.copies.contains { $0.id == copy.id && $0.itemID == firstItem.id })
     }
 
     func testLevelContentDoesNotChangeMainItemName() throws {
@@ -108,17 +181,32 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(Set(levels.map(\.id)), Set([validLevel.id]))
     }
 
-    func testDuplicateNormalizesWhitespaceOnlySourceName() throws {
+    func testLegacyQuantityBecomesIndependentCopies() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let book = Book(title: "測試小說", author: "作者")
-        let source = Item(name: "   ", book: book)
+        let holder = Character(realName: "艾琳", book: book)
+        let source = Item(name: "治療藥水", book: book)
+        let holding = CharacterItem(quantity: 3, character: holder, item: source)
+        let history = ItemHistory(content: "在藥房取得。", item: source, relatedCharacters: [holder])
         context.insert(book)
+        context.insert(holder)
         context.insert(source)
+        context.insert(holding)
+        context.insert(history)
+        try context.save()
 
-        let copy = ItemOperations.duplicate(source, levels: [], in: book, context: context)
+        try V6ItemCopyBackfill.run(source: context, destination: context)
 
-        XCTAssertEqual(copy.name, "新物品（副本）")
+        let copies = try context.fetch(FetchDescriptor<ItemCopy>()).filter { $0.itemID == source.id }
+        let copyIDs = Set(copies.map(\.id))
+        let copyHoldings = try context.fetch(FetchDescriptor<ItemCopyHolding>()).filter { copyIDs.contains($0.copyID) }
+        let histories = try context.fetch(FetchDescriptor<ItemCopyHistory>()).filter { copyIDs.contains($0.copyID) }
+        XCTAssertEqual(copies.count, 3)
+        XCTAssertEqual(copyHoldings.count, 3)
+        XCTAssertTrue(copyHoldings.allSatisfy { $0.characterID == holder.id })
+        XCTAssertEqual(histories.count, 3)
+        XCTAssertTrue(histories.allSatisfy { $0.content == "在藥房取得。" })
     }
 
     func testMultipleHoldersAndUnifiedHistoryPersistTogether() throws {
@@ -153,25 +241,26 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(item.histories.map(\.id), [history.id])
     }
 
-    func testWritingReferencesAreComputedAndNotCopied() throws {
+    func testWritingReferencesRemainOnSharedItemDefinition() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let book = Book(title: "測試小說", author: "作者")
         let volume = Volume(title: "第一卷", book: book)
         let section = Section(title: "冰原遺跡", content: AttributedString("洛恩在遺跡中找到霜紋長劍。"), volume: volume)
-        let source = Item(name: "霜紋長劍", book: book)
+        let item = Item(name: "霜紋長劍", book: book)
         book.volumes.append(volume)
         volume.sections.append(section)
         context.insert(book)
         context.insert(volume)
         context.insert(section)
-        context.insert(source)
+        context.insert(item)
 
-        let copy = ItemOperations.duplicate(source, levels: [], in: book, context: context)
+        let copy = ItemCopyOperations.create(for: item, existingCopies: [], context: context, name: "洛恩之劍")
         try context.save()
 
-        XCTAssertEqual(WritingReferenceScanner.sections(for: source, in: book).map(\.id), [section.id])
-        XCTAssertTrue(WritingReferenceScanner.sections(for: copy, in: book).isEmpty)
+        XCTAssertEqual(WritingReferenceScanner.sections(for: item, in: book).map(\.id), [section.id])
+        XCTAssertEqual(copy.displayName(for: item), "洛恩之劍")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Item>()), 1)
     }
 
     func testLevelCompactOverviewUsesExistingFieldsOnly() throws {

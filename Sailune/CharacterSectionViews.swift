@@ -518,41 +518,48 @@ struct CharacterItemSectionView: View {
     let book: Book
     var onOpenItem: ((Item) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
-    @Query private var allCharacterItems: [CharacterItem]
+    @Environment(ItemCopyStore.self) private var copyStore
     @Query(sort: \Item.name) private var allItems: [Item]
-    private var characterItems: [CharacterItem] { allCharacterItems.filter { $0.character?.id == character.id } }
-    private var availableItems: [Item] {
-        let assignedIDs = Set(characterItems.compactMap { $0.item?.id })
-        return allItems.filter { $0.book?.id == book.id && !assignedIDs.contains($0.id) }
+    private var holdings: [ItemCopyHolding] {
+        copyStore.holdings.filter { $0.characterID == character.id }
+    }
+    private var heldCopies: [ItemCopy] {
+        let copyIDs = Set(holdings.map(\.copyID))
+        return copyStore.copies.filter { copyIDs.contains($0.id) }.sorted { $0.sortOrder < $1.sortOrder }
+    }
+    private var bookItems: [Item] {
+        allItems.filter { $0.book?.id == book.id }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if characterItems.isEmpty {
-                CharacterSectionEmptyState(title: "尚無持有物品", detail: "可在物品設定中管理描述、數量與統一歷史。")
+            if heldCopies.isEmpty {
+                CharacterSectionEmptyState(title: "尚無持有物品", detail: "每個副本固定計為一件，並擁有獨立名稱與歷史。")
             } else {
-                ForEach(characterItems) { characterItem in
-                    ItemRow(
-                        characterItem: characterItem,
-                        book: book,
-                        onOpenItem: onOpenItem,
-                        onDelete: { modelContext.delete(characterItem) }
-                    )
+                ForEach(heldCopies) { copy in
+                    if let item = allItems.first(where: { $0.id == copy.itemID }) {
+                        ItemCopyCharacterRow(
+                            copy: copy,
+                            item: item,
+                            onOpenItem: onOpenItem,
+                            onRemoveHolder: { removeHolder(from: copy) }
+                        )
+                    }
                 }
             }
             HStack(spacing: 12) {
                 Button("新增物品", systemImage: "plus", action: addNewItem)
                     .buttonStyle(.borderless)
 
-                if !availableItems.isEmpty {
+                if !bookItems.isEmpty {
                     Menu {
-                        ForEach(availableItems) { item in
-                            Button(item.name.isEmpty ? "未命名物品" : item.name) {
-                                addItem(item)
+                        ForEach(bookItems) { item in
+                            Button(item.name.isEmpty ? "未命名物品的新副本" : "\(item.name)的新副本") {
+                                addCopy(of: item)
                             }
                         }
                     } label: {
-                        Label("加入既有物品", systemImage: "link.badge.plus")
+                        Label("新增既有物品的副本", systemImage: "plus.square.on.square")
                     }
                     .menuStyle(.borderlessButton)
                 }
@@ -563,51 +570,56 @@ struct CharacterItemSectionView: View {
     private func addNewItem() {
         let item = Item(name: "新物品", book: book)
         modelContext.insert(item)
-        addItem(item)
+        addCopy(of: item)
     }
 
-    private func addItem(_ item: Item) {
-        modelContext.insert(CharacterItem(character: character, item: item))
+    private func addCopy(of item: Item) {
+        copyStore.createCopy(itemID: item.id, holderID: character.id)
+    }
+
+    private func removeHolder(from copy: ItemCopy) {
+        copyStore.setHolder(copyID: copy.id, characterID: nil)
     }
 }
 
-private struct ItemRow: View {
-    @Bindable var characterItem: CharacterItem
-    let book: Book
+private struct ItemCopyCharacterRow: View {
+    @Bindable var copy: ItemCopy
+    @Environment(ItemCopyStore.self) private var copyStore
+    let item: Item
     let onOpenItem: ((Item) -> Void)?
-    let onDelete: () -> Void
+    let onRemoveHolder: () -> Void
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                if let item = characterItem.item {
-                    @Bindable var item = item
-                    TextField("物品名稱", text: $item.name).textFieldStyle(.roundedBorder)
-                    if let onOpenItem {
-                        Button { onOpenItem(item) } label: {
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 32, height: 32)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("前往物品設定")
+                TextField("副本名稱（留空沿用物品名稱）", text: $copy.name)
+                    .textFieldStyle(.roundedBorder)
+                if let onOpenItem {
+                    Button { onOpenItem(item) } label: {
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .help("前往物品設定")
                 }
-                Stepper("數量 \(characterItem.quantity)", value: $characterItem.quantity, in: 1...9999).frame(width: 130)
-                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
+                Button(role: .destructive, action: onRemoveHolder) {
+                    Image(systemName: "person.crop.circle.badge.minus")
+                }
+                .buttonStyle(.plain)
+                .help("移除持有人；副本仍保留")
             }
-            if let item = characterItem.item, !item.itemDescription.isEmpty {
+            Text("物品設定：\(item.name.isEmpty ? "未命名物品" : item.name) · 數量 1")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !item.itemDescription.isEmpty {
                 Text(item.itemDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
-        .onChange(of: characterItem.item?.name) {
-            characterItem.item?.updatedAt = Date()
-        }
-        .onDisappear {
-            guard let item = characterItem.item else { return }
-            if item.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                item.name = "未命名物品"
-            }
+        .onChange(of: copy.name) {
+            copy.updatedAt = Date()
+            copyStore.save()
         }
     }
 }
