@@ -347,6 +347,7 @@ private struct OrganizationMembershipRow: View {
 struct CharacterAbilitySectionView: View {
     let character: Character
     let book: Book
+    let onOpenAbility: (CharacterAbility) -> Void
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CharacterAbility.createdAt) private var allAbilities: [CharacterAbility]
     @Environment(AbilityProgressStore.self) private var abilityStore
@@ -363,7 +364,7 @@ struct CharacterAbilitySectionView: View {
                 CharacterSectionEmptyState(title: "尚無能力資料", detail: "從下方連接已建立的能力；等級與時間序會只屬於此角色。")
             } else {
                 ForEach(connections) { connection in
-                    CharacterAbilityConnectionRow(connection: connection, book: book, onDelete: { abilityStore.deleteConnection(connection) })
+                    CharacterAbilityConnectionRow(connection: connection, book: book, onOpenAbility: onOpenAbility, onDelete: { abilityStore.deleteConnection(connection) })
                 }
             }
             Menu {
@@ -385,6 +386,7 @@ struct CharacterAbilitySectionView: View {
 private struct CharacterAbilityConnectionRow: View {
     @Bindable var connection: CharacterAbilityConnection
     let book: Book
+    let onOpenAbility: (CharacterAbility) -> Void
     let onDelete: () -> Void
     @Environment(AbilityProgressStore.self) private var abilityStore
     @Query private var allAbilities: [CharacterAbility]
@@ -393,8 +395,10 @@ private struct CharacterAbilityConnectionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text(allAbilities.first { $0.id == connection.abilityID }?.name ?? "未命名能力")
-                    .fontWeight(.medium)
+                if let ability = allAbilities.first(where: { $0.id == connection.abilityID }) {
+                    Button(ability.name.isEmpty ? "未命名能力" : ability.name) { onOpenAbility(ability) }
+                        .buttonStyle(.link)
+                } else { Text("未命名能力").fontWeight(.medium) }
                 Spacer()
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }

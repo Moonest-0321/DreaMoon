@@ -535,6 +535,7 @@ struct InspectorRootView: View {
                     onBack: { route = .list },
                     onShowGraph: { route = .graph(character) },
                     onOpenItem: { route = .itemDetail($0, character) },
+                    onOpenAbility: { route = .abilityDetail($0) },
                     onSelectSection: onSelectSection
                 )
             case .graph(let character):
@@ -560,7 +561,7 @@ struct InspectorRootView: View {
                     onBack: { route = .itemDetail(item, sourceCharacter) }
                 )
             case .abilityDetail(let ability):
-                AbilityDetailView(ability: ability, book: book, onBack: { route = .list })
+                AbilityDetailView(ability: ability, book: book, onBack: { route = .list }, onOpenCharacter: { route = .detail($0) })
             }
         }
         .onAppear { showFocusedCharacter() }
@@ -1276,6 +1277,7 @@ private struct AbilityDetailView: View {
     @Bindable var ability: CharacterAbility
     let book: Book
     let onBack: () -> Void
+    let onOpenCharacter: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(AbilityProgressStore.self) private var abilityStore
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
@@ -1298,7 +1300,13 @@ private struct AbilityDetailView: View {
                             ForEach(connections) { connection in
                                 let name = allCharacters.first { $0.id == connection.characterID }?.realName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                                 let level = levels.first { $0.id == connection.currentLevelID }?.name ?? "未設定等級"
-                                HStack { Text(name.isEmpty ? "未命名角色" : name); Spacer(); Text(level).foregroundStyle(.secondary) }
+                                HStack {
+                                    if let character = allCharacters.first(where: { $0.id == connection.characterID }) {
+                                        Button(name.isEmpty ? "未命名角色" : name) { onOpenCharacter(character) }
+                                            .buttonStyle(.link)
+                                    } else { Text(name.isEmpty ? "未命名角色" : name) }
+                                    Spacer(); Text(level).foregroundStyle(.secondary)
+                                }
                             }
                             Menu("連接角色") {
                                 let connectedIDs = Set(connections.map(\.characterID))
@@ -1609,6 +1617,7 @@ struct CharacterDetailView: View {
     let onBack: () -> Void
     let onShowGraph: () -> Void
     let onOpenItem: (Item) -> Void
+    let onOpenAbility: (CharacterAbility) -> Void
     let onSelectSection: ((Section) -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Query private var allProfiles: [CharacterProfile]
@@ -1740,7 +1749,7 @@ struct CharacterDetailView: View {
                     }
 
                     detailSection("能力", systemImage: "sparkles", summary: compactSummary(abilities.map(\.name))) {
-                        CharacterAbilitySectionView(character: character, book: book)
+                        CharacterAbilitySectionView(character: character, book: book, onOpenAbility: onOpenAbility)
                     }
 
                     detailSection("外觀", systemImage: "person.crop.rectangle", summary: countSummary(appearances.count)) {
