@@ -1434,6 +1434,7 @@ struct CharacterListContainerView: View {
     let onSelect: (Character) -> Void
     let onCreated: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
+    @Environment(ItemCopyStore.self) private var copyStore
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @State private var deletionErrorMessage: String?
 
@@ -1453,7 +1454,7 @@ struct CharacterListContainerView: View {
             onAdd: addCharacter,
             onDelete: { character in
                 do {
-                    try PersistentModelDeletion.deleteCharacter(character, in: modelContext)
+                    try PersistentModelDeletion.deleteCharacter(character, in: modelContext, copyStore: copyStore)
                 } catch {
                     modelContext.rollback()
                     deletionErrorMessage = "角色刪除失敗，資料未變更。"

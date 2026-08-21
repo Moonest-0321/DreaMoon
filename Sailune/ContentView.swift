@@ -5,6 +5,7 @@ import AppKit
 // MARK: - 主畫面：網格書櫃
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(ItemCopyStore.self) private var copyStore
     @Query(sort: \Book.updatedAt, order: .reverse) private var books: [Book]
     @Query private var profiles: [AuthorProfile]
     @State private var navigationPath = NavigationPath()
@@ -164,7 +165,7 @@ struct ContentView: View {
 
         do {
             let bookID = request.id
-            try PersistentModelDeletion.deleteBook(book, in: modelContext)
+            try PersistentModelDeletion.deleteBook(book, in: modelContext, copyStore: copyStore)
             try? BookCoverStore.removeCover(forID: bookID)
         } catch {
             print("❌ 書籍刪除失敗：\(error.localizedDescription)")

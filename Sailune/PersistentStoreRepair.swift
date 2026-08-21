@@ -309,8 +309,15 @@ enum PersistentStoreRepair {
 /// relationships do not cover every dependent model.
 @MainActor
 enum PersistentModelDeletion {
-    static func deleteBook(_ book: Book, in context: ModelContext) throws {
+    static func deleteBook(
+        _ book: Book,
+        in context: ModelContext,
+        copyStore: ItemCopyStore? = nil
+    ) throws {
         let bookID = book.id
+        let itemIDs = try context.fetch(
+            FetchDescriptor<Item>(predicate: #Predicate { $0.book?.id == bookID })
+        ).map(\.id)
 
         let characters = try context.fetch(
             FetchDescriptor<Character>(predicate: #Predicate { $0.book?.id == bookID })
@@ -334,9 +341,15 @@ enum PersistentModelDeletion {
 
         context.delete(book)
         try context.save()
+        for itemID in itemIDs { copyStore?.deleteCopies(itemID: itemID) }
     }
 
-    static func deleteCharacter(_ character: Character, in context: ModelContext, save: Bool = true) throws {
+    static func deleteCharacter(
+        _ character: Character,
+        in context: ModelContext,
+        save: Bool = true,
+        copyStore: ItemCopyStore? = nil
+    ) throws {
         let characterID = character.id
         NotificationCenter.default.post(name: .sailuneWillChangeCharacterReferences, object: nil)
         var changedSectionIDs = Set<UUID>()
@@ -403,6 +416,7 @@ enum PersistentModelDeletion {
             if !changedSectionIDs.isEmpty {
                 NotificationCenter.default.post(name: .sailuneCharacterReferencesChanged, object: changedSectionIDs)
             }
+            copyStore?.removeHoldings(characterID: characterID)
         }
     }
 

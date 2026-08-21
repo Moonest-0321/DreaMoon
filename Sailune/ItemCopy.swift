@@ -252,6 +252,16 @@ final class ItemCopyStore {
         save()
     }
 
+    /// Removes a deleted character from every copy immediately.  Copies stay
+    /// intact and become available for assignment to another character.
+    func removeHoldings(characterID: UUID) {
+        let removed = holdings.filter { $0.characterID == characterID }
+        guard !removed.isEmpty else { return }
+        for holding in removed { context.delete(holding) }
+        holdings.removeAll { $0.characterID == characterID }
+        save()
+    }
+
     func currentLevelID(for copyID: UUID) -> UUID? {
         levelSelections.first(where: { $0.copyID == copyID })?.levelID
     }

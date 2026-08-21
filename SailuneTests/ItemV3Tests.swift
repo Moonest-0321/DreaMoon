@@ -145,6 +145,49 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertNil(store.currentLevelID(for: copy.id))
     }
 
+    func testDeletingCharacterImmediatelyReleasesTheirCopies() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let item = Item(name: "短劍")
+        let deletedCharacter = Character(realName: "艾琳")
+        let remainingCharacter = Character(realName: "洛恩")
+        context.insert(item)
+        context.insert(deletedCharacter)
+        context.insert(remainingCharacter)
+        try context.save()
+
+        let store = try ItemCopyStore(container: container)
+        let releasedCopy = store.createCopy(itemID: item.id, holderID: deletedCharacter.id)
+        let retainedCopy = store.createCopy(itemID: item.id, holderID: remainingCharacter.id)
+
+        store.removeHoldings(characterID: deletedCharacter.id)
+
+        XCTAssertNil(store.holdings.first(where: { $0.copyID == releasedCopy.id }))
+        XCTAssertEqual(
+            store.holdings.first(where: { $0.copyID == retainedCopy.id })?.characterID,
+            remainingCharacter.id
+        )
+        XCTAssertTrue(store.copies.contains { $0.id == releasedCopy.id })
+    }
+
+    func testDeletingBookImmediatelyRemovesItsCopies() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "測試小說", author: "作者")
+        let item = Item(name: "短劍", book: book)
+        context.insert(book)
+        context.insert(item)
+        try context.save()
+
+        let store = try ItemCopyStore(container: container)
+        let copy = store.createCopy(itemID: item.id)
+
+        try PersistentModelDeletion.deleteBook(book, in: context, copyStore: store)
+
+        XCTAssertFalse(store.copies.contains { $0.id == copy.id })
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ItemCopy>()), 0)
+    }
+
     func testCopiesCanMoveWithoutChangingTheirParentItem() throws {
         let container = try makeContainer()
         let context = container.mainContext
