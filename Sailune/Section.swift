@@ -11,13 +11,12 @@ final class Section {
     
     var sortOrder: Int = 0           // 排序順序
     var wordCount: Int = 0           // 字數
-    
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     
     // 【反向關聯】這節屬於哪一卷？可選是為了 CloudKit。
     var volume: Volume? = nil
-    
+
     init(
         id: UUID = UUID(),
         title: String,

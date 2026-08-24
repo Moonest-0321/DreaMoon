@@ -27,6 +27,9 @@ fileprivate let headingAttrs: [NSAttributedString.Key: Any] = [
     .foregroundColor: NSColor.textColor,
     .paragraphStyle: headingParagraphStyle
 ]
+fileprivate extension NSAttributedString.Key {
+    static let sailuneStoryTagMarker = NSAttributedString.Key("sailune.storyTagMarker")
+}
 
 enum CharacterReferenceSource: Equatable {
     case canonical
@@ -358,6 +361,21 @@ final class SailuneTextView: CompositionAwareTextView {
         captureItem.target = self
         captureItem.isEnabled = canCaptureSelectedDate()
         menu.addItem(captureItem)
+        let storyTagsMenu = NSMenu(title: "加入標籤")
+        for kind in StoryTagKind.allCases {
+            let item = NSMenuItem(
+                title: kind.rawValue,
+                action: #selector(createStoryTagFromSelection(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = kind.rawValue
+            item.isEnabled = selectedRange().length > 0
+            storyTagsMenu.addItem(item)
+        }
+        let storyTagsItem = NSMenuItem(title: "加入標籤", action: nil, keyEquivalent: "")
+        storyTagsItem.submenu = storyTagsMenu
+        menu.addItem(storyTagsItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "剪下", action: #selector(cut(_:)), keyEquivalent: "x")
         menu.addItem(withTitle: "複製", action: #selector(copy(_:)), keyEquivalent: "c")
@@ -416,6 +434,12 @@ final class SailuneTextView: CompositionAwareTextView {
         print("✅ [Capture] 捕獲節點 year=\(parsed.year) month=\(parsed.month ?? -1) day=\(parsed.day ?? -1) era='\(era.name)' section='\(section.title)'")
     }
 
+    @objc func createStoryTagFromSelection(_ sender: NSMenuItem) {
+        guard let kind = sender.representedObject as? String,
+              let storyKind = StoryTagKind(rawValue: kind) else { return }
+        coordinator?.createStoryTag(kind: storyKind)
+    }
+
     private func canCaptureSelectedDate() -> Bool { parseSelectedDate() != nil }
 
     private func parseSelectedDate() -> (year: Int, month: Int?, day: Int?)? {
@@ -461,6 +485,8 @@ struct RichEditorView: NSViewRepresentable {
     var onCreateCharacter: ((String) -> CharacterReference?)? = nil
     var resolveCharacterReference: ((String) -> CharacterReference?)? = nil
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
+    var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)? = nil
+    var storyTags: () -> [StoryTag] = { [] }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -481,6 +507,8 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onCreateCharacter = onCreateCharacter
         context.coordinator.resolveCharacterReference = resolveCharacterReference
         context.coordinator.characterSuggestions = characterSuggestions
+        context.coordinator.onCreateStoryTag = onCreateStoryTag
+        context.coordinator.storyTags = storyTags
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -537,6 +565,8 @@ struct RichEditorView: NSViewRepresentable {
         coord.onCreateCharacter = onCreateCharacter
         coord.resolveCharacterReference = resolveCharacterReference
         coord.characterSuggestions = characterSuggestions
+        coord.onCreateStoryTag = onCreateStoryTag
+        coord.storyTags = storyTags
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -614,6 +644,8 @@ struct RichEditorView: NSViewRepresentable {
         var onCreateCharacter: ((String) -> CharacterReference?)?
         var resolveCharacterReference: ((String) -> CharacterReference?)?
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
+        var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)?
+        var storyTags: () -> [StoryTag] = { [] }
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
@@ -649,12 +681,57 @@ struct RichEditorView: NSViewRepresentable {
             textView.textStorage?.beginEditing()
             textView.textStorage?.setAttributedString(NSAttributedString(content))
             textView.textStorage?.endEditing()
+            applyStoryTagMarkers(to: textView)
             if resetSelection {
                 textView.setSelectedRange(NSRange(location: 0, length: 0))
             }
             syncTypingAttributesToCursor()
             reportHeadingState()
             finishReportingContentLoad()
+        }
+        func createStoryTag(kind: StoryTagKind) {
+            guard let tv = textView else { return }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= (tv.string as NSString).length else { return }
+            let text = (tv.string as NSString).substring(with: range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            onCreateStoryTag?(kind, text, range)
+        }
+        private func applyStoryTagMarkers(to textView: NSTextView) {
+            guard let storage = textView.textStorage else { return }
+            let whole = NSRange(location: 0, length: storage.length)
+            guard whole.length > 0 else { return }
+            storage.enumerateAttribute(.sailuneStoryTagMarker, in: whole) { value, range, _ in
+                guard value != nil else { return }
+                storage.removeAttribute(.sailuneStoryTagMarker, range: range)
+                storage.removeAttribute(.backgroundColor, range: range)
+            }
+            for tag in storyTags() where tag.sectionID == section?.id {
+                let location = tag.resolvedOffset(in: textView.string)
+                guard location < storage.length else { continue }
+                let color: NSColor
+                switch tag.kind {
+                case .main: color = .systemRed
+                case .branch: color = .systemBlue
+                case .foreshadowing: color = .systemYellow
+                case .revision: color = .systemOrange
+                case .plannedAddition: color = .systemGreen
+                }
+                let range = NSRange(location: location, length: 1)
+                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.16), range: range)
+                storage.addAttribute(.sailuneStoryTagMarker, value: tag.id.uuidString, range: range)
+            }
+        }
+        private func storyTagFreeSnapshot(from attributed: NSAttributedString) -> AttributedString {
+            let copy = NSMutableAttributedString(attributedString: attributed)
+            let whole = NSRange(location: 0, length: copy.length)
+            copy.enumerateAttribute(.sailuneStoryTagMarker, in: whole) { value, range, _ in
+                guard value != nil else { return }
+                copy.removeAttribute(.sailuneStoryTagMarker, range: range)
+                copy.removeAttribute(.backgroundColor, range: range)
+            }
+            return AttributedString(copy)
         }
 
         private func finishReportingContentLoad() {
@@ -672,7 +749,7 @@ struct RichEditorView: NSViewRepresentable {
             let targetSection = section
             let work = DispatchWorkItem { [weak self, weak tv] in
                 guard let self = self, let tv, let sec = targetSection else { return }
-                let snapshot = AttributedString(tv.attributedString())
+                let snapshot = self.storyTagFreeSnapshot(from: tv.attributedString())
                 sec.content = snapshot
                 sec.wordCount = wc
                 sec.updatedAt = Date()
@@ -1047,6 +1124,7 @@ struct RichEditorView: NSViewRepresentable {
             guard let tv = textView, let section else { return }
             let selectedRange = tv.selectedRange()
             tv.textStorage?.setAttributedString(NSAttributedString(section.content))
+            applyStoryTagMarkers(to: tv)
             select(range: selectedRange)
             lastCommitted = AttributedString(tv.attributedString())
             onWordCountChange?(countWords(tv.string))

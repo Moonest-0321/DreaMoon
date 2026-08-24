@@ -121,6 +121,13 @@ struct EditorWorkspaceView: View {
                         onSelectSection: { section in
                             bridge.flushPendingSave()
                             selectedSection = section
+                        },
+                        onOpenStoryTag: { tag in
+                            guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == tag.sectionID }) else { return }
+                            bridge.flushPendingSave()
+                            let offset = tag.resolvedOffset(in: String(section.content.characters))
+                            bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
+                            selectedSection = section
                         }
                     )
                     .workspaceFloatingPanel()
@@ -296,6 +303,7 @@ struct EditorSidebarView: View {
     @Binding var selectedSection: Section?
     let bridge: EditorBridge
     @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
 
     @State private var draggingKind: DragKind? = nil
     @State private var dropTargetSectionID: UUID? = nil
@@ -475,6 +483,14 @@ struct EditorSidebarView: View {
                         .padding(.vertical, 6)
                         .contentShape(Rectangle())
                         .onTapGesture { startRenaming(id: section.id, currentName: section.title) }
+                    if let annotation = planningStore.annotation(sectionID: section.id),
+                       !annotation.plannedOutline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Circle().fill(.green.opacity(0.5)).frame(width: 5, height: 5)
+                    }
+                    if let annotation = planningStore.annotation(sectionID: section.id),
+                       !annotation.revisionNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Circle().fill(.orange.opacity(0.6)).frame(width: 5, height: 5)
+                    }
                 }
             }
             Rectangle()
@@ -702,6 +718,7 @@ struct EditorCenterView: View {
     let book: Book
     let onOpenCharacter: (Character) -> Void
     @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
     @State private var liveWordCount: Int = 0
     @State private var cursorIsHeading: Bool = false
     @State private var saveState: EditorSaveState = .saved
@@ -710,6 +727,7 @@ struct EditorCenterView: View {
     @AppStorage("sailune.hasShownInlineAutosaveHint") private var hasShownInlineAutosaveHint = false
     @AppStorage("sailune.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
     @State private var showingInlineAutosaveHint = false
+    @State private var activeAnnotation: ChapterAnnotation?
     @FocusState private var titleFieldFocused: Bool
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
@@ -826,6 +844,26 @@ struct EditorCenterView: View {
                     .buttonStyle(.borderless)
                     .help("將游標所在段落設為幕標題 / 內文 (⌘2)")
                     .keyboardShortcut("2", modifiers: .command)
+                    Button {
+                        activeAnnotation = planningStore.ensureAnnotation(sectionID: section.id, bookID: book.id)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "note.text")
+                            if let annotation = planningStore.annotation(sectionID: section.id),
+                               !annotation.plannedOutline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Circle().fill(.green.opacity(0.55)).frame(width: 5, height: 5)
+                            }
+                            if let annotation = planningStore.annotation(sectionID: section.id),
+                               !annotation.revisionNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Circle().fill(.orange.opacity(0.65)).frame(width: 5, height: 5)
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .help("預定大綱與修改註記")
+                    .popover(item: $activeAnnotation) { annotation in
+                        SectionAnnotationsPopover(annotation: annotation)
+                    }
                     Toggle("反白角色時顯示資訊", isOn: $showCharacterSelectionInfo)
                         .toggleStyle(.switch)
                         .font(.caption)
@@ -896,7 +934,18 @@ struct EditorCenterView: View {
                                 )
                             }
                             return trueNames + aliases
-                        }
+                        },
+                        onCreateStoryTag: { kind, text, range in
+                            // The marker refreshes the editor from the model;
+                            // commit first so creating a tag never discards a
+                            // just-typed paragraph that is still debouncing.
+                            bridge.flushPendingSave()
+                            let label = String(text.prefix(40))
+                            let anchor = String(text.prefix(32))
+                            planningStore.createTag(title: label, kind: kind, anchorText: anchor, anchorOffset: range.location, bookID: book.id, sectionID: section.id)
+                            bridge.reloadVisibleContent()
+                        },
+                        storyTags: { planningStore.tags(sectionID: section.id) }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -958,6 +1007,47 @@ struct EditorCenterView: View {
             return index + 1
         }
         return 1
+    }
+}
+
+private struct SectionAnnotationsPopover: View {
+    @Bindable var annotation: ChapterAnnotation
+    @Environment(StoryPlanningStore.self) private var planningStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("章節註記").font(.headline)
+            annotationField("預定大綱", color: .green, text: $annotation.plannedOutline, prompt: "這一節預定要發生什麼…")
+            annotationField("修改", color: .orange, text: $annotation.revisionNote, prompt: "此節還需要更新或補強什麼…")
+        }
+        .padding(16)
+        .frame(width: 340)
+        .onChange(of: annotation.plannedOutline) { _, _ in save() }
+        .onChange(of: annotation.revisionNote) { _, _ in save() }
+    }
+
+    private func annotationField(_ title: String, color: Color, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: "circle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color.opacity(0.8))
+            TextEditor(text: text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(height: 76)
+                .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(alignment: .topLeading) {
+                    if text.wrappedValue.isEmpty {
+                        Text(prompt).font(.caption).foregroundStyle(.tertiary).padding(11).allowsHitTesting(false)
+                    }
+                }
+        }
+    }
+
+    private func save() {
+        annotation.updatedAt = Date()
+        planningStore.save()
     }
 }
 

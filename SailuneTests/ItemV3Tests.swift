@@ -15,6 +15,11 @@ final class ItemV3Tests: XCTestCase {
         return try ModelContainer(for: schema, configurations: [configuration])
     }
 
+    private func makePlanningContainer() throws -> ModelContainer {
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV1.self)
+        return try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+    }
+
     private func createV5Store(at url: URL) throws {
         let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
         let container = try ModelContainer(
@@ -74,6 +79,55 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(try mainContainer.mainContext.fetchCount(FetchDescriptor<CharacterItem>()), 1)
         XCTAssertEqual(try copyContainer.mainContext.fetchCount(FetchDescriptor<ItemCopy>()), 2)
         XCTAssertEqual(try copyContainer.mainContext.fetchCount(FetchDescriptor<ItemCopyHolding>()), 2)
+    }
+
+    func testStoryTagKeepsItsAnchorWhenTextIsInsertedBeforeIt() throws {
+        let tag = StoryTag(
+            title: "小黑回到了家中",
+            kind: .main,
+            anchorText: "小黑回到了家中",
+            anchorOffset: 3,
+            bookID: UUID(),
+            sectionID: UUID()
+        )
+        let rewritten = "前言。新的段落。小黑回到了家中，雨還沒有停。"
+        XCTAssertEqual(tag.resolvedOffset(in: rewritten), (rewritten as NSString).range(of: "小黑回到了家中").location)
+    }
+
+    func testStoryTagKindsIncludeRevisionAndPlannedAddition() {
+        XCTAssertTrue(StoryTagKind.allCases.contains(.revision))
+        XCTAssertTrue(StoryTagKind.allCases.contains(.plannedAddition))
+        XCTAssertEqual(StoryTagKind.revision.rawValue, "修改")
+        XCTAssertEqual(StoryTagKind.plannedAddition.rawValue, "計劃加入")
+    }
+
+    func testStoryTagPersistsWithItsSectionAndClassification() throws {
+        let container = try makePlanningContainer()
+        let context = container.mainContext
+        let bookID = UUID()
+        let sectionID = UUID()
+        let tag = StoryTag(title: "小黑回到了家中", kind: .foreshadowing, anchorText: "小黑", anchorOffset: 0, bookID: bookID, sectionID: sectionID)
+        context.insert(tag)
+        try context.save()
+
+        let tags = try context.fetch(FetchDescriptor<StoryTag>())
+        XCTAssertEqual(tags.count, 1)
+        XCTAssertEqual(tags.first?.kind, .foreshadowing)
+        XCTAssertEqual(tags.first?.bookID, bookID)
+        XCTAssertEqual(tags.first?.sectionID, sectionID)
+    }
+
+    func testSectionPersistsPlannedOutlineAndRevisionNote() throws {
+        let container = try makePlanningContainer()
+        let context = container.mainContext
+        let sectionID = UUID()
+        let annotation = ChapterAnnotation(sectionID: sectionID, bookID: UUID(), plannedOutline: "角色抵達舊宅", revisionNote: "補上雨夜氣氛")
+        context.insert(annotation)
+        try context.save()
+
+        let saved = try context.fetch(FetchDescriptor<ChapterAnnotation>()).first
+        XCTAssertEqual(saved?.plannedOutline, "角色抵達舊宅")
+        XCTAssertEqual(saved?.revisionNote, "補上雨夜氣氛")
     }
 
     func testAddingCopyKeepsOneSharedItemAndIndependentName() throws {

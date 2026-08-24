@@ -21,6 +21,15 @@ enum BookStructure {
         orderedVolumes(in: book).flatMap { orderedSections(in: $0) }
     }
 
+    static func position(of section: Section) -> (Int, Int) {
+        guard let volume = section.volume, let book = volume.book else { return (Int.max, Int.max) }
+        let volumes = orderedVolumes(in: book)
+        guard let volumeIndex = volumes.firstIndex(where: { $0.id == volume.id }) else { return (Int.max, Int.max) }
+        let sections = orderedSections(in: volume)
+        let sectionIndex = sections.firstIndex(where: { $0.id == section.id }) ?? Int.max
+        return (volumeIndex, sectionIndex)
+    }
+
     static func metrics(for book: Book) -> Metrics {
         var wordCount = 0
         var sectionCount = 0

@@ -28,6 +28,7 @@ struct InspectorWithTimeline: View {
     var focusedCharacter: Character? = nil
     var focusRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
+    var onOpenStoryTag: ((StoryTag) -> Void)? = nil
     @State private var tab: SailuneInspectorTab = .settings
 
     var body: some View {
@@ -49,7 +50,8 @@ struct InspectorWithTimeline: View {
                     currentSection: currentSection,
                     focusedCharacter: focusedCharacter,
                     focusRequestID: focusRequestID,
-                    onSelectSection: onSelectSection
+                    onSelectSection: onSelectSection,
+                    onOpenStoryTag: onOpenStoryTag
                 )
             case .timeline:
                 TimelinePanelView(book: book)

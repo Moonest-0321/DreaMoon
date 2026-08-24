@@ -469,6 +469,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
     case character = "角色"
     case ability = "能力"
     case item = "物品"
+    case storyTag = "標籤"
     var id: String { rawValue }
 }
 
@@ -479,15 +480,17 @@ struct InspectorRootView: View {
     let focusedCharacter: Character?
     let focusRequestID: UUID
     let onSelectSection: ((Section) -> Void)?
+    let onOpenStoryTag: ((StoryTag) -> Void)?
     @State private var selectedTab: InspectorTab = .character
     @State private var route: InspectorRoute = .list
 
-    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil) {
+    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil, onOpenStoryTag: ((StoryTag) -> Void)? = nil) {
         self.book = book
         self.currentSection = currentSection
         self.focusedCharacter = focusedCharacter
         self.focusRequestID = focusRequestID
         self.onSelectSection = onSelectSection
+        self.onOpenStoryTag = onOpenStoryTag
     }
 
     var body: some View {
@@ -500,6 +503,7 @@ struct InspectorRootView: View {
                     Text("角色").tag(InspectorTab.character)
                     Text("能力").tag(InspectorTab.ability)
                     Text("物品").tag(InspectorTab.item)
+                    Text("標籤").tag(InspectorTab.storyTag)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -520,13 +524,15 @@ struct InspectorRootView: View {
                     )
                 } else if selectedTab == .ability {
                     AbilityListContainerView(book: book, onOpen: { route = .abilityDetail($0) })
-                } else {
+                } else if selectedTab == .item {
                     ItemListContainerView(
                         book: book,
                         currentSection: currentSection,
                         onSelectSection: onSelectSection,
                         onOpen: { route = .itemDetail($0, nil) }
                     )
+                } else {
+                    StoryTagListView(book: book, onOpen: onOpenStoryTag)
                 }
             case .detail(let character):
                 CharacterDetailView(

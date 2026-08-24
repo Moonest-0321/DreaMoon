@@ -4,7 +4,7 @@ import SwiftData
 @main
 struct SailuneApp: App {
     private enum StartupState {
-        case ready(ModelContainer, ItemCopyStore, AbilityProgressStore)
+        case ready(ModelContainer, ItemCopyStore, AbilityProgressStore, StoryPlanningStore)
         case failed(String)
     }
 
@@ -57,6 +57,7 @@ struct SailuneApp: App {
             .appendingPathComponent("\(baseName)-item-copy-level-selections.store")
     }
     private static var abilityProgressStoreURL: URL { storeURL.deletingLastPathComponent().appendingPathComponent("\(storeURL.deletingPathExtension().lastPathComponent)-ability-progress.store") }
+    private static var storyPlanningStoreURL: URL { storeURL.deletingLastPathComponent().appendingPathComponent("\(storeURL.deletingPathExtension().lastPathComponent)-story-planning.store") }
 
     private enum LegacyStoreSource {
         case v3(ModelContainer)
@@ -67,14 +68,14 @@ struct SailuneApp: App {
 
     init() {
         do {
-            let (container, copyStore, abilityStore) = try Self.makeModelContainer()
-            startupState = .ready(container, copyStore, abilityStore)
+            let (container, copyStore, abilityStore, planningStore) = try Self.makeModelContainer()
+            startupState = .ready(container, copyStore, abilityStore, planningStore)
         } catch {
             startupState = .failed(error.localizedDescription)
         }
     }
 
-    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore, AbilityProgressStore) {
+    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore, AbilityProgressStore, StoryPlanningStore) {
         // Open the released schema before V5. SwiftData caches model metadata
         // for shared top-level model types, so reversing this order makes it
         // attempt to open the V3 store with V5's expanded model graph.
@@ -161,7 +162,13 @@ struct SailuneApp: App {
             abilityStore = try AbilityProgressStore(container: abilityContainer)
             abilityStore.migrateLegacy(try container.mainContext.fetch(FetchDescriptor<CharacterAbility>()))
         } catch { throw StartupStageError(stage: "能力進度資料庫載入失敗", underlying: error) }
-        return (container, copyStore, abilityStore)
+        let planningStore: StoryPlanningStore
+        do {
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV1.self)
+            let planningContainer = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: storyPlanningStoreURL)])
+            planningStore = try StoryPlanningStore(container: planningContainer)
+        } catch { throw StartupStageError(stage: "故事規劃資料庫載入失敗", underlying: error) }
+        return (container, copyStore, abilityStore, planningStore)
     }
 
     private static func errorDetails(_ error: Error) -> String {
@@ -202,8 +209,8 @@ struct SailuneApp: App {
     var body: some Scene {
         WindowGroup {
             switch startupState {
-            case .ready(let container, let copyStore, let abilityStore):
-                SailuneRootView(container: container, copyStore: copyStore, abilityStore: abilityStore)
+            case .ready(let container, let copyStore, let abilityStore, let planningStore):
+                SailuneRootView(container: container, copyStore: copyStore, abilityStore: abilityStore, planningStore: planningStore)
             case .failed(let message):
                 DatabaseStartupFailureView(message: message)
             }
@@ -215,12 +222,14 @@ private struct SailuneRootView: View {
     let container: ModelContainer
     @Bindable var copyStore: ItemCopyStore
     @Bindable var abilityStore: AbilityProgressStore
+    @Bindable var planningStore: StoryPlanningStore
 
     var body: some View {
         ContentView()
             .modelContainer(container)
             .environment(copyStore)
             .environment(abilityStore)
+            .environment(planningStore)
             .alert("物品副本無法儲存", isPresented: persistenceErrorBinding) {
                 Button("好") { copyStore.clearPersistenceError() }
             } message: {
