@@ -694,8 +694,7 @@ struct RichEditorView: NSViewRepresentable {
             let range = tv.selectedRange()
             guard range.length > 0, NSMaxRange(range) <= (tv.string as NSString).length else { return }
             let text = (tv.string as NSString).substring(with: range)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             onCreateStoryTag?(kind, text, range)
         }
         private func applyStoryTagMarkers(to textView: NSTextView) {
@@ -711,15 +710,18 @@ struct RichEditorView: NSViewRepresentable {
                 let location = tag.resolvedOffset(in: textView.string)
                 guard location < storage.length else { continue }
                 let color: NSColor
+                let opacity: CGFloat
                 switch tag.kind {
-                case .main: color = .systemRed
-                case .branch: color = .systemBlue
-                case .foreshadowing: color = .systemYellow
-                case .revision: color = .systemOrange
-                case .plannedAddition: color = .systemGreen
+                case .main: (color, opacity) = (.systemRed, 0.58)
+                case .branch: (color, opacity) = (.systemBlue, 0.58)
+                case .foreshadowing: (color, opacity) = (.systemYellow, 0.72)
+                case .revision: (color, opacity) = (.systemOrange, 0.16)
+                case .plannedAddition: (color, opacity) = (.systemGreen, 0.14)
                 }
-                let range = NSRange(location: location, length: 1)
-                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.16), range: range)
+                let length = tag.markerLength(availableFromOffset: storage.length - location)
+                guard length > 0 else { continue }
+                let range = NSRange(location: location, length: length)
+                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(opacity), range: range)
                 storage.addAttribute(.sailuneStoryTagMarker, value: tag.id.uuidString, range: range)
             }
         }

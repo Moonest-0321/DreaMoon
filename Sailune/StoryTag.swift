@@ -7,9 +7,9 @@ enum StoryPlanningSchemaV1: VersionedSchema {
     static var models: [any PersistentModel.Type] { [StoryTag.self, ChapterAnnotation.self] }
 }
 
-/// A lightweight story-planning marker attached to the beginning of selected
-/// prose. It deliberately lives beside the prose rather than changing its
-/// meaning: the editor only draws a quiet colour cue at the saved location.
+/// A lightweight story-planning marker attached to selected prose. It lives
+/// beside the prose rather than changing its meaning: the editor only draws a
+/// transient colour cue at the saved location.
 enum StoryTagKind: String, CaseIterable, Identifiable, Hashable {
     case main = "主軸"
     case branch = "支線"
@@ -59,10 +59,22 @@ final class StoryTag {
         set { kindRawValue = newValue.rawValue; updatedAt = Date() }
     }
 
+    /// Revision work applies to the whole selection. Structural story tags
+    /// remain compact markers on the first character only.
+    func markerLength(availableFromOffset: Int) -> Int {
+        guard availableFromOffset > 0 else { return 0 }
+        switch kind {
+        case .revision, .plannedAddition:
+            return min(max(1, (anchorText as NSString).length), availableFromOffset)
+        case .main, .branch, .foreshadowing:
+            return 1
+        }
+    }
+
     /// Finds the same selected text nearest to its former location. This keeps
     /// a tag at its paragraph when earlier prose is inserted or removed.
     func resolvedOffset(in text: String) -> Int {
-        let source = anchorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = anchorText
         let length = (text as NSString).length
         guard !source.isEmpty else { return min(max(0, anchorOffset), length) }
         let nsText = text as NSString

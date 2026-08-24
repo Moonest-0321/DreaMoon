@@ -940,9 +940,8 @@ struct EditorCenterView: View {
                             // commit first so creating a tag never discards a
                             // just-typed paragraph that is still debouncing.
                             bridge.flushPendingSave()
-                            let label = String(text.prefix(40))
-                            let anchor = String(text.prefix(32))
-                            planningStore.createTag(title: label, kind: kind, anchorText: anchor, anchorOffset: range.location, bookID: book.id, sectionID: section.id)
+                            let label = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+                            planningStore.createTag(title: label, kind: kind, anchorText: text, anchorOffset: range.location, bookID: book.id, sectionID: section.id)
                             bridge.reloadVisibleContent()
                         },
                         storyTags: { planningStore.tags(sectionID: section.id) }

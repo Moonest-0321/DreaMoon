@@ -101,6 +101,22 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(StoryTagKind.plannedAddition.rawValue, "計劃加入")
     }
 
+    func testStoryTagMarkerRangesFollowTheirKind() {
+        let selectedText = "這是一段完整反白的文字"
+        let selectionLength = (selectedText as NSString).length
+        let common = (anchorText: selectedText, anchorOffset: 0, bookID: UUID(), sectionID: UUID())
+
+        for kind in [StoryTagKind.revision, .plannedAddition] {
+            let tag = StoryTag(title: kind.rawValue, kind: kind, anchorText: common.anchorText, anchorOffset: common.anchorOffset, bookID: common.bookID, sectionID: common.sectionID)
+            XCTAssertEqual(tag.markerLength(availableFromOffset: 100), selectionLength)
+        }
+
+        for kind in [StoryTagKind.main, .branch, .foreshadowing] {
+            let tag = StoryTag(title: kind.rawValue, kind: kind, anchorText: common.anchorText, anchorOffset: common.anchorOffset, bookID: common.bookID, sectionID: common.sectionID)
+            XCTAssertEqual(tag.markerLength(availableFromOffset: 100), 1)
+        }
+    }
+
     func testStoryTagPersistsWithItsSectionAndClassification() throws {
         let container = try makePlanningContainer()
         let context = container.mainContext
