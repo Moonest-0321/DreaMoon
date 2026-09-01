@@ -119,6 +119,10 @@ final class StoryPlanningStore {
     private let context: ModelContext
     private(set) var tags: [StoryTag] = []
     private(set) var annotations: [ChapterAnnotation] = []
+    private(set) var bookProfiles: [BookPlanningProfile] = []
+    private(set) var storyLines: [OutlineStoryLine] = []
+    private(set) var stages: [OutlineStage] = []
+    private(set) var outlineItems: [OutlineItem] = []
 
     init(container: ModelContainer) throws {
         self.container = container
@@ -130,11 +134,47 @@ final class StoryPlanningStore {
     func reload() throws {
         tags = try context.fetch(FetchDescriptor<StoryTag>())
         annotations = try context.fetch(FetchDescriptor<ChapterAnnotation>())
+        bookProfiles = try context.fetch(FetchDescriptor<BookPlanningProfile>())
+        storyLines = try context.fetch(FetchDescriptor<OutlineStoryLine>())
+        stages = try context.fetch(FetchDescriptor<OutlineStage>())
+        outlineItems = try context.fetch(FetchDescriptor<OutlineItem>())
     }
 
     func tags(bookID: UUID) -> [StoryTag] { tags.filter { $0.bookID == bookID } }
     func tags(sectionID: UUID) -> [StoryTag] { tags.filter { $0.sectionID == sectionID } }
     func annotation(sectionID: UUID) -> ChapterAnnotation? { annotations.first { $0.sectionID == sectionID } }
+    func profile(bookID: UUID) -> BookPlanningProfile? { bookProfiles.first { $0.bookID == bookID } }
+
+    func storyLines(bookID: UUID) -> [OutlineStoryLine] {
+        storyLines
+            .filter { $0.bookID == bookID }
+            .sorted {
+                if $0.kind.displayOrder != $1.kind.displayOrder {
+                    return $0.kind.displayOrder < $1.kind.displayOrder
+                }
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+    }
+
+    func stages(storyLineID: UUID) -> [OutlineStage] {
+        stages
+            .filter { $0.storyLineID == storyLineID }
+            .sorted(by: Self.stableOrder)
+    }
+
+    func items(storyLineID: UUID) -> [OutlineItem] {
+        outlineItems
+            .filter { $0.storyLineID == storyLineID }
+            .sorted(by: Self.stableOrder)
+    }
+
+    func items(bookID: UUID) -> [OutlineItem] {
+        outlineItems
+            .filter { $0.bookID == bookID }
+            .sorted(by: Self.stableOrder)
+    }
 
     @discardableResult
     func createTag(title: String, kind: StoryTagKind, anchorText: String, anchorOffset: Int, bookID: UUID, sectionID: UUID) -> StoryTag {
@@ -155,5 +195,119 @@ final class StoryPlanningStore {
         return annotation
     }
 
+    @discardableResult
+    func ensureProfile(bookID: UUID) throws -> BookPlanningProfile {
+        if let existing = profile(bookID: bookID) { return existing }
+        let profile = BookPlanningProfile(bookID: bookID)
+        context.insert(profile)
+        bookProfiles.append(profile)
+        try context.save()
+        return profile
+    }
+
+    @discardableResult
+    func createStoryLine(bookID: UUID, kind: OutlineStoryLineKind, title: String? = nil) throws -> OutlineStoryLine {
+        let peers = storyLines.filter { $0.bookID == bookID && $0.kind == kind }
+        guard kind != .main || peers.isEmpty else {
+            throw StoryPlanningStoreError.mainStoryLineAlreadyExists
+        }
+        let storyLine = OutlineStoryLine(
+            bookID: bookID,
+            title: normalizedTitle(title, fallback: defaultStoryLineTitle(kind: kind, count: peers.count)),
+            kind: kind,
+            sortOrder: (peers.map(\.sortOrder).max() ?? -1) + 1
+        )
+        context.insert(storyLine)
+        storyLines.append(storyLine)
+        try context.save()
+        return storyLine
+    }
+
+    @discardableResult
+    func createStage(storyLine: OutlineStoryLine, title: String? = nil) throws -> OutlineStage {
+        guard storyLine.kind == .main else { throw StoryPlanningStoreError.stagesRequireMainStoryLine }
+        let peers = stages.filter { $0.storyLineID == storyLine.id }
+        let stage = OutlineStage(
+            bookID: storyLine.bookID,
+            storyLineID: storyLine.id,
+            title: normalizedTitle(title, fallback: "階段 \(peers.count + 1)"),
+            sortOrder: (peers.map(\.sortOrder).max() ?? -1) + 1
+        )
+        context.insert(stage)
+        stages.append(stage)
+        try context.save()
+        return stage
+    }
+
+    @discardableResult
+    func createOutlineItem(
+        storyLine: OutlineStoryLine,
+        stage: OutlineStage? = nil,
+        title: String = "新大綱項目",
+        status: OutlineItemStatus = .draft
+    ) throws -> OutlineItem {
+        guard stage == nil || stage?.storyLineID == storyLine.id else {
+            throw StoryPlanningStoreError.stageDoesNotBelongToStoryLine
+        }
+        let peers = outlineItems.filter { $0.storyLineID == storyLine.id }
+        let item = OutlineItem(
+            bookID: storyLine.bookID,
+            storyLineID: storyLine.id,
+            stageID: stage?.id,
+            title: normalizedTitle(title, fallback: "新大綱項目"),
+            status: status,
+            sortOrder: (peers.map(\.sortOrder).max() ?? -1) + 1
+        )
+        context.insert(item)
+        outlineItems.append(item)
+        try context.save()
+        return item
+    }
+
+    func saveChanges() throws {
+        try context.save()
+    }
+
     func save() { try? context.save() }
+
+    private static func stableOrder<T>(_ lhs: T, _ rhs: T) -> Bool where T: StoryPlanningOrderedModel {
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private func normalizedTitle(_ proposed: String?, fallback: String) -> String {
+        let value = proposed?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
+    }
+
+    private func defaultStoryLineTitle(kind: OutlineStoryLineKind, count: Int) -> String {
+        count == 0 ? kind.rawValue : "\(kind.rawValue) \(count + 1)"
+    }
+}
+
+private protocol StoryPlanningOrderedModel {
+    var id: UUID { get }
+    var sortOrder: Int { get }
+    var createdAt: Date { get }
+}
+
+extension OutlineStage: StoryPlanningOrderedModel { }
+extension OutlineItem: StoryPlanningOrderedModel { }
+
+enum StoryPlanningStoreError: LocalizedError {
+    case mainStoryLineAlreadyExists
+    case stagesRequireMainStoryLine
+    case stageDoesNotBelongToStoryLine
+
+    var errorDescription: String? {
+        switch self {
+        case .mainStoryLineAlreadyExists:
+            return "一本書只能有一條主線；請用主線階段整理故事發展。"
+        case .stagesRequireMainStoryLine:
+            return "只有主線可以建立故事階段。"
+        case .stageDoesNotBelongToStoryLine:
+            return "選擇的故事階段不屬於這條故事線。"
+        }
+    }
 }

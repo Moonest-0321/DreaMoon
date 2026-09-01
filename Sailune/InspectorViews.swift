@@ -519,17 +519,17 @@ struct InspectorRootView: View {
                         book: book,
                         currentSection: currentSection,
                         onSelectSection: onSelectSection,
-                        onSelect: { route = .detail($0) },
-                        onCreated: { route = .detail($0) }
+                        onSelect: { navigate(to: .detail($0)) },
+                        onCreated: { navigate(to: .detail($0)) }
                     )
                 } else if selectedTab == .ability {
-                    AbilityListContainerView(book: book, onOpen: { route = .abilityDetail($0) })
+                    AbilityListContainerView(book: book, onOpen: { navigate(to: .abilityDetail($0)) })
                 } else if selectedTab == .item {
                     ItemListContainerView(
                         book: book,
                         currentSection: currentSection,
                         onSelectSection: onSelectSection,
-                        onOpen: { route = .itemDetail($0, nil) }
+                        onOpen: { navigate(to: .itemDetail($0, nil)) }
                     )
                 } else {
                     StoryTagListView(book: book, onOpen: onOpenStoryTag)
@@ -538,25 +538,25 @@ struct InspectorRootView: View {
                 CharacterDetailView(
                     character: character,
                     book: book,
-                    onBack: { route = .list },
-                    onShowGraph: { route = .graph(character) },
-                    onOpenItem: { route = .itemDetail($0, character) },
-                    onOpenAbility: { route = .abilityDetail($0) },
+                    onBack: { navigate(to: .list) },
+                    onShowGraph: { navigate(to: .graph(character)) },
+                    onOpenItem: { navigate(to: .itemDetail($0, character)) },
+                    onOpenAbility: { navigate(to: .abilityDetail($0)) },
                     onSelectSection: onSelectSection
                 )
             case .graph(let character):
                 KinshipGraphView(
                     character: character,
                     book: book,
-                    onBack: { route = .detail(character) },
-                    onSelectCharacter: { route = .graph($0) }
+                    onBack: { navigate(to: .detail(character)) },
+                    onSelectCharacter: { navigate(to: .graph($0)) }
                 )
             case .itemDetail(let item, let sourceCharacter):
                 ItemDetailView(
                     item: item,
                     book: book,
-                    onBack: { route = sourceCharacter.map(InspectorRoute.detail) ?? .list },
-                    onOpenCopy: { route = .itemCopyDetail(item, $0, sourceCharacter) },
+                    onBack: { navigate(to: sourceCharacter.map(InspectorRoute.detail) ?? .list) },
+                    onOpenCopy: { navigate(to: .itemCopyDetail(item, $0, sourceCharacter)) },
                     onSelectSection: onSelectSection
                 )
             case .itemCopyDetail(let item, let copy, let sourceCharacter):
@@ -564,11 +564,11 @@ struct InspectorRootView: View {
                     item: item,
                     copy: copy,
                     book: book,
-                    onBack: { route = .itemDetail(item, sourceCharacter) },
-                    onOpenCharacter: { route = .detail($0) }
+                    onBack: { navigate(to: .itemDetail(item, sourceCharacter)) },
+                    onOpenCharacter: { navigate(to: .detail($0)) }
                 )
             case .abilityDetail(let ability):
-                AbilityDetailView(ability: ability, book: book, onBack: { route = .list }, onOpenCharacter: { route = .detail($0) })
+                AbilityDetailView(ability: ability, book: book, onBack: { navigate(to: .list) }, onOpenCharacter: { navigate(to: .detail($0)) })
             }
         }
         .onAppear { showFocusedCharacter() }
@@ -579,7 +579,22 @@ struct InspectorRootView: View {
     private func showFocusedCharacter() {
         guard let focusedCharacter else { return }
         selectedTab = .character
-        route = .detail(focusedCharacter)
+        navigate(to: .detail(focusedCharacter))
+    }
+
+    /// The center editor and the inspector both host AppKit text views. Replacing
+    /// the inspector hierarchy while either text view is first responder can make
+    /// AppKit resize both text containers inside the same constraint-update pass.
+    /// End editing first, then change routes on the next run-loop turn.
+    private func navigate(to destination: InspectorRoute) {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        DispatchQueue.main.async {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                route = destination
+            }
+        }
     }
 }
 
@@ -2098,7 +2113,7 @@ private struct CollapsibleDetailSection<Content: View>: View {
         self.summary = summary
         self.content = content
         _isCollapsed = AppStorage(
-            wrappedValue: false,
+            wrappedValue: true,
             "sailune.characterDetail.\(characterID.uuidString).\(title).collapsed"
         )
     }

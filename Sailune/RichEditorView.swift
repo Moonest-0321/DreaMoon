@@ -226,8 +226,6 @@ final class SailuneTextView: CompositionAwareTextView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateCharacterLinkCursor(shiftIsPressed: false)
-        syncFrameToScrollView()
-        DispatchQueue.main.async { [weak self] in self?.syncFrameToScrollView() }
     }
     private func updateCharacterLinkCursor(shiftIsPressed: Bool) {
         var attributes = linkTextAttributes ?? [:]
@@ -255,27 +253,6 @@ final class SailuneTextView: CompositionAwareTextView {
         if let container = self.textContainer {
             container.containerSize = NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude)
             container.widthTracksTextView = true
-        }
-    }
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        syncFrameToScrollView()
-    }
-    override func resize(withOldSuperviewSize oldSize: NSSize) {
-        super.resize(withOldSuperviewSize: oldSize)
-        syncFrameToScrollView()
-    }
-    private func syncFrameToScrollView() {
-        guard let cv = enclosingScrollView?.contentView else { return }
-        let w = cv.bounds.width
-        guard w > 0 else { return }
-        if self.frame.width != w {
-            var f = self.frame
-            f.size.width = w
-            self.frame = f
-        }
-        if let tc = self.textContainer, tc.containerSize.width != w {
-            tc.containerSize = NSSize(width: w, height: CGFloat.greatestFiniteMagnitude)
         }
     }
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
@@ -320,7 +297,6 @@ final class SailuneTextView: CompositionAwareTextView {
         self.insertText(attr, replacementRange: self.selectedRange())
     }
 
-    // ⬇️ V3 Phase 3：右鍵捕獲（加入時間軸）⬇️
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
         let selectedText = selectedPlainText()
@@ -353,14 +329,6 @@ final class SailuneTextView: CompositionAwareTextView {
         menu.addItem(unlinkCharacterItem)
         menu.addItem(NSMenuItem.separator())
 
-        let captureItem = NSMenuItem(
-            title: "加入時間軸",
-            action: #selector(captureToTimeline(_:)),
-            keyEquivalent: ""
-        )
-        captureItem.target = self
-        captureItem.isEnabled = canCaptureSelectedDate()
-        menu.addItem(captureItem)
         let storyTagsMenu = NSMenu(title: "加入標籤")
         for kind in StoryTagKind.allCases {
             let item = NSMenuItem(
@@ -416,50 +384,12 @@ final class SailuneTextView: CompositionAwareTextView {
         return found
     }
 
-    @objc func captureToTimeline(_ sender: Any?) {
-        guard let coord = coordinator,
-              let section = coord.section,
-              let book = section.volume?.book,
-              let context = section.modelContext,
-              let parsed = parseSelectedDate() else { return }
-        try? TimelineEngine.Bootstrap.ensure(for: book, in: context)
-        guard let era = book.currentEra,
-              let primary = TimelineEngine.Query.primaryTimeline(for: book) else { return }
-        let node = Node(year: parsed.year, month: parsed.month, day: parsed.day)
-        context.insert(node)
-        node.era = era
-        node.timeline = primary
-        node.section = section
-        try? context.save()
-        print("✅ [Capture] 捕獲節點 year=\(parsed.year) month=\(parsed.month ?? -1) day=\(parsed.day ?? -1) era='\(era.name)' section='\(section.title)'")
-    }
-
     @objc func createStoryTagFromSelection(_ sender: NSMenuItem) {
         guard let kind = sender.representedObject as? String,
               let storyKind = StoryTagKind(rawValue: kind) else { return }
         coordinator?.createStoryTag(kind: storyKind)
     }
 
-    private func canCaptureSelectedDate() -> Bool { parseSelectedDate() != nil }
-
-    private func parseSelectedDate() -> (year: Int, month: Int?, day: Int?)? {
-        let sel = self.selectedRange()
-        guard sel.length > 0 else { return nil }
-        let full = self.string as NSString
-        let selected = full.substring(with: sel)
-        let pattern = #"(\d+)\s*年(?:\s*(\d+)\s*月)?(?:\s*(\d+)\s*[日号號])?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(selected.startIndex..., in: selected)
-        guard let match = regex.firstMatch(in: selected, range: range) else { return nil }
-        func group(_ i: Int) -> Int? {
-            let r = match.range(at: i)
-            guard r.location != NSNotFound, let sr = Range(r, in: selected) else { return nil }
-            return Int(selected[sr])
-        }
-        guard let year = group(1) else { return nil }
-        return (year, group(2), group(3))
-    }
-    // ⬆️ V3 Phase 3 結束 ⬆️
 }
 
 extension Notification.Name {

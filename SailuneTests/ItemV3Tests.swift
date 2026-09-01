@@ -16,8 +16,12 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV1.self)
-        return try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV2.self)
+        return try ModelContainer(
+            for: schema,
+            migrationPlan: StoryPlanningMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
     }
 
     private func createV5Store(at url: URL) throws {

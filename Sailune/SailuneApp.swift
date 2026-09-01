@@ -164,8 +164,12 @@ struct SailuneApp: App {
         } catch { throw StartupStageError(stage: "能力進度資料庫載入失敗", underlying: error) }
         let planningStore: StoryPlanningStore
         do {
-            let schema = Schema(versionedSchema: StoryPlanningSchemaV1.self)
-            let planningContainer = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: storyPlanningStoreURL)])
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV2.self)
+            let planningContainer = try ModelContainer(
+                for: schema,
+                migrationPlan: StoryPlanningMigrationPlan.self,
+                configurations: [ModelConfiguration(schema: schema, url: storyPlanningStoreURL)]
+            )
             planningStore = try StoryPlanningStore(container: planningContainer)
         } catch { throw StartupStageError(stage: "故事規劃資料庫載入失敗", underlying: error) }
         return (container, copyStore, abilityStore, planningStore)

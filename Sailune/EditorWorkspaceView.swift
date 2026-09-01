@@ -70,13 +70,13 @@ struct EditorWorkspaceView: View {
             EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
                 focusedCharacter = character
                 characterFocusRequestID = UUID()
-                showInspector = true
+                setInspectorPresented(true)
             }
                 .navigationTitle("")
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button { toggleSidebar() } label: { Label("目錄", systemImage: "sidebar.left") }.help("顯示/隱藏左欄目錄")
-                        Button { showInspector.toggle() } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
+                        Button { setInspectorPresented(!showInspector) } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
                         Button { showingCommandPalette = true } label: { Label("指令", systemImage: "command") }
                             .help("開啟指令面板 (⌘K)")
                             .keyboardShortcut("k", modifiers: .command)
@@ -112,8 +112,7 @@ struct EditorWorkspaceView: View {
                     }
                 }
                 .inspector(isPresented: $showInspector) {
-                    // ⬇️ V3：唯一改動——掛分段 wrapper（設定集｜時間軸）
-                    InspectorWithTimeline(
+                    WorkspaceInspectorView(
                         book: book,
                         currentSection: selectedSection,
                         focusedCharacter: focusedCharacter,
@@ -171,7 +170,7 @@ struct EditorWorkspaceView: View {
     private func perform(_ command: PaletteCommand) {
         switch command {
         case .toggleOutline: toggleSidebar()
-        case .toggleInspector: showInspector.toggle()
+        case .toggleInspector: setInspectorPresented(!showInspector)
         case .previousSection:
             navigate(to: neighboringSections.previous)
         case .nextSection:
@@ -185,6 +184,17 @@ struct EditorWorkspaceView: View {
         guard let section else { return }
         bridge.flushPendingSave()
         selectedSection = section
+    }
+
+    private func setInspectorPresented(_ presented: Bool) {
+        // AppKit 的 inspector 展開會對中央 NSTextView 執行 live resize。
+        // 先結束文字輸入並關閉動畫，避免文字配置與分欄動畫互相觸發重排。
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            showInspector = presented
+        }
     }
 }
 

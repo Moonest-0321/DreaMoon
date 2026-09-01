@@ -12,6 +12,13 @@ private func sailuneDisplayName(_ character: Character) -> String {
 
 private enum SailuneInspectorTab: String, CaseIterable, Identifiable {
     case settings = "設定集"
+    case outline = "大綱"
+    var id: String { rawValue }
+}
+
+private enum SailuneOutlineTab: String, CaseIterable, Identifiable {
+    case background = "故事背景"
+    case narrative = "敘事大綱"
     case timeline = "時間軸"
     var id: String { rawValue }
 }
@@ -22,7 +29,7 @@ private enum SailuneTimelineGranularity: String, CaseIterable, Identifiable {
 }
 
 @MainActor
-struct InspectorWithTimeline: View {
+struct WorkspaceInspectorView: View {
     let book: Book
     let currentSection: Section?
     var focusedCharacter: Character? = nil
@@ -30,6 +37,7 @@ struct InspectorWithTimeline: View {
     var onSelectSection: ((Section) -> Void)? = nil
     var onOpenStoryTag: ((StoryTag) -> Void)? = nil
     @State private var tab: SailuneInspectorTab = .settings
+    @State private var outlineTab: SailuneOutlineTab = .background
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,8 +61,8 @@ struct InspectorWithTimeline: View {
                     onSelectSection: onSelectSection,
                     onOpenStoryTag: onOpenStoryTag
                 )
-            case .timeline:
-                TimelinePanelView(book: book)
+            case .outline:
+                outlineWorkspace
             }
         }
         .background(Color.workspacePanelBackground)
@@ -66,6 +74,30 @@ struct InspectorWithTimeline: View {
     private func showFocusedCharacter() {
         guard focusedCharacter != nil else { return }
         tab = .settings
+    }
+
+    private var outlineWorkspace: some View {
+        VStack(spacing: 0) {
+            Picker("大綱種類", selection: $outlineTab) {
+                ForEach(SailuneOutlineTab.allCases) { outlineTab in
+                    Text(outlineTab.rawValue).tag(outlineTab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            switch outlineTab {
+            case .background:
+                BookBackgroundView(book: book)
+            case .narrative:
+                BookOutlineWorkspaceView(book: book, presentation: .narrative)
+            case .timeline:
+                BookOutlineWorkspaceView(book: book, presentation: .timeline)
+            }
+        }
     }
 }
 
