@@ -329,10 +329,10 @@ final class SailuneTextView: CompositionAwareTextView {
         menu.addItem(unlinkCharacterItem)
         menu.addItem(NSMenuItem.separator())
 
-        let storyTagsMenu = NSMenu(title: "加入標籤")
-        for kind in StoryTagKind.allCases {
+        let storyTagsMenu = NSMenu(title: "加入大綱／標籤")
+        for kind in StoryTagKind.outlineCreationCases + StoryTagKind.allCases {
             let item = NSMenuItem(
-                title: kind.rawValue,
+                title: kind.editorActionTitle,
                 action: #selector(createStoryTagFromSelection(_:)),
                 keyEquivalent: ""
             )
@@ -341,7 +341,7 @@ final class SailuneTextView: CompositionAwareTextView {
             item.isEnabled = selectedRange().length > 0
             storyTagsMenu.addItem(item)
         }
-        let storyTagsItem = NSMenuItem(title: "加入標籤", action: nil, keyEquivalent: "")
+        let storyTagsItem = NSMenuItem(title: "加入大綱／標籤", action: nil, keyEquivalent: "")
         storyTagsItem.submenu = storyTagsMenu
         menu.addItem(storyTagsItem)
         menu.addItem(NSMenuItem.separator())
@@ -397,6 +397,7 @@ extension Notification.Name {
     static let sailuneNextSection = Notification.Name("sailune.nextSection")
     static let sailuneWillChangeCharacterReferences = Notification.Name("sailune.willChangeCharacterReferences")
     static let sailuneCharacterReferencesChanged = Notification.Name("sailune.characterReferencesChanged")
+    static let sailunePlanningMarkersChanged = Notification.Name("sailune.planningMarkersChanged")
 }
 
 // MARK: - 富文本編輯器
@@ -417,6 +418,7 @@ struct RichEditorView: NSViewRepresentable {
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
     var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)? = nil
     var storyTags: () -> [StoryTag] = { [] }
+    var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let (scrollView, textView) = makeScrollViewAndTextView()
@@ -439,6 +441,7 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.characterSuggestions = characterSuggestions
         context.coordinator.onCreateStoryTag = onCreateStoryTag
         context.coordinator.storyTags = storyTags
+        context.coordinator.outlineMarkers = outlineMarkers
         bridge.coordinator = context.coordinator
         let initial = section.content
         context.coordinator.lastCommitted = initial
@@ -497,6 +500,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.characterSuggestions = characterSuggestions
         coord.onCreateStoryTag = onCreateStoryTag
         coord.storyTags = storyTags
+        coord.outlineMarkers = outlineMarkers
         coord.bridge = bridge
         bridge.coordinator = coord
         if let pendingSelection = bridge.pendingSelection,
@@ -576,6 +580,7 @@ struct RichEditorView: NSViewRepresentable {
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
         var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)?
         var storyTags: () -> [StoryTag] = { [] }
+        var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
@@ -653,6 +658,14 @@ struct RichEditorView: NSViewRepresentable {
                 let range = NSRange(location: location, length: length)
                 storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(opacity), range: range)
                 storage.addAttribute(.sailuneStoryTagMarker, value: tag.id.uuidString, range: range)
+            }
+            for marker in outlineMarkers() where marker.anchor.sectionID == section?.id {
+                let location = marker.anchor.resolvedOffset(in: textView.string)
+                guard location < storage.length else { continue }
+                let color: NSColor = marker.item.status == .draft ? .systemGreen : .systemRed
+                let range = NSRange(location: location, length: 1)
+                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.58), range: range)
+                storage.addAttribute(.sailuneStoryTagMarker, value: marker.item.id.uuidString, range: range)
             }
         }
         private func storyTagFreeSnapshot(from attributed: NSAttributedString) -> AttributedString {

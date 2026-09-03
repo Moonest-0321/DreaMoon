@@ -6,7 +6,7 @@
 2. 建立／開啟 V5 主資料庫。
 3. 將舊資料匯入 V5；若 V5 已有資料，先驗證匯入完整性。
 4. 執行懸空資料修復與 V4／V5 回填。
-5. 開啟物品副本、能力進度與故事規劃的獨立 store；故事規劃 store 依 `StoryPlanningMigrationPlan` 從 V1 lightweight migration 至 V2。
+5. 開啟物品副本、能力進度與故事規劃的獨立 store；故事規劃 store 依 `StoryPlanningMigrationPlan` lightweight migration 至 V3，再轉換舊結構標籤。
 6. 完成各 store 的資料修復後才顯示主畫面。
 
 ## 目前資料檔
@@ -43,7 +43,8 @@
 
 ## V4.2 故事規劃遷移
 
-- `StoryPlanningSchemaV1` 保持不變；V2 新增全書背景、故事線、主線階段與大綱項目。
+- `StoryPlanningSchemaV1`、V2 均保持不變；V3 新增 `OutlineItemAnchor`，不回寫 V2 的 `OutlineItem` snapshot。
 - store 檔名維持 `Sailune-v5-story-planning.store`，由 SwiftData lightweight migration 原地升級；發布前仍需把它與主 store 一起備份。
-- 遷移測試會先建立實際 V1 檔案型 store，再以 V2 遷移計劃開啟，驗證故事標籤 UUID、文字錨點與每節註記不變，並再次重開確認不重複建立資料。
+- V2→V3 開啟後在同一個 save 內將主軸／支線／計劃加入轉為同 UUID 的大綱項目及錨點，成功後才刪除原標籤；伏筆／修改不變。檔案型測試會驗證轉換與重開不重複。
+- V4.3 的故事背景引導不新增 SwiftData 欄位或 schema；使用既有 `backgroundText` 的可版本化結構值保存。舊自由文字讀取時視為「其他背景」，首次儲存才轉為結構值，內容不遺失。
 - 主 store 內既有 `Timeline`、`Node`、`Event` 不刪除、不改寫，也不自動複製為 V4.2 `OutlineItem`；第一版採保留策略，避免在時間語意尚未定案時錯誤轉換使用者資料。

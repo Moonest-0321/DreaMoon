@@ -127,6 +127,13 @@ struct EditorWorkspaceView: View {
                             let offset = tag.resolvedOffset(in: String(section.content.characters))
                             bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
                             selectedSection = section
+                        },
+                        onOpenOutlineItem: { item, anchor in
+                            guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == anchor.sectionID }) else { return }
+                            bridge.flushPendingSave()
+                            let offset = anchor.resolvedOffset(in: String(section.content.characters))
+                            bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
+                            selectedSection = section
                         }
                     )
                     .workspaceFloatingPanel()
@@ -147,6 +154,9 @@ struct EditorWorkspaceView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .sailuneNextSection)) { _ in
             navigate(to: neighboringSections.next)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sailunePlanningMarkersChanged)) { _ in
+            bridge.reloadVisibleContent()
         }
         .onReceive(NotificationCenter.default.publisher(for: .sailuneWillChangeCharacterReferences)) { _ in
             // 名稱同步會直接改寫 Section.content；先提交作者正在輸入的內容，
@@ -951,10 +961,27 @@ struct EditorCenterView: View {
                             // just-typed paragraph that is still debouncing.
                             bridge.flushPendingSave()
                             let label = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
-                            planningStore.createTag(title: label, kind: kind, anchorText: text, anchorOffset: range.location, bookID: book.id, sectionID: section.id)
+                            do {
+                                if kind.isStructuralOutlineKind {
+                                    _ = try planningStore.createOutlineItemFromProse(
+                                        kind: kind,
+                                        title: label,
+                                        anchorText: text,
+                                        anchorOffset: range.location,
+                                        bookID: book.id,
+                                        sectionID: section.id,
+                                        sections: BookStructure.orderedSections(in: book)
+                                    )
+                                } else {
+                                    planningStore.createTag(title: label, kind: kind, anchorText: text, anchorOffset: range.location, bookID: book.id, sectionID: section.id)
+                                }
+                            } catch {
+                                saveState = .failed
+                            }
                             bridge.reloadVisibleContent()
                         },
-                        storyTags: { planningStore.tags(sectionID: section.id) }
+                        storyTags: { planningStore.tags(sectionID: section.id) },
+                        outlineMarkers: { planningStore.outlineMarkers(sectionID: section.id) }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 

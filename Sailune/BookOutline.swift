@@ -15,13 +15,25 @@ enum StoryPlanningSchemaV2: VersionedSchema {
     }
 }
 
+/// V2 的既有大綱模型保持不變；正文來源以新模型保存，避免回寫已發布的
+/// `OutlineItem` schema snapshot。
+enum StoryPlanningSchemaV3: VersionedSchema {
+    static var versionIdentifier = Schema.Version(3, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        StoryPlanningSchemaV2.models + [OutlineItemAnchor.self]
+    }
+}
+
 enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self]
+        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
-        [.lightweight(fromVersion: StoryPlanningSchemaV1.self, toVersion: StoryPlanningSchemaV2.self)]
+        [
+            .lightweight(fromVersion: StoryPlanningSchemaV1.self, toVersion: StoryPlanningSchemaV2.self),
+            .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self)
+        ]
     }
 }
 
@@ -42,6 +54,32 @@ enum OutlineItemStatus: String, CaseIterable, Identifiable, Hashable {
     case planned = "預定"
 
     var id: String { rawValue }
+}
+
+/// 將選填引導與自由文字保存於既有背景欄位，讓已發布的 schema V3 可直接讀取舊資料。
+struct StoryBackgroundContent: Codable, Equatable {
+    var worldBackground = ""
+    var premise = ""
+    var mainConflict = ""
+    var protagonistGoal = ""
+    var coreTheme = ""
+    var otherBackground = ""
+
+    init(storedValue: String = "") {
+        if let data = storedValue.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(Self.self, from: data) {
+            self = decoded
+        } else {
+            otherBackground = storedValue
+        }
+    }
+
+    func encodedValue() -> String {
+        guard let data = try? JSONEncoder().encode(self), let value = String(data: data, encoding: .utf8) else {
+            return otherBackground
+        }
+        return value
+    }
 }
 
 /// Whole-book planning data lives in the independent story-planning store and
@@ -172,5 +210,43 @@ final class OutlineItem {
     var status: OutlineItemStatus {
         get { OutlineItemStatus(rawValue: statusRawValue) ?? .draft }
         set { statusRawValue = newValue.rawValue; updatedAt = Date() }
+    }
+}
+
+/// A prose source is optional: manually created outline items deliberately
+/// have no anchor, while an item created from the editor has exactly one.
+@Model
+final class OutlineItemAnchor {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var outlineItemID: UUID
+    var bookID: UUID
+    var sectionID: UUID
+    var anchorText: String
+    var anchorOffset: Int
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        outlineItemID: UUID,
+        bookID: UUID,
+        sectionID: UUID,
+        anchorText: String,
+        anchorOffset: Int,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.outlineItemID = outlineItemID
+        self.bookID = bookID
+        self.sectionID = sectionID
+        self.anchorText = anchorText
+        self.anchorOffset = anchorOffset
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    func resolvedOffset(in text: String) -> Int {
+        ProseAnchorResolver.resolvedOffset(anchorText: anchorText, anchorOffset: anchorOffset, in: text)
     }
 }

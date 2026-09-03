@@ -36,6 +36,7 @@ struct WorkspaceInspectorView: View {
     var focusRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
     var onOpenStoryTag: ((StoryTag) -> Void)? = nil
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @State private var tab: SailuneInspectorTab = .settings
     @State private var outlineTab: SailuneOutlineTab = .background
 
@@ -93,9 +94,9 @@ struct WorkspaceInspectorView: View {
             case .background:
                 BookBackgroundView(book: book)
             case .narrative:
-                BookOutlineWorkspaceView(book: book, presentation: .narrative)
+                BookOutlineWorkspaceView(book: book, presentation: .narrative, onOpenOutlineItem: onOpenOutlineItem)
             case .timeline:
-                BookOutlineWorkspaceView(book: book, presentation: .timeline)
+                BookOutlineWorkspaceView(book: book, presentation: .timeline, onOpenOutlineItem: onOpenOutlineItem)
             }
         }
     }

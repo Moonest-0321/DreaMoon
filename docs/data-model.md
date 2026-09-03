@@ -25,7 +25,7 @@
 - `Sailune-v5-item-copies.store`：`ItemCopy`、`ItemCopyHolding`、`ItemCopyHistory`。
 - `Sailune-v5-item-copy-level-selections.store`：副本目前手動選擇的等級。
 - `Sailune-v5-ability-progress.store`：能力進度相關資料。
-- `Sailune-v5-story-planning.store`：`StoryPlanningSchemaV2`，包含 `StoryTag`、`ChapterAnnotation`、`BookPlanningProfile`、`OutlineStoryLine`、`OutlineStage` 與 `OutlineItem`。
+- `Sailune-v5-story-planning.store`：`StoryPlanningSchemaV3`，包含 `StoryTag`、`ChapterAnnotation`、`BookPlanningProfile`、`OutlineStoryLine`、`OutlineStage`、`OutlineItem` 與 `OutlineItemAnchor`。
 
 獨立 store 的資料以穩定 UUID（例如 `itemID`、`copyID`、`characterID`、`sectionID`）互相連結；它們不是 SwiftData 的直接跨 store relationship。
 
@@ -34,13 +34,17 @@
 - UUID 在匯入、遷移與回填後必須保持不變。
 - `sortOrder` 只負責同一父層內的顯示排序，不應被當作永久識別碼。
 - ItemLevel 目前以 `itemID` 連結，不新增脆弱的 SwiftData inverse relationship。
-- StoryTag 的位置是「原文字＋UTF-16 offset」錨點，正文變更後需重新解析。
+- `StoryTag`（僅伏筆／修改）及 `OutlineItemAnchor` 都以「原文字＋UTF-16 offset」保存來源，正文變更後以相同規則重新解析。
 - 副本目前等級選擇不自動改寫父物品設定。
 - V4.2 全書規劃以 `bookID` 連回主 store；`storyLineID` 與可選 `stageID` 維持故事線、階段和項目的穩定連結。
 - 敘事大綱與新時間軸直接查詢同一筆 `OutlineItem`；不存在需要同步的第二份內容。
-- `OutlineItem.sortOrder` 只控制手動顯示順序；同值時以建立時間與 UUID 提供穩定排序。
+- `OutlineItemAnchor.outlineItemID` 是唯一值，因此一筆大綱項目最多一個正文來源；手動建立項目可沒有來源。
+- 刪除 `OutlineItem` 時一併刪除其 anchor；刪除 `OutlineStoryLine` 時級聯其階段、項目與所有相關 anchors，均不得改動正文。
+- `OutlineItem.sortOrder` 是沒有有效正文來源時的手動後備排序；有來源時，卷／節順序與重新解析後的 UTF-16 offset 優先，同值再以建立時間與 UUID 穩定排序。
 - 主線階段只允許建立在 `.main` 故事線；此不變條件由 `StoryPlanningStore` 驗證。
 - 同一本書只允許一條 `.main` 故事線；多段主線使用 `OutlineStage`，而不是建立第二條主線。
+- 刪除 `OutlineStage` 時不刪項目或 anchor；其項目的 `stageID` 改為 `nil`，表示未分階段。項目只能移往同一主線的階段或未分階段。
+- `BookPlanningProfile.backgroundText` 相容保存故事背景引導與其他背景；非結構化舊值一律視為其他背景，避免遺失既有文字。
 
 ## 待改善的模型風險
 

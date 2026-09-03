@@ -16,7 +16,7 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV2.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV3.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -98,9 +98,10 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(tag.resolvedOffset(in: rewritten), (rewritten as NSString).range(of: "小黑回到了家中").location)
     }
 
-    func testStoryTagKindsIncludeRevisionAndPlannedAddition() {
+    func testStoryTagKindsOnlyExposeForeshadowingAndRevision() {
         XCTAssertTrue(StoryTagKind.allCases.contains(.revision))
-        XCTAssertTrue(StoryTagKind.allCases.contains(.plannedAddition))
+        XCTAssertTrue(StoryTagKind.allCases.contains(.foreshadowing))
+        XCTAssertFalse(StoryTagKind.allCases.contains(.plannedAddition))
         XCTAssertEqual(StoryTagKind.revision.rawValue, "修改")
         XCTAssertEqual(StoryTagKind.plannedAddition.rawValue, "計劃加入")
     }
@@ -110,12 +111,12 @@ final class ItemV3Tests: XCTestCase {
         let selectionLength = (selectedText as NSString).length
         let common = (anchorText: selectedText, anchorOffset: 0, bookID: UUID(), sectionID: UUID())
 
-        for kind in [StoryTagKind.revision, .plannedAddition] {
+        for kind in [StoryTagKind.revision] {
             let tag = StoryTag(title: kind.rawValue, kind: kind, anchorText: common.anchorText, anchorOffset: common.anchorOffset, bookID: common.bookID, sectionID: common.sectionID)
             XCTAssertEqual(tag.markerLength(availableFromOffset: 100), selectionLength)
         }
 
-        for kind in [StoryTagKind.main, .branch, .foreshadowing] {
+        for kind in [StoryTagKind.main, .branch, .foreshadowing, .plannedAddition] {
             let tag = StoryTag(title: kind.rawValue, kind: kind, anchorText: common.anchorText, anchorOffset: common.anchorOffset, bookID: common.bookID, sectionID: common.sectionID)
             XCTAssertEqual(tag.markerLength(availableFromOffset: 100), 1)
         }
