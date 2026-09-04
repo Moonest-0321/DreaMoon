@@ -149,6 +149,8 @@ final class StoryPlanningStore {
     private(set) var stages: [OutlineStage] = []
     private(set) var outlineItems: [OutlineItem] = []
     private(set) var outlineAnchors: [OutlineItemAnchor] = []
+    private(set) var stageStartAnchors: [OutlineStageStartAnchor] = []
+    private(set) var itemPlacements: [OutlineItemPlacement] = []
 
     init(container: ModelContainer) throws {
         self.container = container
@@ -166,6 +168,8 @@ final class StoryPlanningStore {
         stages = try context.fetch(FetchDescriptor<OutlineStage>())
         outlineItems = try context.fetch(FetchDescriptor<OutlineItem>())
         outlineAnchors = try context.fetch(FetchDescriptor<OutlineItemAnchor>())
+        stageStartAnchors = try context.fetch(FetchDescriptor<OutlineStageStartAnchor>())
+        itemPlacements = try context.fetch(FetchDescriptor<OutlineItemPlacement>())
     }
 
     func tags(bookID: UUID) -> [StoryTag] { tags.filter { $0.bookID == bookID } }
@@ -192,6 +196,20 @@ final class StoryPlanningStore {
             .sorted(by: Self.stableOrder)
     }
 
+    func orderedStages(storyLineID: UUID, sections: [Section]) -> [OutlineStage] {
+        let positions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
+        return stages(storyLineID: storyLineID).sorted { lhs, rhs in
+            let lhsPosition = stageStart(stageID: lhs.id).flatMap { positions[$0.sectionID] }
+            let rhsPosition = stageStart(stageID: rhs.id).flatMap { positions[$0.sectionID] }
+            switch (lhsPosition, rhsPosition) {
+            case let (.some(left), .some(right)) where left != right: return left < right
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return Self.stableOrder(lhs, rhs)
+            }
+        }
+    }
+
     func items(storyLineID: UUID) -> [OutlineItem] {
         outlineItems
             .filter { $0.storyLineID == storyLineID }
@@ -204,32 +222,64 @@ final class StoryPlanningStore {
             .sorted(by: Self.stableOrder)
     }
 
-    /// 正文來源存在時，以目前書籍中的卷／節與節內文字位置排序；其餘項目留在後方。
+    /// 正文來源依位置排序；手動項目則遵從其語意化安置位置。
     func orderedItems(storyLineID: UUID, stageID: UUID?, sections: [Section]) -> [OutlineItem] {
         let items = outlineItems.filter { $0.storyLineID == storyLineID && $0.stageID == stageID }
         let sectionPositions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
-        return items.sorted { lhs, rhs in
-            let lhsPosition = prosePosition(for: lhs, sectionPositions: sectionPositions, sections: sections)
-            let rhsPosition = prosePosition(for: rhs, sectionPositions: sectionPositions, sections: sections)
-            switch (lhsPosition, rhsPosition) {
-            case let (.some(lhsPosition), .some(rhsPosition)):
-                if lhsPosition.sectionIndex != rhsPosition.sectionIndex {
-                    return lhsPosition.sectionIndex < rhsPosition.sectionIndex
-                }
-                if lhsPosition.offset != rhsPosition.offset { return lhsPosition.offset < rhsPosition.offset }
-            case (.some, .none):
-                return true
-            case (.none, .some):
-                return false
-            case (.none, .none):
-                break
+        let manual = items.filter { anchor(outlineItemID: $0.id) == nil }
+        let prose = items.filter { anchor(outlineItemID: $0.id) != nil }.sorted {
+            let lhs = prosePosition(for: $0, sectionPositions: sectionPositions, sections: sections)
+            let rhs = prosePosition(for: $1, sectionPositions: sectionPositions, sections: sections)
+            switch (lhs, rhs) {
+            case let (.some(left), .some(right)) where left.sectionIndex != right.sectionIndex: return left.sectionIndex < right.sectionIndex
+            case let (.some(left), .some(right)) where left.offset != right.offset: return left.offset < right.offset
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return Self.stableOrder($0, $1)
             }
-            return Self.stableOrder(lhs, rhs)
         }
+        func placed(_ kind: OutlineItemPlacementKind, after itemID: UUID? = nil) -> [OutlineItem] {
+            manual.filter { item in
+                let placement = placement(outlineItemID: item.id)
+                return placement?.kind == kind && placement?.relativeItemID == itemID
+            }
+            .sorted { lhs, rhs in
+                let leftOrder = placement(outlineItemID: lhs.id)?.localOrder ?? 0
+                let rightOrder = placement(outlineItemID: rhs.id)?.localOrder ?? 0
+                if leftOrder != rightOrder { return leftOrder < rightOrder }
+                return Self.stableOrder(lhs, rhs)
+            }
+        }
+        var result: [OutlineItem] = []
+        var appended = Set<UUID>()
+        func appendWithChildren(_ item: OutlineItem) {
+            guard appended.insert(item.id).inserted else { return }
+            result.append(item)
+            for child in placed(.afterItem, after: item.id) { appendWithChildren(child) }
+        }
+        for item in placed(.stageStart) { appendWithChildren(item) }
+        for item in prose {
+            appendWithChildren(item)
+        }
+        for item in placed(.stageEnd) { appendWithChildren(item) }
+        for item in manual.filter({ placement(outlineItemID: $0.id)?.kind == .pending }).sorted(by: Self.stableOrder) {
+            appendWithChildren(item)
+        }
+        // 舊版未設定安置、失效掛點或循環資料都必須保留可見，不能因排序遺失。
+        for item in manual.sorted(by: Self.stableOrder) { appendWithChildren(item) }
+        return result
     }
 
     func anchor(outlineItemID: UUID) -> OutlineItemAnchor? {
         outlineAnchors.first { $0.outlineItemID == outlineItemID }
+    }
+
+    func stageStart(stageID: UUID) -> OutlineStageStartAnchor? {
+        stageStartAnchors.first { $0.stageID == stageID }
+    }
+
+    func placement(outlineItemID: UUID) -> OutlineItemPlacement? {
+        itemPlacements.first { $0.outlineItemID == outlineItemID }
     }
 
     func outlineMarkers(sectionID: UUID) -> [(item: OutlineItem, anchor: OutlineItemAnchor)] {
@@ -304,12 +354,57 @@ final class StoryPlanningStore {
     }
 
     @discardableResult
+    func createStage(
+        storyLine: OutlineStoryLine,
+        title: String? = nil,
+        start: OutlineStageStartLocation
+    ) throws -> OutlineStage {
+        guard storyLine.kind == .main else { throw StoryPlanningStoreError.stagesRequireMainStoryLine }
+        let peers = stages.filter { $0.storyLineID == storyLine.id }
+        let stage = OutlineStage(bookID: storyLine.bookID, storyLineID: storyLine.id,
+                                 title: normalizedTitle(title, fallback: "階段 \(peers.count + 1)"),
+                                 sortOrder: (peers.map(\.sortOrder).max() ?? -1) + 1)
+        // 階段與開始定位一併儲存，避免定位失敗後留下半成品。
+        context.insert(stage)
+        context.insert(OutlineStageStartAnchor(stageID: stage.id, bookID: stage.bookID, location: start))
+        do {
+            try context.save()
+            try reload()
+            return stage
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
+    }
+
+    func setStageStart(_ stage: OutlineStage, to location: OutlineStageStartLocation) throws {
+        let anchor = stageStart(stageID: stage.id) ?? OutlineStageStartAnchor(stageID: stage.id, bookID: stage.bookID, location: location)
+        if stageStart(stageID: stage.id) == nil { context.insert(anchor) }
+        anchor.volumeID = location.volumeID
+        anchor.sectionID = location.sectionID
+        anchor.volumeTitleSnapshot = location.volumeTitle
+        anchor.sectionTitleSnapshot = location.sectionTitle
+        anchor.updatedAt = Date()
+        stage.updatedAt = Date()
+        do {
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
+    }
+
+    @discardableResult
     func createOutlineItem(
         storyLine: OutlineStoryLine,
         stage: OutlineStage? = nil,
         title: String = "新大綱項目",
         status: OutlineItemStatus = .draft
     ) throws -> OutlineItem {
+        guard status != .occurred else { throw StoryPlanningStoreError.manualItemCannotBeCompleted }
         let assignedStage = stage ?? (storyLine.kind == .main ? stages(storyLineID: storyLine.id).last : nil)
         guard assignedStage == nil || assignedStage?.storyLineID == storyLine.id else {
             throw StoryPlanningStoreError.stageDoesNotBelongToStoryLine
@@ -324,9 +419,89 @@ final class StoryPlanningStore {
             sortOrder: (peers.map(\.sortOrder).max() ?? -1) + 1
         )
         context.insert(item)
+        let placement = OutlineItemPlacement(outlineItemID: item.id, localOrder: peers.count)
+        context.insert(placement)
         outlineItems.append(item)
+        itemPlacements.append(placement)
         try context.save()
         return item
+    }
+
+    func setManualStatus(_ item: OutlineItem, to status: OutlineItemStatus) throws {
+        guard anchor(outlineItemID: item.id) == nil else { throw StoryPlanningStoreError.proseItemStatusIsReadOnly }
+        guard status != .occurred else { throw StoryPlanningStoreError.manualItemCannotBeCompleted }
+        item.status = status
+        do {
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
+    }
+
+    func setPlacement(_ item: OutlineItem, kind: OutlineItemPlacementKind, after relativeItem: OutlineItem? = nil) throws {
+        guard anchor(outlineItemID: item.id) == nil else { throw StoryPlanningStoreError.proseItemCannotBePlaced }
+        guard kind != .afterItem || relativeItem != nil else { throw StoryPlanningStoreError.placementTargetRequired }
+        guard kind == .afterItem || relativeItem == nil else { throw StoryPlanningStoreError.invalidPlacementTarget }
+        if let relativeItem {
+            guard outlineItems.contains(where: { $0.id == relativeItem.id }), relativeItem.bookID == item.bookID, relativeItem.storyLineID == item.storyLineID, relativeItem.stageID == item.stageID, relativeItem.id != item.id else {
+                throw StoryPlanningStoreError.invalidPlacementTarget
+            }
+            guard !wouldCreatePlacementCycle(itemID: item.id, targetID: relativeItem.id) else {
+                throw StoryPlanningStoreError.placementCycle
+            }
+        }
+        let placement = placement(outlineItemID: item.id) ?? OutlineItemPlacement(outlineItemID: item.id)
+        if self.placement(outlineItemID: item.id) == nil { context.insert(placement) }
+        placement.kind = kind
+        placement.relativeItemID = relativeItem?.id
+        placement.relativeItemTitleSnapshot = relativeItem?.title ?? ""
+        placement.localOrder = nextPlacementOrder(kind: kind, relativeItemID: relativeItem?.id)
+        placement.updatedAt = Date()
+        item.updatedAt = Date()
+        do {
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
+    }
+
+    /// 只調整同一安置位置的兄弟項目，不改動正文順序或子項目的掛點。
+    func moveManualItem(_ item: OutlineItem, earlier: Bool) throws {
+        guard anchor(outlineItemID: item.id) == nil else { throw StoryPlanningStoreError.proseItemCannotBePlaced }
+        guard let current = placement(outlineItemID: item.id), current.kind != .pending else { return }
+        let peers = outlineItems.filter {
+            guard $0.storyLineID == item.storyLineID, $0.stageID == item.stageID,
+                  anchor(outlineItemID: $0.id) == nil,
+                  let value = placement(outlineItemID: $0.id) else { return false }
+            return value.kind == current.kind && value.relativeItemID == current.relativeItemID
+        }.sorted {
+            let left = placement(outlineItemID: $0.id)?.localOrder ?? 0
+            let right = placement(outlineItemID: $1.id)?.localOrder ?? 0
+            return left == right ? Self.stableOrder($0, $1) : left < right
+        }
+        guard let index = peers.firstIndex(where: { $0.id == item.id }) else { return }
+        let destination = index + (earlier ? -1 : 1)
+        guard peers.indices.contains(destination) else { return }
+        var reordered = peers
+        reordered.swapAt(index, destination)
+        for (order, peer) in reordered.enumerated() {
+            placement(outlineItemID: peer.id)?.localOrder = order
+            placement(outlineItemID: peer.id)?.updatedAt = Date()
+        }
+        do {
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
     }
 
     @discardableResult
@@ -377,6 +552,8 @@ final class StoryPlanningStore {
 
     func deleteOutlineItem(_ item: OutlineItem) throws {
         do {
+            moveDependentPlacementsToPending(for: item)
+            if let placement = placement(outlineItemID: item.id) { context.delete(placement) }
             if let anchor = anchor(outlineItemID: item.id) { context.delete(anchor) }
             context.delete(item)
             try context.save()
@@ -393,7 +570,14 @@ final class StoryPlanningStore {
         do {
             let itemIDs = Set(outlineItems.filter { $0.storyLineID == storyLine.id }.map(\.id))
             for anchor in outlineAnchors where itemIDs.contains(anchor.outlineItemID) { context.delete(anchor) }
+            for placement in itemPlacements where itemIDs.contains(placement.outlineItemID) { context.delete(placement) }
+            for placement in itemPlacements where placement.relativeItemID.map(itemIDs.contains) == true {
+                placement.kind = .pending
+                placement.relativeItemID = nil
+            }
             for item in outlineItems where item.storyLineID == storyLine.id { context.delete(item) }
+            let stageIDs = Set(stages.filter { $0.storyLineID == storyLine.id }.map(\.id))
+            for start in stageStartAnchors where stageIDs.contains(start.stageID) { context.delete(start) }
             for stage in stages where stage.storyLineID == storyLine.id { context.delete(stage) }
             context.delete(storyLine)
             try context.save()
@@ -413,7 +597,16 @@ final class StoryPlanningStore {
         guard stage == nil || (stage?.storyLineID == storyLine.id && stage?.bookID == item.bookID) else {
             throw StoryPlanningStoreError.stageDoesNotBelongToStoryLine
         }
+        if item.stageID != stage?.id { moveDependentPlacementsToPending(for: item) }
         item.stageID = stage?.id
+        if let placement = placement(outlineItemID: item.id),
+           placement.kind == .afterItem,
+           let targetID = placement.relativeItemID,
+           outlineItems.first(where: { $0.id == targetID })?.stageID != stage?.id {
+            placement.kind = .pending
+            placement.relativeItemID = nil
+            placement.updatedAt = Date()
+        }
         item.updatedAt = Date()
         do {
             try context.save()
@@ -427,13 +620,18 @@ final class StoryPlanningStore {
 
     func deleteStage(_ stage: OutlineStage) throws {
         do {
-            for item in outlineItems where item.stageID == stage.id {
-                item.stageID = nil
-                item.updatedAt = Date()
+            let itemsToDelete = outlineItems.filter { $0.stageID == stage.id }
+            for item in itemsToDelete {
+                moveDependentPlacementsToPending(for: item)
+                if let placement = placement(outlineItemID: item.id) { context.delete(placement) }
+                if let anchor = anchor(outlineItemID: item.id) { context.delete(anchor) }
+                context.delete(item)
             }
+            if let start = stageStart(stageID: stage.id) { context.delete(start) }
             context.delete(stage)
             try context.save()
             try reload()
+            NotificationCenter.default.post(name: .sailunePlanningMarkersChanged, object: nil)
         } catch {
             context.rollback()
             try reload()
@@ -523,7 +721,7 @@ final class StoryPlanningStore {
         return (sectionIndex, anchor.resolvedOffset(in: String(section.content.characters)))
     }
 
-    /// 階段以其中最早的正文來源為起點；新正文項目進入最近且不晚於其位置的階段。
+    /// 正文優先分派至對應起點；無法對應時放入畫面最後階段，不改寫階段定位。
     private func stageForProse(
         storyLine: OutlineStoryLine,
         anchorText: String,
@@ -531,32 +729,50 @@ final class StoryPlanningStore {
         sectionID: UUID,
         sections: [Section]
     ) -> OutlineStage? {
-        let stages = stages(storyLineID: storyLine.id)
+        let stages = orderedStages(storyLineID: storyLine.id, sections: sections)
         guard !stages.isEmpty else { return nil }
         let sectionPositions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
         guard let sectionIndex = sectionPositions[sectionID] else { return stages.last }
-        let newOffset = ProseAnchorResolver.resolvedOffset(
-            anchorText: anchorText,
-            anchorOffset: anchorOffset,
-            in: String(sections[sectionIndex].content.characters)
-        )
-        let starts = stages.compactMap { stage -> (stage: OutlineStage, sectionIndex: Int, offset: Int)? in
-            let positions = outlineItems
-                .filter { $0.stageID == stage.id }
-                .compactMap { prosePosition(for: $0, sectionPositions: sectionPositions, sections: sections) }
-            guard let start = positions.min(by: { lhs, rhs in
-                lhs.sectionIndex == rhs.sectionIndex ? lhs.offset < rhs.offset : lhs.sectionIndex < rhs.sectionIndex
-            }) else { return nil }
-            return (stage, start.sectionIndex, start.offset)
+        let starts = stages.compactMap { stage -> (stage: OutlineStage, sectionIndex: Int)? in
+            guard let start = stageStart(stageID: stage.id), let index = sectionPositions[start.sectionID] else { return nil }
+            return (stage, index)
         }
         guard !starts.isEmpty else { return stages.last }
         let sortedStarts = starts.sorted {
-            $0.sectionIndex == $1.sectionIndex ? $0.offset < $1.offset : $0.sectionIndex < $1.sectionIndex
+            if $0.sectionIndex != $1.sectionIndex { return $0.sectionIndex < $1.sectionIndex }
+            return Self.stableOrder($0.stage, $1.stage)
         }
         let matching = sortedStarts.last {
-            $0.sectionIndex < sectionIndex || ($0.sectionIndex == sectionIndex && $0.offset <= newOffset)
+            $0.sectionIndex <= sectionIndex
         }
-        return matching?.stage ?? sortedStarts.first?.stage
+        return matching?.stage ?? stages.last
+    }
+
+    private func moveDependentPlacementsToPending(for item: OutlineItem) {
+        for placement in itemPlacements where placement.relativeItemID == item.id {
+            placement.kind = .pending
+            placement.relativeItemID = nil
+            placement.relativeItemTitleSnapshot = item.title
+            placement.updatedAt = Date()
+        }
+    }
+
+    private func nextPlacementOrder(kind: OutlineItemPlacementKind, relativeItemID: UUID?) -> Int {
+        itemPlacements
+            .filter { $0.kind == kind && $0.relativeItemID == relativeItemID }
+            .map(\.localOrder)
+            .max()
+            .map { $0 + 1 } ?? 0
+    }
+
+    private func wouldCreatePlacementCycle(itemID: UUID, targetID: UUID) -> Bool {
+        var currentID: UUID? = targetID
+        var visited = Set<UUID>()
+        while let current = currentID, visited.insert(current).inserted {
+            if current == itemID { return true }
+            currentID = placement(outlineItemID: current)?.relativeItemID
+        }
+        return false
     }
 
     private func ensureMainStoryLine(bookID: UUID) throws -> OutlineStoryLine {
@@ -639,6 +855,13 @@ enum StoryPlanningStoreError: LocalizedError {
     case outlineItemDoesNotBelongToMainStoryLine
     case invalidOutlineCreationKind
     case structuralStoryTagCannotBeDeleted
+    case manualItemCannotBeCompleted
+    case proseItemStatusIsReadOnly
+    case proseItemCannotBePlaced
+    case missingManualPlacement
+    case placementTargetRequired
+    case invalidPlacementTarget
+    case placementCycle
 
     var errorDescription: String? {
         switch self {
@@ -654,6 +877,20 @@ enum StoryPlanningStoreError: LocalizedError {
             return "只有主線、支線與主線草稿可以從正文建立大綱。"
         case .structuralStoryTagCannotBeDeleted:
             return "結構標籤已整合至大綱，請從大綱刪除。"
+        case .manualItemCannotBeCompleted:
+            return "已完成只能由正文選取建立的大綱項目使用。"
+        case .proseItemStatusIsReadOnly:
+            return "正文來源項目的完成狀態會由正文維持，不能手動修改。"
+        case .proseItemCannotBePlaced:
+            return "正文來源項目會依正文位置排列，不能手動安置。"
+        case .missingManualPlacement:
+            return "找不到手動項目的安置資料；請重新開啟後再試。"
+        case .placementTargetRequired:
+            return "請選擇要接在其後的大綱項目。"
+        case .invalidPlacementTarget:
+            return "手動項目只能接在同一階段的其他項目後。"
+        case .placementCycle:
+            return "不能把項目安置在自己的後續項目之後。"
         }
     }
 }

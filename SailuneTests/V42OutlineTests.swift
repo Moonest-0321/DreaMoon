@@ -5,7 +5,7 @@ import SwiftData
 @MainActor
 final class V42OutlineTests: XCTestCase {
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV3.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -93,7 +93,7 @@ final class V42OutlineTests: XCTestCase {
         let line = try store.createStoryLine(bookID: UUID(), kind: .prequel)
 
         var created: [OutlineItem] = []
-        for status in OutlineItemStatus.allCases {
+        for status in OutlineItemStatus.allCases.filter({ $0 != .occurred }) {
             created.append(try store.createOutlineItem(
                 storyLine: line,
                 title: status.rawValue,
@@ -103,12 +103,11 @@ final class V42OutlineTests: XCTestCase {
         created[0].sortOrder = 30
         created[1].sortOrder = 10
         created[2].sortOrder = 20
-        created[3].sortOrder = 40
         try store.saveChanges()
 
         let reloadedStore = try StoryPlanningStore(container: container)
-        XCTAssertEqual(Set(reloadedStore.items(storyLineID: line.id).map(\.status)), Set(OutlineItemStatus.allCases))
-        XCTAssertEqual(reloadedStore.items(storyLineID: line.id).map(\.sortOrder), [10, 20, 30, 40])
+        XCTAssertEqual(Set(reloadedStore.items(storyLineID: line.id).map(\.status)), Set(OutlineItemStatus.allCases.filter { $0 != .occurred }))
+        XCTAssertEqual(reloadedStore.items(storyLineID: line.id).map(\.sortOrder), [10, 20, 30])
     }
 
     func testNarrativeAndTimelineQueriesShareOneOutlineItem() throws {
@@ -124,10 +123,10 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertTrue(narrativeItem === timelineItem)
 
         timelineItem.title = "在禁林遇見守門人"
-        timelineItem.status = .occurred
+        timelineItem.status = .planned
         try store.saveChanges()
         XCTAssertEqual(narrativeItem.title, "在禁林遇見守門人")
-        XCTAssertEqual(narrativeItem.status, .occurred)
+        XCTAssertEqual(narrativeItem.status, .planned)
         XCTAssertEqual(store.outlineItems.count, 1)
         XCTAssertEqual(store.outlineItems.first?.id, created.id)
     }
@@ -191,29 +190,38 @@ final class V42OutlineTests: XCTestCase {
         let bookID = UUID()
         let section = Section(id: UUID(), title: "第一節", content: AttributedString("0123456789abcdefghij"))
         let main = try store.createStoryLine(bookID: bookID, kind: .main)
-        let firstStage = try store.createStage(storyLine: main, title: "前段")
-        let secondStage = try store.createStage(storyLine: main, title: "後段")
+        let firstStage = try store.createStage(
+            storyLine: main,
+            title: "前段",
+            start: OutlineStageStartLocation(volumeID: UUID(), sectionID: section.id, volumeTitle: "第一幕", sectionTitle: "第一節")
+        )
+        let laterSection = Section(id: UUID(), title: "第二節", content: AttributedString("abcdefghij"))
+        let secondStage = try store.createStage(
+            storyLine: main,
+            title: "後段",
+            start: OutlineStageStartLocation(volumeID: UUID(), sectionID: laterSection.id, volumeTitle: "第一幕", sectionTitle: "第二節")
+        )
         let firstStart = try store.createOutlineItemFromProse(
-            kind: .main, title: "前段開始", anchorText: "2", anchorOffset: 2, bookID: bookID, sectionID: section.id, sections: [section]
+            kind: .main, title: "前段開始", anchorText: "2", anchorOffset: 2, bookID: bookID, sectionID: section.id, sections: [section, laterSection]
         )
         try store.moveOutlineItem(firstStart, to: firstStage)
         let secondStart = try store.createOutlineItemFromProse(
-            kind: .main, title: "後段開始", anchorText: "a", anchorOffset: 10, bookID: bookID, sectionID: section.id, sections: [section]
+            kind: .main, title: "後段開始", anchorText: "a", anchorOffset: 0, bookID: bookID, sectionID: laterSection.id, sections: [section, laterSection]
         )
         try store.moveOutlineItem(secondStart, to: secondStage)
 
         let beforeSecond = try store.createOutlineItemFromProse(
-            kind: .main, title: "前段內容", anchorText: "5", anchorOffset: 5, bookID: bookID, sectionID: section.id, sections: [section]
+            kind: .main, title: "前段內容", anchorText: "5", anchorOffset: 5, bookID: bookID, sectionID: section.id, sections: [section, laterSection]
         )
         let afterSecond = try store.createOutlineItemFromProse(
-            kind: .main, title: "後段內容", anchorText: "f", anchorOffset: 15, bookID: bookID, sectionID: section.id, sections: [section]
+            kind: .main, title: "後段內容", anchorText: "f", anchorOffset: 5, bookID: bookID, sectionID: laterSection.id, sections: [section, laterSection]
         )
 
         XCTAssertEqual(beforeSecond.stageID, firstStage.id)
         XCTAssertEqual(afterSecond.stageID, secondStage.id)
     }
 
-    func testDeletingStageMovesItemsAndAnchorsToUnassigned() throws {
+    func testDeletingStageAlsoDeletesItsItemsAndAnchors() throws {
         let store = try StoryPlanningStore(container: makePlanningContainer())
         let bookID = UUID()
         let main = try store.createStoryLine(bookID: bookID, kind: .main)
@@ -225,9 +233,136 @@ final class V42OutlineTests: XCTestCase {
         try store.deleteStage(stage)
 
         XCTAssertTrue(store.stages(storyLineID: main.id).isEmpty)
-        XCTAssertNil(store.items(bookID: bookID).first(where: { $0.id == manual.id })?.stageID)
-        XCTAssertNil(store.items(bookID: bookID).first(where: { $0.id == anchored.id })?.stageID)
-        XCTAssertNotNil(store.anchor(outlineItemID: anchored.id))
+        XCTAssertFalse(store.items(bookID: bookID).contains { $0.id == manual.id })
+        XCTAssertFalse(store.items(bookID: bookID).contains { $0.id == anchored.id })
+        XCTAssertNil(store.anchor(outlineItemID: anchored.id))
+    }
+
+    func testManualItemsCannotUseCompletedStatus() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let line = try store.createStoryLine(bookID: UUID(), kind: .branch)
+
+        XCTAssertThrowsError(try store.createOutlineItem(storyLine: line, status: .occurred))
+        let item = try store.createOutlineItem(storyLine: line, status: .draft)
+        XCTAssertThrowsError(try store.setManualStatus(item, to: .occurred))
+        XCTAssertEqual(item.status, .draft)
+    }
+
+    func testManualPlacementFollowsTargetAndReturnsPendingWhenTargetIsDeleted() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let section = Section(id: UUID(), title: "第一節", content: AttributedString("正文"))
+        let main = try store.createStoryLine(bookID: bookID, kind: .main)
+        let stage = try store.createStage(storyLine: main)
+        let prose = try store.createOutlineItemFromProse(
+            kind: .main, title: "正文項目", anchorText: "正文", anchorOffset: 0, bookID: bookID, sectionID: section.id, sections: [section]
+        )
+        try store.moveOutlineItem(prose, to: stage)
+        let manual = try store.createOutlineItem(storyLine: main, stage: stage, title: "手動項目")
+        try store.setPlacement(manual, kind: .afterItem, after: prose)
+
+        XCTAssertEqual(store.orderedItems(storyLineID: main.id, stageID: stage.id, sections: [section]).map(\.id), [prose.id, manual.id])
+        try store.deleteOutlineItem(prose)
+        XCTAssertEqual(store.placement(outlineItemID: manual.id)?.kind, .pending)
+        XCTAssertEqual(store.placement(outlineItemID: manual.id)?.relativeItemTitleSnapshot, "正文項目")
+    }
+
+    func testV3StoreMigratesToV4WithoutCreatingStageStartsOrManualPlacements() throws {
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Sailune-story-planning-v3-v4-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: storeURL) }
+        let bookID = UUID()
+        let stageID: UUID
+        let itemID: UUID
+
+        do {
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV3.self)
+            let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: storeURL)])
+            let context = container.mainContext
+            let line = OutlineStoryLine(bookID: bookID, title: "主線", kind: .main)
+            let stage = OutlineStage(bookID: bookID, storyLineID: line.id, title: "階段 1")
+            let item = OutlineItem(bookID: bookID, storyLineID: line.id, stageID: stage.id, title: "舊手動項目")
+            context.insert(line)
+            context.insert(stage)
+            context.insert(item)
+            try context.save()
+            stageID = stage.id
+            itemID = item.id
+        }
+
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryPlanningMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: storeURL)]
+        )
+        let store = try StoryPlanningStore(container: container)
+        XCTAssertNotNil(store.stages(storyLineID: store.storyLines(bookID: bookID)[0].id).first(where: { $0.id == stageID }))
+        XCTAssertNotNil(store.items(bookID: bookID).first(where: { $0.id == itemID }))
+        XCTAssertNil(store.stageStart(stageID: stageID))
+        XCTAssertNil(store.placement(outlineItemID: itemID))
+        let item = try XCTUnwrap(store.items(bookID: bookID).first(where: { $0.id == itemID }))
+        XCTAssertEqual(store.orderedItems(storyLineID: item.storyLineID, stageID: stageID, sections: []).map(\.id), [itemID])
+        try store.setPlacement(item, kind: .stageStart)
+        let reopened = try StoryPlanningStore(container: container)
+        XCTAssertEqual(reopened.placement(outlineItemID: itemID)?.kind, .stageStart)
+    }
+
+    func testSiblingPlacementReorderingPreservesChildren() throws {
+        let container = try makePlanningContainer()
+        let store = try StoryPlanningStore(container: container)
+        let line = try store.createStoryLine(bookID: UUID(), kind: .branch)
+        let first = try store.createOutlineItem(storyLine: line)
+        let second = try store.createOutlineItem(storyLine: line)
+        let child = try store.createOutlineItem(storyLine: line)
+        try store.setPlacement(first, kind: .stageStart)
+        try store.setPlacement(second, kind: .stageStart)
+        try store.setPlacement(child, kind: .afterItem, after: first)
+        try store.moveManualItem(second, earlier: true)
+        let reopened = try StoryPlanningStore(container: container)
+        XCTAssertEqual(reopened.orderedItems(storyLineID: line.id, stageID: nil, sections: []).map(\.id), [second.id, first.id, child.id])
+        try reopened.moveManualItem(second, earlier: false)
+        XCTAssertEqual(reopened.orderedItems(storyLineID: line.id, stageID: nil, sections: []).map(\.id), [first.id, child.id, second.id])
+    }
+
+    func testMovingPlacementTargetKeepsDependentsVisibleAndPending() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let line = try store.createStoryLine(bookID: UUID(), kind: .main)
+        let first = try store.createStage(storyLine: line)
+        let second = try store.createStage(storyLine: line)
+        let target = try store.createOutlineItem(storyLine: line, stage: first)
+        let child = try store.createOutlineItem(storyLine: line, stage: first)
+        try store.setPlacement(child, kind: .afterItem, after: target)
+        XCTAssertThrowsError(try store.setPlacement(target, kind: .afterItem, after: child))
+        try store.moveOutlineItem(target, to: second)
+        XCTAssertEqual(store.placement(outlineItemID: child.id)?.kind, .pending)
+        XCTAssertEqual(store.orderedItems(storyLineID: line.id, stageID: first.id, sections: []).map(\.id), [child.id])
+    }
+
+    func testProseWithoutMatchingStageFallsBackToLastStage() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let line = try store.createStoryLine(bookID: bookID, kind: .main)
+        _ = try store.createStage(storyLine: line)
+        let last = try store.createStage(storyLine: line)
+        let section = Section(id: UUID(), title: "第一節", content: AttributedString("正文"))
+        let item = try store.createOutlineItemFromProse(kind: .main, title: "正文", anchorText: "正文", anchorOffset: 0, bookID: bookID, sectionID: section.id, sections: [section])
+        XCTAssertEqual(item.stageID, last.id)
+        let unknown = try store.createOutlineItemFromProse(kind: .plannedAddition, title: "未知位置", anchorText: "正文", anchorOffset: 0, bookID: bookID, sectionID: UUID())
+        XCTAssertEqual(unknown.stageID, last.id)
+    }
+
+    func testProseBeforeAllStartsFallsBackToDisplayedLastStage() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let line = try store.createStoryLine(bookID: bookID, kind: .main)
+        let early = Section(id: UUID(), title: "前", content: AttributedString("正文"))
+        let middle = Section(id: UUID(), title: "中", content: AttributedString("正文"))
+        let late = Section(id: UUID(), title: "後", content: AttributedString("正文"))
+        let last = try store.createStage(storyLine: line, start: OutlineStageStartLocation(volumeID: UUID(), sectionID: late.id, volumeTitle: "幕", sectionTitle: late.title))
+        _ = try store.createStage(storyLine: line, start: OutlineStageStartLocation(volumeID: UUID(), sectionID: middle.id, volumeTitle: "幕", sectionTitle: middle.title))
+        let item = try store.createOutlineItemFromProse(kind: .main, title: "正文", anchorText: "正文", anchorOffset: 0, bookID: bookID, sectionID: early.id, sections: [early, middle, late])
+        XCTAssertEqual(item.stageID, last.id)
     }
 
     func testDeletingOutlineItemAlsoDeletesOnlyItsAnchor() throws {

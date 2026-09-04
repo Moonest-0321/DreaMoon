@@ -2,16 +2,18 @@
 
 > 狀態：active
 >
-> 更新時間：2026-09-03（Asia/Taipei）
+> 更新時間：2026-09-04（Asia/Taipei）
 >
 > 工作單元：V4.3 故事背景引導、大綱文本排序與階段分欄
 >
 > 對應工作單：`docs/work-items/current.md`
 >
-> 目前階段：verification（R=approved；U=approved；I=approved）
+> 目前階段：implementation（V4.3.1 R=approved；U=approved；I=approved）
 
 ## 已決定
 
+- 最新修正（2026-09-04）：使用者要求正文新增先直接對位，找不到則放最後。已改為對應階段優先、無匹配時依畫面排序取末階段；無階段才未分階段。下方「無起點保持未分階段」屬已被取代的舊決策。此次不改 UI、schema 或既有項目歸屬。
+- 本次驗證：沿用 `/tmp/SailuneDerivedDataV431` 的完整 `xcodebuild test` 命令，43 項通過、exit 0；`git diff --check` 通過。Release 未重跑。下一步仍為隔離資料 UI 冒煙。
 - 目前產品版本是 V4.2.1；V4.3 是正在設計的下一個產品版本。SwiftData schema 版本另行計算。
 - V4.3 方向包含：故事背景的選填引導並保留自由填寫區、正文來源優先的大綱排序、以及主線階段獨立分欄。
 - 使用者確認故事背景先採五個建議欄位，確認文本排序規則，並要求保留項目跨階段移動。
@@ -21,6 +23,13 @@
 - 使用者於 2026-09-03 確認 UI 提案，要求提出實作與測試計畫。
 - 使用者於 2026-09-03 批准實作與測試計畫；可開始修改功能程式。
 - 使用者修正規則：所有手動新增主線項目一律進入最後階段；從正文加入時，每個階段以最早正文來源位置作為開始標記，項目歸入最近且不晚於其位置的階段。
+- 使用者指定先移除手動排序操作：項目改為唯讀分別顯示正文來源「卷」與「節」；沒有可用來源時兩欄均顯示「從缺」。既有 `sortOrder` 保留為無來源項目的內部穩定後備排序，待後續決定新的手動機制。
+- 使用者指定刪除階段時不需將項目跳轉到未分階段：直接刪除該階段、所屬項目與其正文標記，正文內容保留。
+- 使用者於 2026-09-04 指定階段開始統一以「幕／節次」定位；來源被刪除時保留並標記刪除，而非自動改指向其他位置。
+- 使用者於 2026-09-04 指定「已完成」只可由正文建立；手動項目需要可理解的安置方式，而不是裸露排序數字。
+- UI 提案前必須先實際檢視 app 現況；本輪已檢視三欄工作區與右側大綱欄，將保留既有頁籤與故事線入口。
+- 使用者於 2026-09-04 確認 UI：保留三欄與右側大綱入口，階段卡顯示幕／節次定位，項目採摘要／展開編輯，手動項目在階段內語意化安置。
+- V4.3.1 採 StoryPlanning schema V4 的兩個中繼模型保存階段開始定位與手動安置；V3 模型欄位不改寫，舊資料不推定回填。
 
 ## 暫時假設
 
@@ -30,14 +39,27 @@
 
 ## 待確認
 
-1. 人工 UI 冒煙：背景空白／舊文字、收合、最後階段、新增／移動／刪除、時間軸與正文回跳。
+1. 無；使用者已確認 V4.3.1 實作與測試計畫。
 
 ## 工作樹與驗證
 
 - 工作目錄原有 17 個未提交檔案，屬 V4.2.1 的故事規劃整合、刪除、來源錨點、schema V3、測試與文件；本次新增 V4.3 背景引導、正文優先排序、主線階段收合／移動／安全刪除與測試，保留既有修改邊界。
-- 已讀取 `docs/development-workflow.md`、`docs/prd-v4.2-outline.md`、`Sailune/BookOutline.swift`、`Sailune/StoryTag.swift`、`Sailune/OutlineViews.swift`，確認現況：背景為單一長文字、排序為手填 `sortOrder`、階段為項目層級的可選 `stageID`。
-- Debug build、無簽章 Release build、`git diff --check` 通過；完整 macOS 測試 35 項成功、0 項失敗。首次嘗試新增 schema V4 導致測試 runner 啟動時中止，已改採相容的既有欄位結構化保存並重跑成功。
+- 已讀取 `docs/development-workflow.md`、`docs/prd-v4.2-outline.md`、`Sailune/BookOutline.swift`、`Sailune/StoryTag.swift`、`Sailune/OutlineViews.swift`，確認 V4.2.1 原本為單一背景文字、手填 `sortOrder`、階段為項目層級的可選 `stageID`；V4.3 已改採背景引導、正文優先排序與獨立階段欄位。
+- Debug build、無簽章 Release build、`git diff --check` 通過；完整 macOS 測試 39 項成功、0 項失敗。V4.3.1 新增 V3→V4 檔案遷移、手動完成限制、掛點刪除回待安置測試，以及右欄的階段定位與摘要／展開介面。尚未以隔離資料完成 app 內人工 UI 冒煙，避免升級使用者現有故事規劃資料檔。
 
 ## 唯一下一步
 
-1. 在 app 內完成 V4.3 人工 UI 冒煙，依結果決定驗收或修正。
+1. 建立隔離故事規劃資料並在 app 內完成 V4.3.1 冒煙：階段定位、來源已刪除、摘要／展開、手動安置與舊手動完成提示。
+
+## 2026-09-04 再檢視檢查點（優先於上方舊驗證記錄）
+
+- 本輪工作單元：核對已批准的大綱規則，修復可重現的可見性、定位、狀態與排序缺口；非目標為重新設計整體工作區、發布或升級使用者正式資料。
+- 修正舊 V3 手動項目無安置中繼資料時不出現在排序結果、首次安置遭拒的問題；未解析掛點／循環資料亦以後備順序保留可見。
+- 掛點跨階段移動時，原階段的依附項目改待安置；提示統一為原安置位置失效，避免把移動誤稱刪除。掛點名稱顯示目前標題。
+- 無有效階段開始位置（或正文在所有起點之前）時保持未分階段；同節起點使用穩定順序。階段與開始位置改為單次儲存。
+- 補上階段設定／重新定位入口及同掛點上／下移動。正文「主線草稿」維持草稿顯示，不以錨點存在直接顯示完成。
+- 修改邊界：本輪僅追加修改 StoryTag.swift、OutlineViews.swift、V42OutlineTests.swift 與狀態／規格文件；保留開始工作時既有未提交變更，沒有回復檔案、提交或修改正式故事資料。
+- 最後一次 `xcodebuild test -quiet -project Sailune.xcodeproj -scheme Sailune -destination 'platform=macOS' -derivedDataPath /tmp/SailuneDerivedDataV431 CODE_SIGNING_ALLOWED=NO`：42 項通過、0 失敗，exit 0。新增跨階段掛點、無有效起點、兄弟排序回歸，並擴充 V3→V4 舊項目可見／首次安置驗證。
+- 尚未驗證：最新 UI 的隔離資料實際操作、窄欄視覺密度、持久化失敗注入及完整來源刪除／重開矩陣。不得將自動測試通過等同全部驗收完成。
+- 本輪無簽章 Release：`xcodebuild build -quiet -project Sailune.xcodeproj -scheme Sailune -configuration Release -destination 'platform=macOS' -derivedDataPath /tmp/SailuneDerivedDataV431Release CODE_SIGNING_ALLOWED=NO` 完成、exit 0；`git diff --check` 通過。
+- 下一步維持上述隔離 UI 冒煙；最小閱讀集合為 current 工作單、本交接、OutlineViews.swift、StoryTag.swift、V42OutlineTests.swift。

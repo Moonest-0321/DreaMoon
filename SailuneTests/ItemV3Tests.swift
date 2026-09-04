@@ -16,7 +16,7 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV3.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,

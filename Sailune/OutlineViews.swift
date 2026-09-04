@@ -285,8 +285,9 @@ private struct StoryLineContentView: View {
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
     @Binding var errorMessage: String?
+    @State private var showingStageStartSheet = false
 
-    private var stages: [OutlineStage] { planningStore.stages(storyLineID: storyLine.id) }
+    private var stages: [OutlineStage] { planningStore.orderedStages(storyLineID: storyLine.id, sections: sections) }
     private var sections: [Section] { BookStructure.orderedSections(in: book) }
 
     var body: some View {
@@ -312,6 +313,9 @@ private struct StoryLineContentView: View {
             }
         }
         .padding(12)
+        .sheet(isPresented: $showingStageStartSheet) {
+            StageStartEditorSheet(book: book, storyLine: storyLine, errorMessage: $errorMessage)
+        }
     }
 
     private var storyLineHeader: some View {
@@ -336,6 +340,7 @@ private struct StoryLineContentView: View {
     private var mainStoryContent: some View {
         if stages.isEmpty {
             UnassignedStageSectionView(
+                book: book,
                 storyLine: storyLine,
                 presentation: presentation,
                 allStages: [],
@@ -348,6 +353,7 @@ private struct StoryLineContentView: View {
         } else {
             ForEach(stages) { stage in
                 StageSectionView(
+                    book: book,
                     stage: stage,
                     storyLine: storyLine,
                     presentation: presentation,
@@ -358,6 +364,7 @@ private struct StoryLineContentView: View {
                 )
             }
             UnassignedStageSectionView(
+                book: book,
                 storyLine: storyLine,
                 presentation: presentation,
                 allStages: stages,
@@ -372,6 +379,7 @@ private struct StoryLineContentView: View {
     private func itemList(_ displayedItems: [OutlineItem], stage: OutlineStage?) -> some View {
         ForEach(displayedItems) { item in
             OutlineItemEditor(
+                book: book,
                 item: item,
                 presentation: presentation,
                 availableStages: stages,
@@ -397,11 +405,7 @@ private struct StoryLineContentView: View {
     }
 
     private func createStage() {
-        do {
-            _ = try planningStore.createStage(storyLine: storyLine)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        showingStageStartSheet = true
     }
 
     private func createItem(stage: OutlineStage? = nil) {
@@ -458,7 +462,69 @@ private struct TimelineStoryLinesView: View {
     }
 }
 
+private struct StageStartEditorSheet: View {
+    let book: Book
+    let storyLine: OutlineStoryLine
+    var stage: OutlineStage? = nil
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(\.dismiss) private var dismiss
+    @Binding var errorMessage: String?
+    @State private var title = ""
+    @State private var selectedVolumeID: UUID?
+    @State private var selectedSectionID: UUID?
+
+    private var volumes: [Volume] { BookStructure.orderedVolumes(in: book) }
+    private var sections: [Section] {
+        guard let selectedVolumeID, let volume = volumes.first(where: { $0.id == selectedVolumeID }) else { return [] }
+        return BookStructure.orderedSections(in: volume)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(stage == nil ? "建立主線階段" : "重新設定開始位置").font(.headline)
+            if stage == nil { TextField("階段名稱", text: $title) }
+            Picker("開始幕", selection: $selectedVolumeID) {
+                Text("選擇幕").tag(Optional<UUID>.none)
+                ForEach(volumes) { volume in Text(volume.title.isEmpty ? "未命名幕" : volume.title).tag(Optional(volume.id)) }
+            }
+            Picker("開始節次", selection: $selectedSectionID) {
+                Text("選擇節次").tag(Optional<UUID>.none)
+                ForEach(sections) { section in Text(section.title.isEmpty ? "未命名節次" : section.title).tag(Optional(section.id)) }
+            }
+            if volumes.isEmpty || (selectedVolumeID != nil && sections.isEmpty) {
+                Text("請先在左欄建立幕與節次，才能為主線設定開始位置。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack { Spacer(); Button("取消") { dismiss() }; Button(stage == nil ? "建立" : "儲存定位", action: create).buttonStyle(.borderedProminent).disabled(selectedVolumeID == nil || selectedSectionID == nil) }
+        }
+        .padding(20).frame(width: 360)
+        .onChange(of: selectedVolumeID) { _, _ in selectedSectionID = nil }
+    }
+
+    private func create() {
+        guard let volumeID = selectedVolumeID,
+              let sectionID = selectedSectionID,
+              let volume = volumes.first(where: { $0.id == volumeID }),
+              let section = sections.first(where: { $0.id == sectionID }) else { return }
+        do {
+            let location = OutlineStageStartLocation(
+                    volumeID: volumeID,
+                    sectionID: sectionID,
+                    volumeTitle: volume.title,
+                    sectionTitle: section.title
+            )
+            if let stage {
+                try planningStore.setStageStart(stage, to: location)
+            } else {
+                _ = try planningStore.createStage(storyLine: storyLine, title: title, start: location)
+            }
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
+    }
+}
+
 private struct StageSectionView: View {
+    let book: Book
     @Bindable var stage: OutlineStage
     let storyLine: OutlineStoryLine
     let presentation: BookOutlinePresentation
@@ -469,6 +535,7 @@ private struct StageSectionView: View {
     @Binding var errorMessage: String?
     @State private var isExpanded = false
     @State private var showingDeleteConfirmation = false
+    @State private var showingStartEditor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -490,9 +557,18 @@ private struct StageSectionView: View {
                 .buttonStyle(.borderless)
                 .help("刪除階段")
             }
+            Text(stageStartDescription)
+                .font(.caption)
+                .foregroundStyle(stageStartIsMissing ? .red : .secondary)
+            Button(stageStartIsMissing ? "設定開始位置" : "重新定位", systemImage: "mappin.and.ellipse") {
+                showingStartEditor = true
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
             if isExpanded {
                 ForEach(items) { item in
                     OutlineItemEditor(
+                        book: book,
                         item: item,
                         presentation: presentation,
                         availableStages: allStages,
@@ -507,11 +583,14 @@ private struct StageSectionView: View {
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $showingStartEditor) {
+            StageStartEditorSheet(book: book, storyLine: storyLine, stage: stage, errorMessage: $errorMessage)
+        }
         .confirmationDialog("刪除階段？", isPresented: $showingDeleteConfirmation) {
             Button("刪除階段", role: .destructive, action: deleteStage)
             Button("取消", role: .cancel) { }
         } message: {
-            Text("將刪除「\(stage.title)」；其中 \(items.count) 個大綱項目與正文來源會保留並移至未分階段。")
+            Text("將刪除「\(stage.title)」及其中 \(items.count) 個大綱項目與正文標記；正文內容不會被刪除。")
         }
     }
 
@@ -523,6 +602,21 @@ private struct StageSectionView: View {
                 stage.updatedAt = Date()
             }
         )
+    }
+
+    private var stageStartIsMissing: Bool {
+        guard let start = planningStore.stageStart(stageID: stage.id) else { return true }
+        return !BookStructure.orderedVolumes(in: book).contains { volume in
+            volume.id == start.volumeID && BookStructure.orderedSections(in: volume).contains { $0.id == start.sectionID }
+        }
+    }
+
+    private var stageStartDescription: String {
+        guard let start = planningStore.stageStart(stageID: stage.id) else { return "需要設定開始位置" }
+        if stageStartIsMissing { return "原定位：\(start.volumeTitleSnapshot) · \(start.sectionTitleSnapshot)（來源已刪除）" }
+        let volume = BookStructure.orderedVolumes(in: book).first { $0.id == start.volumeID }
+        let section = volume.flatMap { BookStructure.orderedSections(in: $0).first { $0.id == start.sectionID } }
+        return "開始於：\(volume?.title ?? start.volumeTitleSnapshot) · \(section?.title ?? start.sectionTitleSnapshot)"
     }
 
     private func save() {
@@ -551,6 +645,7 @@ private struct StageSectionView: View {
 }
 
 private struct UnassignedStageSectionView: View {
+    let book: Book
     let storyLine: OutlineStoryLine
     let presentation: BookOutlinePresentation
     let allStages: [OutlineStage]
@@ -569,7 +664,7 @@ private struct UnassignedStageSectionView: View {
             .buttonStyle(.plain)
             if isExpanded {
                 ForEach(items) { item in
-                    OutlineItemEditor(item: item, presentation: presentation, availableStages: allStages, onOpenOutlineItem: onOpenOutlineItem, errorMessage: $errorMessage)
+                    OutlineItemEditor(book: book, item: item, presentation: presentation, availableStages: allStages, onOpenOutlineItem: onOpenOutlineItem, errorMessage: $errorMessage)
                 }
                 Button("新增大綱項目", systemImage: "plus", action: createItem)
                     .buttonStyle(.bordered)
@@ -590,6 +685,7 @@ private struct UnassignedStageSectionView: View {
 }
 
 private struct OutlineItemEditor: View {
+    let book: Book
     @Bindable var item: OutlineItem
     let presentation: BookOutlinePresentation
     let availableStages: [OutlineStage]
@@ -597,8 +693,10 @@ private struct OutlineItemEditor: View {
     @Environment(StoryPlanningStore.self) private var planningStore
     @Binding var errorMessage: String?
     @State private var showingDeleteConfirmation = false
+    @State private var isExpanded = false
 
     var body: some View {
+        let source = sourceLocation
         HStack(alignment: .top, spacing: 8) {
             if presentation == .timeline {
                 VStack(spacing: 0) {
@@ -613,6 +711,7 @@ private struct OutlineItemEditor: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                DisclosureGroup(isExpanded: $isExpanded) {
                 TextField("大綱標題", text: titleBinding)
                     .font(.subheadline.weight(.semibold))
                     .textFieldStyle(.plain)
@@ -630,18 +729,36 @@ private struct OutlineItemEditor: View {
                 }
 
                 HStack(spacing: 8) {
-                    Picker("狀態", selection: statusBinding) {
-                        ForEach(OutlineItemStatus.allCases) { status in
-                            Text(status.rawValue).tag(status)
+                    if planningStore.anchor(outlineItemID: item.id) != nil {
+                        Label(item.status.displayTitle, systemImage: item.status == .occurred ? "checkmark.circle.fill" : "doc.text")
+                            .foregroundStyle(summaryColor)
+                            .font(.caption.weight(.semibold))
+                    } else if item.status == .occurred {
+                        Menu {
+                            Button("改為草稿") { setLegacyManualStatus(.draft) }
+                            Button("改為預定") { setLegacyManualStatus(.planned) }
+                            Button("改為背景") { setLegacyManualStatus(.background) }
+                        } label: {
+                            Label("需要調整狀態", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
                         }
+                    } else {
+                        Picker("狀態", selection: manualStatusBinding) {
+                            ForEach(OutlineItemStatus.allCases.filter { $0 != .occurred }) { status in
+                                Text(status.displayTitle).tag(status)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
                     }
-                    .labelsHidden()
-                    .fixedSize()
 
-                    TextField("順序", value: sortOrderBinding, format: .number)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 56)
-                        .help("手動排序值")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("卷：\(source.volume)", systemImage: "books.vertical")
+                        Label("節：\(source.section)", systemImage: "text.book.closed")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                     if !availableStages.isEmpty {
                         Menu {
@@ -656,6 +773,26 @@ private struct OutlineItemEditor: View {
                     }
                 }
 
+                if planningStore.anchor(outlineItemID: item.id) == nil {
+                    Menu {
+                        Button("待安置") { place(.pending) }
+                        Button("放在本幕開頭") { place(.stageStart) }
+                        Button("放在本幕結尾") { place(.stageEnd) }
+                        if let placement = planningStore.placement(outlineItemID: item.id), placement.kind != .pending {
+                            Divider()
+                            Button("同位置向上移") { reorder(earlier: true) }
+                            Button("同位置向下移") { reorder(earlier: false) }
+                        }
+                        Divider()
+                        ForEach(availablePlacementTargets) { target in
+                            Button("接在「\(target.title)」後") { place(.afterItem, after: target) }
+                        }
+                    } label: {
+                        Label(placementTitle, systemImage: "arrowshape.turn.up.right")
+                    }
+                    .fixedSize()
+                }
+
                 HStack {
                     Spacer()
                     Button("儲存", systemImage: "square.and.arrow.down", action: save)
@@ -667,6 +804,19 @@ private struct OutlineItemEditor: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("刪除大綱項目")
+                }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Circle()
+                            .fill(summaryColor)
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            Text(summaryLocation).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Text(summaryStatus).font(.caption.weight(.semibold)).foregroundStyle(summaryColor)
+                    }
                 }
             }
             .padding(10)
@@ -688,16 +838,66 @@ private struct OutlineItemEditor: View {
         Binding(get: { item.detail }, set: { newValue in update { item.detail = newValue } })
     }
 
-    private var statusBinding: Binding<OutlineItemStatus> {
-        Binding(get: { item.status }, set: { newValue in update { item.status = newValue } })
-    }
-
-    private var sortOrderBinding: Binding<Int> {
-        Binding(get: { item.sortOrder }, set: { newValue in update { item.sortOrder = max(0, newValue) } })
+    private var manualStatusBinding: Binding<OutlineItemStatus> {
+        Binding(get: { item.status }, set: { newValue in
+            do { try planningStore.setManualStatus(item, to: newValue) }
+            catch { errorMessage = error.localizedDescription }
+        })
     }
 
     private var currentStageTitle: String {
         availableStages.first(where: { $0.id == item.stageID })?.title ?? "未分階段"
+    }
+
+    private var summaryColor: Color {
+        if planningStore.anchor(outlineItemID: item.id) != nil { return item.status == .occurred ? .green : .accentColor }
+        return item.status == .occurred ? .orange : .accentColor
+    }
+
+    private var summaryStatus: String {
+        if planningStore.anchor(outlineItemID: item.id) != nil { return item.status.displayTitle }
+        return item.status == .occurred ? "需要調整" : item.status.displayTitle
+    }
+
+    private var summaryLocation: String {
+        if planningStore.anchor(outlineItemID: item.id) != nil { return "正文：\(sourceLocation.volume) · \(sourceLocation.section)" }
+        return "安置：\(placementTitle)"
+    }
+
+    private var availablePlacementTargets: [OutlineItem] {
+        planningStore.items(storyLineID: item.storyLineID)
+            .filter { $0.stageID == item.stageID && $0.id != item.id }
+    }
+
+    private var placementTitle: String {
+        guard let placement = planningStore.placement(outlineItemID: item.id) else { return "待安置" }
+        switch placement.kind {
+        case .pending: return placement.relativeItemTitleSnapshot.isEmpty ? "待安置" : "原安置位置已失效，請重新安置"
+        case .stageStart: return "幕首"
+        case .stageEnd: return "幕末"
+        case .afterItem:
+            guard let target = availablePlacementTargets.first(where: { $0.id == placement.relativeItemID }) else {
+                return "原安置位置已失效，請重新安置"
+            }
+            return "接在「\(target.title)」後"
+        }
+    }
+
+    private var sourceLocation: OutlineItemSourceLocation {
+        guard let anchor = planningStore.anchor(outlineItemID: item.id) else { return .missing }
+
+        for volume in BookStructure.orderedVolumes(in: book) {
+            guard let section = BookStructure.orderedSections(in: volume).first(where: { $0.id == anchor.sectionID }) else {
+                continue
+            }
+            let volumeTitle = volume.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return OutlineItemSourceLocation(
+                volume: volumeTitle.isEmpty ? "從缺" : volumeTitle,
+                section: sectionTitle.isEmpty ? "從缺" : sectionTitle
+            )
+        }
+        return .missing
     }
 
     private func update(_ change: () -> Void) {
@@ -729,4 +929,26 @@ private struct OutlineItemEditor: View {
         }
     }
 
+    private func place(_ kind: OutlineItemPlacementKind, after target: OutlineItem? = nil) {
+        do { try planningStore.setPlacement(item, kind: kind, after: target) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func setLegacyManualStatus(_ status: OutlineItemStatus) {
+        do { try planningStore.setManualStatus(item, to: status) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func reorder(earlier: Bool) {
+        do { try planningStore.moveManualItem(item, earlier: earlier) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+}
+
+private struct OutlineItemSourceLocation {
+    let volume: String
+    let section: String
+
+    static let missing = OutlineItemSourceLocation(volume: "從缺", section: "從缺")
 }

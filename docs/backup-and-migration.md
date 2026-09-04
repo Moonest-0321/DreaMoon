@@ -43,8 +43,9 @@
 
 ## V4.2 故事規劃遷移
 
-- `StoryPlanningSchemaV1`、V2 均保持不變；V3 新增 `OutlineItemAnchor`，不回寫 V2 的 `OutlineItem` snapshot。
+- `StoryPlanningSchemaV1`、V2、V3 均保持不變；V3 新增 `OutlineItemAnchor`，不回寫 V2 的 `OutlineItem` snapshot；V4 只新增獨立的階段開始定位與手動安置模型，不改寫 V3 的 `OutlineStage`／`OutlineItem`。
 - store 檔名維持 `Sailune-v5-story-planning.store`，由 SwiftData lightweight migration 原地升級；發布前仍需把它與主 store 一起備份。
 - V2→V3 開啟後在同一個 save 內將主軸／支線／計劃加入轉為同 UUID 的大綱項目及錨點，成功後才刪除原標籤；伏筆／修改不變。檔案型測試會驗證轉換與重開不重複。
 - V4.3 的故事背景引導不新增 SwiftData 欄位或 schema；使用既有 `backgroundText` 的可版本化結構值保存。舊自由文字讀取時視為「其他背景」，首次儲存才轉為結構值，內容不遺失。
+- V3→V4 以 lightweight migration 開啟。既有階段不從最早正文項目猜測開始位置，既有手動項目不猜測安置位置；兩者保留原資料並在 UI 顯示需設定／待安置提示。檔案型測試驗證舊 V3 資料重開後 UUID 與數量不變。
 - 主 store 內既有 `Timeline`、`Node`、`Event` 不刪除、不改寫，也不自動複製為 V4.2 `OutlineItem`；第一版採保留策略，避免在時間語意尚未定案時錯誤轉換使用者資料。

@@ -24,15 +24,25 @@ enum StoryPlanningSchemaV3: VersionedSchema {
     }
 }
 
+/// V4 adds planning metadata without changing the released V3 outline models.
+/// Both records link to the main book store by UUID rather than SwiftData relationships.
+enum StoryPlanningSchemaV4: VersionedSchema {
+    static var versionIdentifier = Schema.Version(4, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        StoryPlanningSchemaV3.models + [OutlineStageStartAnchor.self, OutlineItemPlacement.self]
+    }
+}
+
 enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self]
+        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self]
     }
 
     static var stages: [MigrationStage] {
         [
             .lightweight(fromVersion: StoryPlanningSchemaV1.self, toVersion: StoryPlanningSchemaV2.self),
-            .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self)
+            .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self),
+            .lightweight(fromVersion: StoryPlanningSchemaV3.self, toVersion: StoryPlanningSchemaV4.self)
         ]
     }
 }
@@ -54,6 +64,24 @@ enum OutlineItemStatus: String, CaseIterable, Identifiable, Hashable {
     case planned = "預定"
 
     var id: String { rawValue }
+
+    var displayTitle: String { self == .occurred ? "已完成" : rawValue }
+}
+
+enum OutlineItemPlacementKind: String, CaseIterable, Identifiable, Hashable {
+    case pending
+    case stageStart
+    case afterItem
+    case stageEnd
+
+    var id: String { rawValue }
+}
+
+struct OutlineStageStartLocation: Equatable {
+    let volumeID: UUID
+    let sectionID: UUID
+    let volumeTitle: String
+    let sectionTitle: String
 }
 
 /// 將選填引導與自由文字保存於既有背景欄位，讓已發布的 schema V3 可直接讀取舊資料。
@@ -248,5 +276,67 @@ final class OutlineItemAnchor {
 
     func resolvedOffset(in text: String) -> Int {
         ProseAnchorResolver.resolvedOffset(anchorText: anchorText, anchorOffset: anchorOffset, in: text)
+    }
+}
+
+/// An explicit stage start remains meaningful when its source section is later removed.
+@Model
+final class OutlineStageStartAnchor {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var stageID: UUID
+    var bookID: UUID
+    var volumeID: UUID
+    var sectionID: UUID
+    var volumeTitleSnapshot: String
+    var sectionTitleSnapshot: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), stageID: UUID, bookID: UUID, location: OutlineStageStartLocation) {
+        self.id = id
+        self.stageID = stageID
+        self.bookID = bookID
+        self.volumeID = location.volumeID
+        self.sectionID = location.sectionID
+        self.volumeTitleSnapshot = location.volumeTitle
+        self.sectionTitleSnapshot = location.sectionTitle
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+}
+
+/// Manual outline items use semantic placement instead of exposing numeric sort values.
+@Model
+final class OutlineItemPlacement {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var outlineItemID: UUID
+    var kindRawValue: String
+    var relativeItemID: UUID?
+    var relativeItemTitleSnapshot: String
+    var localOrder: Int
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        outlineItemID: UUID,
+        kind: OutlineItemPlacementKind = .pending,
+        relativeItemID: UUID? = nil,
+        relativeItemTitleSnapshot: String = "",
+        localOrder: Int = 0
+    ) {
+        self.id = id
+        self.outlineItemID = outlineItemID
+        self.kindRawValue = kind.rawValue
+        self.relativeItemID = relativeItemID
+        self.relativeItemTitleSnapshot = relativeItemTitleSnapshot
+        self.localOrder = localOrder
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+
+    var kind: OutlineItemPlacementKind {
+        get { OutlineItemPlacementKind(rawValue: kindRawValue) ?? .pending }
+        set { kindRawValue = newValue.rawValue; updatedAt = Date() }
     }
 }
