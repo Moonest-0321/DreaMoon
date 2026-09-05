@@ -49,6 +49,7 @@
 - 同一本書只允許一條 `.main` 故事線；多段主線使用 `OutlineStage`，而不是建立第二條主線。
 - 刪除 `OutlineStage` 時一併刪除所屬 `OutlineItem` 與其 `OutlineItemAnchor`，正文內容不變；刪除後通知編輯器重新載入紅色正文標記。項目只能手動移往同一主線的階段或未分階段。
 - `BookPlanningProfile.backgroundText` 相容保存故事背景引導與其他背景；非結構化舊值一律視為其他背景，避免遺失既有文字。
+- `OutlineTimelineLayout` 是執行期間的唯讀投影，不是 SwiftData 模型：欄位來自目前書籍的幕／節次順序，泳道來自故事線，卡片仍指向原本的 `OutlineItem`。無法解析的位置只進入 `pendingItems`，不會回寫或猜測安置資料。
 
 ## 待改善的模型風險
 

@@ -17,7 +17,6 @@ private enum SailuneInspectorTab: String, CaseIterable, Identifiable {
 }
 
 private enum SailuneOutlineTab: String, CaseIterable, Identifiable {
-    case background = "故事背景"
     case narrative = "敘事大綱"
     case timeline = "時間軸"
     var id: String { rawValue }
@@ -38,7 +37,7 @@ struct WorkspaceInspectorView: View {
     var onOpenStoryTag: ((StoryTag) -> Void)? = nil
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @State private var tab: SailuneInspectorTab = .settings
-    @State private var outlineTab: SailuneOutlineTab = .background
+    @State private var outlineTab: SailuneOutlineTab = .narrative
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,8 +90,6 @@ struct WorkspaceInspectorView: View {
             Divider()
 
             switch outlineTab {
-            case .background:
-                BookBackgroundView(book: book)
             case .narrative:
                 BookOutlineWorkspaceView(book: book, presentation: .narrative, onOpenOutlineItem: onOpenOutlineItem)
             case .timeline:

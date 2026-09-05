@@ -113,6 +113,311 @@ private struct BookBackgroundEditor: View {
     }
 }
 
+private enum BookPlanningWorkspaceTab: String, CaseIterable, Identifiable {
+    case narrative = "敘事大綱"
+    case timeline = "時間軸"
+
+    var id: String { rawValue }
+}
+
+/// 整本書的寬版規劃入口。正文目錄由外層工作區隱藏，這裡只呈現
+/// 敘事大綱與以書籍結構為基準的時間軸。
+@MainActor
+struct BookPlanningWorkspaceView: View {
+    let book: Book
+    let onReturnToWriting: () -> Void
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    @State private var selectedTab: BookPlanningWorkspaceTab = .narrative
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button("回到文本", systemImage: "chevron.left", action: onReturnToWriting)
+                    .buttonStyle(.borderless)
+                Text("大綱工作區")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Picker("大綱呈現", selection: $selectedTab) {
+                    ForEach(BookPlanningWorkspaceTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+
+            switch selectedTab {
+            case .narrative:
+                BookOutlineWorkspaceView(
+                    book: book,
+                    presentation: .narrative,
+                    onOpenOutlineItem: onOpenOutlineItem
+                )
+            case .timeline:
+                BookStructureTimelineView(book: book, onOpenOutlineItem: onOpenOutlineItem)
+            }
+        }
+        .background(Color.appBackground)
+    }
+}
+
+@MainActor
+private struct BookStructureTimelineView: View {
+    let book: Book
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    @Environment(StoryPlanningStore.self) private var planningStore
+
+    private let laneWidth: CGFloat = 160
+    private let columnWidth: CGFloat = 220
+
+    var body: some View {
+        let layout = planningStore.timelineLayout(book: book)
+        let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
+        let validSectionIDs = Set(layout.columns.map(\.sectionID))
+
+        if layout.lanes.isEmpty {
+            ContentUnavailableView {
+                Label("尚未建立故事線", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            } description: {
+                Text("先在敘事大綱建立主線、支線或其他故事線。")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    timelineHeader(columns: layout.columns)
+                    ForEach(layout.lanes) { lane in
+                        timelineLane(
+                            lane,
+                            columns: layout.columns,
+                            itemsByID: itemsByID,
+                            validSectionIDs: validSectionIDs
+                        )
+                    }
+                    pendingItems(
+                        lanes: layout.lanes,
+                        itemsByID: itemsByID,
+                        validSectionIDs: validSectionIDs
+                    )
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    private func timelineHeader(columns: [OutlineTimelineLayout.Column]) -> some View {
+        HStack(spacing: 0) {
+            Text("故事線")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: laneWidth, alignment: .leading)
+                .padding(.horizontal, 10)
+            if columns.isEmpty {
+                Text("尚未建立幕與節次")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: columnWidth, alignment: .center)
+            } else {
+                ForEach(columns) { column in
+                    VStack(spacing: 2) {
+                        Text(column.volumeTitle)
+                            .font(.caption.weight(.semibold))
+                        Text(column.sectionTitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .lineLimit(1)
+                    .frame(width: columnWidth)
+                    .padding(.vertical, 9)
+                    .background(Color.secondary.opacity(0.06))
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(width: 1)
+                    }
+                }
+            }
+        }
+        .background(Color.workspacePanelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func timelineLane(
+        _ lane: OutlineTimelineLayout.Lane,
+        columns: [OutlineTimelineLayout.Column],
+        itemsByID: [UUID: OutlineItem],
+        validSectionIDs: Set<UUID>
+    ) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(lane.kind.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(lane.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+            }
+            .frame(width: laneWidth, alignment: .leading)
+            .padding(10)
+
+            if columns.isEmpty {
+                Color.clear.frame(width: columnWidth, height: 76)
+            } else {
+                ForEach(columns) { column in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(lane.entries.filter { $0.columnIndex == column.index }) { entry in
+                            if let item = itemsByID[entry.itemID] {
+                                TimelineOutlineItemCard(
+                                    item: item,
+                                    validSectionIDs: validSectionIDs,
+                                    onOpenOutlineItem: onOpenOutlineItem
+                                )
+                            }
+                        }
+                    }
+                    .padding(7)
+                    .frame(width: columnWidth, alignment: .topLeading)
+                    .frame(minHeight: 76, alignment: .topLeading)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(width: 1)
+                    }
+                }
+            }
+        }
+        .background(Color.workspacePanelBackground.opacity(0.65))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    @ViewBuilder
+    private func pendingItems(
+        lanes: [OutlineTimelineLayout.Lane],
+        itemsByID: [UUID: OutlineItem],
+        validSectionIDs: Set<UUID>
+    ) -> some View {
+        let lanesWithPending = lanes.filter { !$0.pendingItemIDs.isEmpty }
+        if !lanesWithPending.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("待安置", systemImage: "tray")
+                    .font(.subheadline.weight(.semibold))
+                Text("下列項目沒有可用的幕／節次位置，時間軸不會替作者猜測位置。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                LazyHStack(alignment: .top, spacing: 8) {
+                    ForEach(lanesWithPending) { lane in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(lane.title)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(lane.pendingItemIDs, id: \.self) { itemID in
+                                if let item = itemsByID[itemID] {
+                                    TimelineOutlineItemCard(
+                                        item: item,
+                                        validSectionIDs: validSectionIDs,
+                                        onOpenOutlineItem: onOpenOutlineItem
+                                    )
+                                        .frame(width: columnWidth - 20)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [5]))
+            )
+            .padding(.top, 14)
+        }
+    }
+}
+
+@MainActor
+private struct TimelineOutlineItemCard: View {
+    let item: OutlineItem
+    let validSectionIDs: Set<UUID>
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    @Environment(StoryPlanningStore.self) private var planningStore
+
+    var body: some View {
+        Group {
+            if let anchor = resolvedAnchor {
+                Button { onOpenOutlineItem?(item, anchor) } label: { cardContent }
+                    .buttonStyle(.plain)
+                    .help("回到正文")
+            } else {
+                cardContent
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(statusColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+            Text(statusDescription)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(statusColor)
+            Text(locationDescription)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var statusColor: Color {
+        if hasDeletedSource { return .orange }
+        if resolvedAnchor != nil, item.status == .occurred { return .green }
+        if planningStore.anchor(outlineItemID: item.id) == nil, item.status == .occurred { return .orange }
+        return .accentColor
+    }
+
+    private var statusDescription: String {
+        if planningStore.anchor(outlineItemID: item.id) == nil, item.status == .occurred {
+            return "需要調整狀態"
+        }
+        return item.status.displayTitle
+    }
+
+    private var locationDescription: String {
+        if resolvedAnchor != nil { return "正文來源" }
+        if hasDeletedSource { return "來源已刪除" }
+        guard let placement = planningStore.placement(outlineItemID: item.id) else { return "待安置" }
+        switch placement.kind {
+        case .pending: return "待安置"
+        case .stageStart: return "幕首"
+        case .stageEnd: return "幕末"
+        case .afterItem:
+            return placement.relativeItemTitleSnapshot.isEmpty
+                ? "接在項目後"
+                : "接在「\(placement.relativeItemTitleSnapshot)」後"
+        }
+    }
+
+    private var resolvedAnchor: OutlineItemAnchor? {
+        guard let anchor = planningStore.anchor(outlineItemID: item.id),
+              validSectionIDs.contains(anchor.sectionID) else {
+            return nil
+        }
+        return anchor
+    }
+
+    private var hasDeletedSource: Bool {
+        planningStore.anchor(outlineItemID: item.id) != nil && resolvedAnchor == nil
+    }
+}
+
 @MainActor
 struct BookOutlineWorkspaceView: View {
     let book: Book
@@ -720,12 +1025,16 @@ private struct OutlineItemEditor: View {
                     .lineLimit(2...5)
                     .textFieldStyle(.plain)
 
-                if let anchor = planningStore.anchor(outlineItemID: item.id) {
+                if let anchor = planningStore.anchor(outlineItemID: item.id), sourceIsAvailable {
                     Button("來源：回到正文", systemImage: "text.book.closed") {
                         onOpenOutlineItem?(item, anchor)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
+                } else if planningStore.anchor(outlineItemID: item.id) != nil {
+                    Label("來源已刪除", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 HStack(spacing: 8) {
@@ -850,6 +1159,7 @@ private struct OutlineItemEditor: View {
     }
 
     private var summaryColor: Color {
+        if planningStore.anchor(outlineItemID: item.id) != nil, !sourceIsAvailable { return .orange }
         if planningStore.anchor(outlineItemID: item.id) != nil { return item.status == .occurred ? .green : .accentColor }
         return item.status == .occurred ? .orange : .accentColor
     }
@@ -860,8 +1170,17 @@ private struct OutlineItemEditor: View {
     }
 
     private var summaryLocation: String {
-        if planningStore.anchor(outlineItemID: item.id) != nil { return "正文：\(sourceLocation.volume) · \(sourceLocation.section)" }
+        if planningStore.anchor(outlineItemID: item.id) != nil {
+            return sourceIsAvailable
+                ? "正文：\(sourceLocation.volume) · \(sourceLocation.section)"
+                : "正文來源已刪除"
+        }
         return "安置：\(placementTitle)"
+    }
+
+    private var sourceIsAvailable: Bool {
+        guard let anchor = planningStore.anchor(outlineItemID: item.id) else { return false }
+        return BookStructure.orderedSections(in: book).contains { $0.id == anchor.sectionID }
     }
 
     private var availablePlacementTargets: [OutlineItem] {

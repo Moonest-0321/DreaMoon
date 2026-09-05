@@ -84,6 +84,40 @@ struct OutlineStageStartLocation: Equatable {
     let sectionTitle: String
 }
 
+/// 寬版時間軸的唯讀投影；它只保存目前畫面需要的位置資訊，
+/// 不建立第二份大綱資料，也不寫回故事規劃 store。
+struct OutlineTimelineLayout: Equatable {
+    struct Column: Identifiable, Equatable {
+        let sectionID: UUID
+        let volumeTitle: String
+        let sectionTitle: String
+        let index: Int
+
+        var id: UUID { sectionID }
+    }
+
+    struct Entry: Identifiable, Equatable {
+        let itemID: UUID
+        let columnIndex: Int
+        let sequence: Int
+
+        var id: UUID { itemID }
+    }
+
+    struct Lane: Identifiable, Equatable {
+        let storyLineID: UUID
+        let title: String
+        let kind: OutlineStoryLineKind
+        let entries: [Entry]
+        let pendingItemIDs: [UUID]
+
+        var id: UUID { storyLineID }
+    }
+
+    let columns: [Column]
+    let lanes: [Lane]
+}
+
 /// 將選填引導與自由文字保存於既有背景欄位，讓已發布的 schema V3 可直接讀取舊資料。
 struct StoryBackgroundContent: Codable, Equatable {
     var worldBackground = ""

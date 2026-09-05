@@ -156,11 +156,37 @@ enum DeleteTarget: Identifiable {
 struct BookOverviewView: View {
     @Bindable var book: Book
     @State private var sectionToOpen: Section?
+    @State private var isEditingBackground = false
+
     var body: some View {
-        HSplitView {
-            BookInfoPanel(book: book).frame(minWidth: 300, idealWidth: 350, maxWidth: 450)
-            VolumeSectionTreeView(book: book, onSelectSection: openEditor)
-                .frame(minWidth: 300, idealWidth: 400)
+        Group {
+            if isEditingBackground {
+                VStack(spacing: 0) {
+                    HStack {
+                        Button("返回書籍總覽", systemImage: "chevron.left") {
+                            isEditingBackground = false
+                        }
+                        .buttonStyle(.borderless)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    Divider()
+                    ScrollView {
+                        BookBackgroundView(book: book)
+                            .frame(maxWidth: 900, alignment: .leading)
+                            .padding(24)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            } else {
+                HSplitView {
+                    BookInfoPanel(book: book, onOpenBackground: { isEditingBackground = true })
+                        .frame(minWidth: 300, idealWidth: 350, maxWidth: 450)
+                    VolumeSectionTreeView(book: book, onSelectSection: openEditor)
+                        .frame(minWidth: 300, idealWidth: 400)
+                }
+            }
         }
         .navigationTitle(book.title)
         .navigationSubtitle("書籍總覽")
@@ -181,6 +207,8 @@ struct BookOverviewView: View {
 // MARK: - 左側：書本基本資訊面板
 struct BookInfoPanel: View {
     @Bindable var book: Book
+    let onOpenBackground: () -> Void
+    @Environment(StoryPlanningStore.self) private var planningStore
     @State private var showingCoverImporter = false
     @State private var hasCustomCover = false
 
@@ -201,14 +229,6 @@ struct BookInfoPanel: View {
                             set: { book.author = $0; book.updatedAt = Date() }
                         )).textFieldStyle(.roundedBorder)
                     }
-                }
-                Divider()
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("簡介").font(.headline).foregroundStyle(.secondary)
-                    TextField("簡介（選填）", text: Binding(
-                        get: { book.synopsis },
-                        set: { book.synopsis = $0; book.updatedAt = Date() }
-                    ), axis: .vertical).lineLimit(4...8).textFieldStyle(.roundedBorder)
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
@@ -240,6 +260,37 @@ struct BookInfoPanel: View {
                     }
                 }
                 Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("簡介").font(.headline).foregroundStyle(.secondary)
+                    TextField("簡介（選填）", text: Binding(
+                        get: { book.synopsis },
+                        set: { book.synopsis = $0; book.updatedAt = Date() }
+                    ), axis: .vertical).lineLimit(4...8).textFieldStyle(.roundedBorder)
+                }
+                Divider()
+                Button(action: onOpenBackground) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("故事背景")
+                                .font(.headline)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(backgroundSummary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("展開並編輯整本書的故事背景")
+                Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     Text("統計").font(.headline).foregroundStyle(.secondary)
                     HStack {
@@ -262,6 +313,25 @@ struct BookInfoPanel: View {
             guard case .success(let urls) = result, let url = urls.first else { return }
             importCover(from: url)
         }
+    }
+
+    private var backgroundSummary: String {
+        guard let profile = planningStore.profile(bookID: book.id) else {
+            return "尚未設定。展開後可填寫世界背景、故事前提、主要衝突、主角目標與核心主題。"
+        }
+        let content = StoryBackgroundContent(storedValue: profile.backgroundText)
+        let values = [
+            content.worldBackground,
+            content.premise,
+            content.mainConflict,
+            content.protagonistGoal,
+            content.coreTheme,
+            content.otherBackground
+        ]
+        let firstValue = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        return firstValue ?? "尚未設定。展開後可填寫世界背景、故事前提、主要衝突、主角目標與核心主題。"
     }
 
     private func importCover(from url: URL) {

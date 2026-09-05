@@ -1,6 +1,6 @@
 # 技術架構
 
-> 基準：目前工作樹（2026-08-27）。歷史版本差異不回寫至舊提交。
+> 基準：目前工作樹（2026-09-05）。歷史版本差異不回寫至舊提交。
 
 ## 技術組成
 
@@ -23,7 +23,9 @@
 
 ### 工作區與功能 UI 層
 
-`ContentView` 負責書櫃，`BookOverviewView` 負責書籍與卷節結構，`EditorWorkspaceView` 負責寫作工作區，`InspectorViews` 及各功能 View 負責設定集；`WorkspaceInspectorView` 提供「設定集／大綱」頂層切換，`OutlineViews` 提供大綱底下的故事背景、敘事大綱與共用資料時間軸。
+`ContentView` 負責書櫃，`BookOverviewView` 負責書籍與卷節結構及故事背景入口，`EditorWorkspaceView` 負責寫作與寬版大綱兩種同視窗呈現。寫作面使用 `NavigationSplitView`，寬版大綱則是獨立的中央 surface，不包含正文 sidebar，因此系統側邊欄控制也不會出現在大綱模式。進入前先提交待存文字；書籍、目前節次與 editor bridge 狀態由外層保留，返回正文或來源時重新建立文字 surface 並定位。
+
+`InspectorViews` 及各功能 View 負責右側設定集；`WorkspaceInspectorView` 保留「設定集／大綱」頂層切換，右欄大綱只提供敘事大綱與時間軸。`OutlineViews` 同時提供可重用的垂直敘事大綱、寬版 `BookPlanningWorkspaceView` 與橫向結構時間軸。故事背景不再放在右欄，而是在 `BookOverviewView` 以摘要卡及完整寬度編輯器呈現。
 
 ### 編輯器橋接層
 
@@ -31,7 +33,7 @@
 
 ### 服務與修復層
 
-匯出由 `ExportManager`／`EpubExporter` 負責；舊時間定位排序由 `TimelineEngine` 負責；V4.2 手動排序與資料操作集中在 `StoryPlanningStore`；資料清理與刪除由 `PersistentStoreRepair`、`MigrationPlan` 及相關 Backfill 負責。
+匯出由 `ExportManager`／`EpubExporter` 負責；舊時間定位排序由 `TimelineEngine` 負責；V4.2 之後的大綱排序、資料操作與 V4.4 `OutlineTimelineLayout` 投影集中在 `StoryPlanningStore`。投影只把可解析位置放入幕／節次欄位，無法解析者交給 UI 的待安置區；資料清理與刪除由 `PersistentStoreRepair`、`MigrationPlan` 及相關 Backfill 負責。
 
 ## 可持續性原則
 

@@ -579,6 +579,74 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertEqual(reopenedStore.items(storyLineID: lineID).map(\.sortOrder), [10, 90])
     }
 
+    func testTimelineLayoutUsesBookSectionsAndKeepsPendingItemsOutOfColumns() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "時間軸測試", author: "作者")
+        let volume = Volume(title: "第一幕", book: book)
+        let firstSection = Section(title: "第一節", content: AttributedString("收到舊信"), sortOrder: 0, volume: volume)
+        let secondSection = Section(title: "第二節", content: AttributedString("前往港口"), sortOrder: 1, volume: volume)
+        volume.sections = [firstSection, secondSection]
+        book.volumes = [volume]
+
+        let main = try store.createStoryLine(bookID: book.id, kind: .main)
+        let stage = try store.createStage(
+            storyLine: main,
+            title: "啟程",
+            start: OutlineStageStartLocation(
+                volumeID: volume.id,
+                sectionID: firstSection.id,
+                volumeTitle: volume.title,
+                sectionTitle: firstSection.title
+            )
+        )
+        let prose = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "收到舊信",
+            anchorText: "收到舊信",
+            anchorOffset: 0,
+            bookID: book.id,
+            sectionID: firstSection.id,
+            sections: [firstSection, secondSection]
+        )
+        try store.moveOutlineItem(prose, to: stage)
+        let placed = try store.createOutlineItem(storyLine: main, stage: stage, title: "決定出發")
+        try store.setPlacement(placed, kind: .afterItem, after: prose)
+        let atStart = try store.createOutlineItem(storyLine: main, stage: stage, title: "幕首提示")
+        try store.setPlacement(atStart, kind: .stageStart)
+        let atEnd = try store.createOutlineItem(storyLine: main, stage: stage, title: "幕末提示")
+        try store.setPlacement(atEnd, kind: .stageEnd)
+        let pending = try store.createOutlineItem(storyLine: main, stage: stage, title: "尚未安排")
+
+        let layout = store.timelineLayout(book: book)
+        XCTAssertEqual(layout.columns.map(\.sectionID), [firstSection.id, secondSection.id])
+        let lane = try XCTUnwrap(layout.lanes.first(where: { $0.storyLineID == main.id }))
+        XCTAssertEqual(lane.entries.map(\.itemID), [atStart.id, prose.id, placed.id, atEnd.id])
+        XCTAssertEqual(lane.entries.map(\.columnIndex), [0, 0, 0, 1])
+        XCTAssertEqual(lane.pendingItemIDs, [pending.id])
+    }
+
+    func testTimelineLayoutDoesNotGuessPositionForDeletedProseSource() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "失效來源", author: "作者")
+        let volume = Volume(title: "第一幕", book: book)
+        let section = Section(title: "第一節", sortOrder: 0, volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+        let item = try store.createOutlineItemFromProse(
+            kind: .branch,
+            title: "來源已刪除",
+            anchorText: "文字",
+            anchorOffset: 0,
+            bookID: book.id,
+            sectionID: UUID()
+        )
+
+        let layout = store.timelineLayout(book: book)
+        let lane = try XCTUnwrap(layout.lanes.first)
+        XCTAssertTrue(lane.entries.isEmpty)
+        XCTAssertEqual(lane.pendingItemIDs, [item.id])
+    }
+
     private func removeStoreFiles(at url: URL) {
         for suffix in ["", "-shm", "-wal"] {
             try? FileManager.default.removeItem(atPath: url.path + suffix)

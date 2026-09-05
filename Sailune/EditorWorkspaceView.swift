@@ -43,6 +43,8 @@ struct EditorWorkspaceView: View {
     @State private var keyboardMonitor = EditorKeyboardMonitor()
     @State private var focusedCharacter: Character?
     @State private var characterFocusRequestID = UUID()
+    @State private var isShowingPlanningWorkspace = false
+    @State private var writingColumnVisibility: NavigationSplitViewVisibility = .automatic
 
     private var neighboringSections: (previous: Section?, next: Section?) {
         let sections = BookStructure.orderedSections(in: book)
@@ -62,83 +64,50 @@ struct EditorWorkspaceView: View {
     }
 
     var body: some View {
-        let neighbors = neighboringSections
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
-        } detail: {
-            EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
-                focusedCharacter = character
-                characterFocusRequestID = UUID()
-                setInspectorPresented(true)
-            }
-                .navigationTitle("")
-                .toolbar {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Button { toggleSidebar() } label: { Label("目錄", systemImage: "sidebar.left") }.help("顯示/隱藏左欄目錄")
-                        Button { setInspectorPresented(!showInspector) } label: { Label("設定集", systemImage: "sidebar.right") }.help("顯示/隱藏右欄設定集")
-                        Button { showingCommandPalette = true } label: { Label("指令", systemImage: "command") }
-                            .help("開啟指令面板 (⌘K)")
-                            .keyboardShortcut("k", modifiers: .command)
-                        Button {
-                            guard let previous = neighbors.previous else { return }
-                            bridge.flushPendingSave()
-                            selectedSection = previous
-                        } label: { Label("上一節", systemImage: "chevron.left") }
-                            .disabled(neighbors.previous == nil)
-                            .help(neighbors.previous == nil ? "已是第一節" : "上一節")
-                        Button {
-                            guard let next = neighbors.next else { return }
-                            bridge.flushPendingSave()
-                            selectedSection = next
-                        } label: { Label("下一節", systemImage: "chevron.right") }
-                            .disabled(neighbors.next == nil)
-                            .help(neighbors.next == nil ? "已是最後一節" : "下一節")
-                        Menu {
-                            Button { showingCommandPalette = true } label: { Label("指令面板", systemImage: "command") }
-                            Button { showingShortcutHelp = true } label: { Label("快捷鍵說明", systemImage: "keyboard") }
-                            Divider()
-                            Button {
-                                if let section = selectedSection {
-                                    let content = ExportManager.exportSectionToTXT(section: section)
-                                    ExportManager.presentSavePanel(for: book, defaultName: section.title, fileType: "txt", content: content)
-                                } else {
-                                    let content = ExportManager.exportBookToTXT(book: book)
-                                    ExportManager.presentSavePanel(for: book, defaultName: book.title, fileType: "txt", content: content)
-                                }
-                            } label: { Label("匯出 TXT", systemImage: "doc.text") }
-                            Button { EpubExporter.exportBook(book: book) } label: { Label("匯出 EPUB", systemImage: "book.closed") }
-                        } label: { Label("更多", systemImage: "ellipsis.circle") }
+        Group {
+            if isShowingPlanningWorkspace {
+                BookPlanningWorkspaceView(
+                    book: book,
+                    onReturnToWriting: returnToWriting,
+                    onOpenOutlineItem: openOutlineItem
+                )
+                .toolbar { workspaceToolbar }
+            } else {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
+                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                } detail: {
+                    EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
+                        focusedCharacter = character
+                        characterFocusRequestID = UUID()
+                        setInspectorPresented(true)
                     }
+                    .toolbar { workspaceToolbar }
                 }
-                .inspector(isPresented: $showInspector) {
-                    WorkspaceInspectorView(
-                        book: book,
-                        currentSection: selectedSection,
-                        focusedCharacter: focusedCharacter,
-                        focusRequestID: characterFocusRequestID,
-                        onSelectSection: { section in
-                            bridge.flushPendingSave()
-                            selectedSection = section
-                        },
-                        onOpenStoryTag: { tag in
-                            guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == tag.sectionID }) else { return }
-                            bridge.flushPendingSave()
-                            let offset = tag.resolvedOffset(in: String(section.content.characters))
-                            bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
-                            selectedSection = section
-                        },
-                        onOpenOutlineItem: { item, anchor in
-                            guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == anchor.sectionID }) else { return }
-                            bridge.flushPendingSave()
-                            let offset = anchor.resolvedOffset(in: String(section.content.characters))
-                            bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
-                            selectedSection = section
-                        }
-                    )
-                    .workspaceFloatingPanel()
-                    .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
-                }
+            }
+        }
+        .navigationTitle("")
+        .inspector(isPresented: $showInspector) {
+            WorkspaceInspectorView(
+                book: book,
+                currentSection: selectedSection,
+                focusedCharacter: focusedCharacter,
+                focusRequestID: characterFocusRequestID,
+                onSelectSection: { section in
+                    bridge.flushPendingSave()
+                    selectedSection = section
+                },
+                onOpenStoryTag: { tag in
+                    guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == tag.sectionID }) else { return }
+                    bridge.flushPendingSave()
+                    let offset = tag.resolvedOffset(in: String(section.content.characters))
+                    bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
+                    selectedSection = section
+                },
+                onOpenOutlineItem: openOutlineItem
+            )
+            .workspaceFloatingPanel()
+            .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
         }
         .sheet(isPresented: $showingCommandPalette) {
             CommandPaletteView { command in
@@ -150,10 +119,10 @@ struct EditorWorkspaceView: View {
             ShortcutHelpView()
         }
         .onReceive(NotificationCenter.default.publisher(for: .sailunePreviousSection)) { _ in
-            navigate(to: neighboringSections.previous)
+            if !isShowingPlanningWorkspace { navigate(to: neighboringSections.previous) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .sailuneNextSection)) { _ in
-            navigate(to: neighboringSections.next)
+            if !isShowingPlanningWorkspace { navigate(to: neighboringSections.next) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .sailunePlanningMarkersChanged)) { _ in
             bridge.reloadVisibleContent()
@@ -173,18 +142,78 @@ struct EditorWorkspaceView: View {
         .onDisappear { keyboardMonitor.stop() }
     }
 
+    @ToolbarContentBuilder
+    private var workspaceToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button { showingCommandPalette = true } label: { Label("指令", systemImage: "command") }
+                .help("開啟指令面板 (⌘K)")
+                .keyboardShortcut("k", modifiers: .command)
+            Menu {
+                Button { showingCommandPalette = true } label: { Label("指令面板", systemImage: "command") }
+                Button {
+                    if let section = selectedSection {
+                        let content = ExportManager.exportSectionToTXT(section: section)
+                        ExportManager.presentSavePanel(for: book, defaultName: section.title, fileType: "txt", content: content)
+                    } else {
+                        let content = ExportManager.exportBookToTXT(book: book)
+                        ExportManager.presentSavePanel(for: book, defaultName: book.title, fileType: "txt", content: content)
+                    }
+                } label: { Label("匯出 TXT", systemImage: "doc.text") }
+                Button { EpubExporter.exportBook(book: book) } label: { Label("匯出 EPUB", systemImage: "book.closed") }
+            } label: { Label("更多", systemImage: "ellipsis.circle") }
+            Button { setInspectorPresented(!showInspector) } label: {
+                Label("設定集", systemImage: "sidebar.right")
+            }
+            .help("顯示/隱藏右欄設定集")
+            Button(action: showPlanningWorkspace) {
+                Label("大綱", systemImage: "rectangle.3.group")
+            }
+            .disabled(isShowingPlanningWorkspace)
+            .help("開啟大綱工作區")
+            Button { showingShortcutHelp = true } label: {
+                Label("快捷鍵", systemImage: "keyboard")
+            }
+            .help("開啟快捷鍵說明")
+        }
+    }
+
     private func toggleSidebar() {
         columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
     }
 
+    private func showPlanningWorkspace() {
+        bridge.flushPendingSave()
+        writingColumnVisibility = columnVisibility
+        columnVisibility = .detailOnly
+        setInspectorPresented(false)
+        isShowingPlanningWorkspace = true
+    }
+
+    private func returnToWriting() {
+        isShowingPlanningWorkspace = false
+        columnVisibility = writingColumnVisibility
+    }
+
+    private func openOutlineItem(_ item: OutlineItem, _ anchor: OutlineItemAnchor) {
+        guard let section = BookStructure.orderedSections(in: book).first(where: { $0.id == anchor.sectionID }) else { return }
+        let offset = anchor.resolvedOffset(in: String(section.content.characters))
+        isShowingPlanningWorkspace = false
+        columnVisibility = writingColumnVisibility
+        selectedSection = section
+        DispatchQueue.main.async {
+            bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
+        }
+    }
+
     private func perform(_ command: PaletteCommand) {
         switch command {
-        case .toggleOutline: toggleSidebar()
+        case .toggleOutline:
+            if !isShowingPlanningWorkspace { toggleSidebar() }
         case .toggleInspector: setInspectorPresented(!showInspector)
         case .previousSection:
-            navigate(to: neighboringSections.previous)
+            if !isShowingPlanningWorkspace { navigate(to: neighboringSections.previous) }
         case .nextSection:
-            navigate(to: neighboringSections.next)
+            if !isShowingPlanningWorkspace { navigate(to: neighboringSections.next) }
         case .toggleSceneHeading: bridge.requestToggleHeading()
         case .showShortcuts: showingShortcutHelp = true
         }

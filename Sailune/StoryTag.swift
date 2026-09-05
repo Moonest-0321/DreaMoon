@@ -270,6 +270,107 @@ final class StoryPlanningStore {
         return result
     }
 
+    /// 將敘事大綱投影到書籍結構時間軸。無法解析的項目留在待安置區，
+    /// 避免 UI 為失效來源或未安置資料猜測不存在的位置。
+    func timelineLayout(book: Book) -> OutlineTimelineLayout {
+        let sections = BookStructure.orderedSections(in: book)
+        let sectionPositions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
+        let columns = sections.enumerated().map { index, section in
+            let volumeTitle = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return OutlineTimelineLayout.Column(
+                sectionID: section.id,
+                volumeTitle: volumeTitle.isEmpty ? "未命名幕" : volumeTitle,
+                sectionTitle: sectionTitle.isEmpty ? "未命名節次" : sectionTitle,
+                index: index
+            )
+        }
+
+        let lanes = storyLines(bookID: book.id).map { storyLine in
+            let lineStages = orderedStages(storyLineID: storyLine.id, sections: sections)
+            var orderedLineItems: [OutlineItem] = []
+            if storyLine.kind == .main {
+                for stage in lineStages {
+                    orderedLineItems.append(contentsOf: orderedItems(storyLineID: storyLine.id, stageID: stage.id, sections: sections))
+                }
+            }
+            orderedLineItems.append(contentsOf: orderedItems(storyLineID: storyLine.id, stageID: nil, sections: sections))
+            for item in items(storyLineID: storyLine.id) where !orderedLineItems.contains(where: { $0.id == item.id }) {
+                orderedLineItems.append(item)
+            }
+
+            var resolvedPositions: [UUID: Int] = [:]
+            var resolvingItemIDs = Set<UUID>()
+
+            @MainActor
+            func stageBoundary(for item: OutlineItem, atStart: Bool) -> Int? {
+                guard !columns.isEmpty else { return nil }
+                guard let stageID = item.stageID,
+                      let stageIndex = lineStages.firstIndex(where: { $0.id == stageID }) else {
+                    guard storyLine.kind != .main else { return nil }
+                    return atStart ? columns.startIndex : columns.index(before: columns.endIndex)
+                }
+                guard let start = stageStart(stageID: stageID),
+                      let startIndex = sectionPositions[start.sectionID] else { return nil }
+                guard !atStart else { return startIndex }
+                let laterStarts = lineStages.dropFirst(stageIndex + 1).compactMap { laterStage in
+                    stageStart(stageID: laterStage.id).flatMap { sectionPositions[$0.sectionID] }
+                }
+                if let nextStart = laterStarts.first, nextStart > startIndex {
+                    return nextStart - 1
+                }
+                return columns.index(before: columns.endIndex)
+            }
+
+            @MainActor
+            func position(for item: OutlineItem) -> Int? {
+                if let resolved = resolvedPositions[item.id] { return resolved }
+                guard resolvingItemIDs.insert(item.id).inserted else { return nil }
+                defer { resolvingItemIDs.remove(item.id) }
+
+                let resolved: Int?
+                if let proseAnchor = anchor(outlineItemID: item.id) {
+                    resolved = sectionPositions[proseAnchor.sectionID]
+                } else if let itemPlacement = placement(outlineItemID: item.id) {
+                    switch itemPlacement.kind {
+                    case .pending:
+                        resolved = nil
+                    case .stageStart:
+                        resolved = stageBoundary(for: item, atStart: true)
+                    case .stageEnd:
+                        resolved = stageBoundary(for: item, atStart: false)
+                    case .afterItem:
+                        resolved = itemPlacement.relativeItemID
+                            .flatMap { relativeID in orderedLineItems.first(where: { $0.id == relativeID }) }
+                            .flatMap(position)
+                    }
+                } else {
+                    resolved = nil
+                }
+                if let resolved { resolvedPositions[item.id] = resolved }
+                return resolved
+            }
+
+            var entries: [OutlineTimelineLayout.Entry] = []
+            var pendingItemIDs: [UUID] = []
+            for (sequence, item) in orderedLineItems.enumerated() {
+                if let columnIndex = position(for: item) {
+                    entries.append(.init(itemID: item.id, columnIndex: columnIndex, sequence: sequence))
+                } else {
+                    pendingItemIDs.append(item.id)
+                }
+            }
+            return OutlineTimelineLayout.Lane(
+                storyLineID: storyLine.id,
+                title: storyLine.title,
+                kind: storyLine.kind,
+                entries: entries,
+                pendingItemIDs: pendingItemIDs
+            )
+        }
+        return OutlineTimelineLayout(columns: columns, lanes: lanes)
+    }
+
     func anchor(outlineItemID: UUID) -> OutlineItemAnchor? {
         outlineAnchors.first { $0.outlineItemID == outlineItemID }
     }
