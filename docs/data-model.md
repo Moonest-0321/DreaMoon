@@ -18,7 +18,7 @@
 - Volume 刪除其 Sections。
 - Character 的設定關聯依模型與刪除服務處理；正文文字保留，角色連結解除。
 - Item 刪除 ItemLevel、ItemHistory 及角色持有關聯。
-- Node 對 Section、Event 等關聯多使用 nullify，避免刪除時間定位時刪掉正文或事件。
+- Node 的事件關聯使用 cascade；刪除釘子會刪除所屬事件，正文 Section 保留。刪除服務亦清除相關歷史定位，並非保留事件。
 
 ## 獨立資料庫
 
@@ -37,7 +37,7 @@
 - `StoryTag`（僅伏筆／修改）及 `OutlineItemAnchor` 都以「原文字＋UTF-16 offset」保存來源，正文變更後以相同規則重新解析。
 - 副本目前等級選擇不自動改寫父物品設定。
 - V4.2 全書規劃以 `bookID` 連回主 store；`storyLineID` 與可選 `stageID` 維持故事線、階段和項目的穩定連結。
-- 敘事大綱與新時間軸直接查詢同一筆 `OutlineItem`；不存在需要同步的第二份內容。
+- V4.2 至 V4.4.2a 敘事大綱與時間軸共用 `OutlineItem`；V4.4.3 時間軸接回主 store 的 Timeline／Era／Node／Event。敘事大綱仍讀寫原 OutlineItem，不自動轉換或複製資料，也不新增 schema。
 - `OutlineItemAnchor.outlineItemID` 是唯一值，因此一筆大綱項目最多一個正文來源；手動建立項目可沒有來源。
 - `OutlineStageStartAnchor.stageID` 是唯一值；它以幕（`Volume`）與節次（`Section`）UUID 加上名稱快照保存主線階段起點。來源結構被刪除時，階段保留並顯示快照與刪除標記。
 - `OutlineItemPlacement.outlineItemID` 是唯一值；手動項目可為待安置、幕首、接在項目後或幕末。掛點刪除時保留項目並改為待安置，不自動猜測新位置。
@@ -49,7 +49,8 @@
 - 同一本書只允許一條 `.main` 故事線；多段主線使用 `OutlineStage`，而不是建立第二條主線。
 - 刪除 `OutlineStage` 時一併刪除所屬 `OutlineItem` 與其 `OutlineItemAnchor`，正文內容不變；刪除後通知編輯器重新載入紅色正文標記。項目只能手動移往同一主線的階段或未分階段。
 - `BookPlanningProfile.backgroundText` 相容保存故事背景引導與其他背景；非結構化舊值一律視為其他背景，避免遺失既有文字。
-- `OutlineTimelineLayout` 是執行期間的唯讀投影，不是 SwiftData 模型：欄位來自目前書籍的幕／節次順序，泳道來自故事線，卡片仍指向原本的 `OutlineItem`。無法解析的位置只進入 `pendingItems`，不會回寫或猜測安置資料。
+- `OutlineTimelineLayout` 是執行期間的唯讀投影，不是 SwiftData 模型：欄位來自目前書籍的幕／節次順序，泳道來自故事線，卡片仍指向原本的 `OutlineItem`。V4.4.1 的 `StageBand` 只投影有效主線階段的起訖欄位；無法解析的位置只進入 `pendingItems`，失效階段不起帶，兩者都不會回寫或猜測安置資料。
+- StoryPlanning schema V5 新增 `OutlineStageStartDetail`，以 `stageID` 一對一補充 V4 階段錨點的定位粒度（卷次／節次／幕標題）、幕標題快照及 offset。沒有 detail 的 V4 舊錨點維持節次語意；V4 模型本身不變。
 
 ## 待改善的模型風險
 

@@ -1,5 +1,7 @@
 # 備份、遷移與資料修復
 
+V4.4.2 的 StoryPlanning schema V5 以新增 `OutlineStageStartDetail` 的輕量遷移升級 V4。既有 `OutlineStageStartAnchor` 不改寫；缺少 detail 的舊資料在執行時視為節次定位。主書庫正文與大綱項目錨點不參與此遷移。
+
 ## 目前啟動順序
 
 1. 尋找舊版 V3 或 V2 store。

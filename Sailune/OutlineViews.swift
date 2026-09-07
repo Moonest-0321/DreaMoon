@@ -1,5 +1,13 @@
 import SwiftUI
 
+private struct OutlineRowHeightsKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] { [:] }
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, height in height })
+    }
+}
+
 enum BookOutlinePresentation {
     case narrative
     case timeline
@@ -125,15 +133,12 @@ private enum BookPlanningWorkspaceTab: String, CaseIterable, Identifiable {
 @MainActor
 struct BookPlanningWorkspaceView: View {
     let book: Book
-    let onReturnToWriting: () -> Void
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @State private var selectedTab: BookPlanningWorkspaceTab = .narrative
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Button("回到文本", systemImage: "chevron.left", action: onReturnToWriting)
-                    .buttonStyle(.borderless)
                 Text("大綱工作區")
                     .font(.title2.weight(.semibold))
                 Spacer()
@@ -151,16 +156,71 @@ struct BookPlanningWorkspaceView: View {
 
             switch selectedTab {
             case .narrative:
-                BookOutlineWorkspaceView(
-                    book: book,
-                    presentation: .narrative,
-                    onOpenOutlineItem: onOpenOutlineItem
-                )
+                NarrativeOutlineTimelineView(book: book, onOpenOutlineItem: onOpenOutlineItem)
             case .timeline:
-                BookStructureTimelineView(book: book, onOpenOutlineItem: onOpenOutlineItem)
+                TimelinePanelView(book: book, allowsWideLayout: true)
             }
         }
         .background(Color.appBackground)
+    }
+}
+
+private enum OutlineStructureBoardMode {
+    case narrative
+    case timeline
+}
+
+@MainActor
+private struct NarrativeOutlineTimelineView: View {
+    let book: Book
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    @State private var showingOutlineManager = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("正文順序與敘事節奏", systemImage: "rectangle.3.group")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("依卷次／節次比較故事線、階段與事件密度")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("故事線管理", systemImage: "slider.horizontal.3") {
+                    showingOutlineManager = true
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            Divider()
+            OutlineStructureBoardView(
+                book: book,
+                mode: .narrative,
+                onOpenOutlineItem: onOpenOutlineItem
+            )
+        }
+        .sheet(isPresented: $showingOutlineManager) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("故事線與階段")
+                        .font(.headline)
+                    Spacer()
+                    Button("完成") { showingOutlineManager = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+                Divider()
+                BookOutlineWorkspaceView(
+                    book: book,
+                    presentation: .narrative,
+                    onOpenOutlineItem: { item, anchor in
+                        showingOutlineManager = false
+                        onOpenOutlineItem?(item, anchor)
+                    }
+                )
+            }
+            .frame(minWidth: 520, idealWidth: 620, minHeight: 560)
+        }
     }
 }
 
@@ -168,81 +228,274 @@ struct BookPlanningWorkspaceView: View {
 private struct BookStructureTimelineView: View {
     let book: Book
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+
+    var body: some View {
+        OutlineStructureBoardView(
+            book: book,
+            mode: .timeline,
+            onOpenOutlineItem: onOpenOutlineItem
+        )
+    }
+}
+
+@MainActor
+private struct OutlineStructureBoardView: View {
+    let book: Book
+    let mode: OutlineStructureBoardMode
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
+    @State private var selectedItemID: UUID?
+    @State private var errorMessage: String?
+    @State private var narrativeRowHeights: [String: CGFloat] = [:]
 
     private let laneWidth: CGFloat = 160
     private let columnWidth: CGFloat = 220
 
     var body: some View {
-        let layout = planningStore.timelineLayout(book: book)
+        let layout = mode == .narrative
+            ? planningStore.narrativeTimelineLayout(book: book)
+            : planningStore.timelineLayout(book: book)
         let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
         let validSectionIDs = Set(layout.columns.map(\.sectionID))
 
-        if layout.lanes.isEmpty {
-            ContentUnavailableView {
-                Label("尚未建立故事線", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-            } description: {
-                Text("先在敘事大綱建立主線、支線或其他故事線。")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView([.horizontal, .vertical]) {
-                VStack(alignment: .leading, spacing: 0) {
-                    timelineHeader(columns: layout.columns)
-                    ForEach(layout.lanes) { lane in
-                        timelineLane(
-                            lane,
-                            columns: layout.columns,
-                            itemsByID: itemsByID,
-                            validSectionIDs: validSectionIDs
-                        )
+        GeometryReader { proxy in
+            if layout.lanes.isEmpty {
+                ContentUnavailableView {
+                    Label("尚未建立故事線", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                } description: {
+                    Text("先在右側大綱建立主線、支線或其他故事線。")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if mode == .narrative, let selectedItem {
+                if proxy.size.width >= 900 {
+                    HStack(spacing: 0) {
+                        board(layout: layout, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
+                        Divider()
+                        itemDetail(selectedItem)
+                            .frame(width: 340)
                     }
-                    pendingItems(
-                        lanes: layout.lanes,
+                } else {
+                    board(layout: layout, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
+                        .sheet(item: selectedItemBinding) { item in
+                            itemDetail(item)
+                                .frame(minWidth: 360, idealWidth: 420, minHeight: 480)
+                        }
+                }
+            } else {
+                board(layout: layout, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
+            }
+        }
+        .onChange(of: itemsByID.keys.sorted(by: { $0.uuidString < $1.uuidString })) { _, itemIDs in
+            if let selectedItemID, !itemIDs.contains(selectedItemID) {
+                self.selectedItemID = nil
+            }
+        }
+        .alert("大綱無法儲存", isPresented: errorPresented) {
+            Button("好") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "未知錯誤")
+        }
+    }
+
+    private var selectedItem: OutlineItem? {
+        guard let selectedItemID else { return nil }
+        return planningStore.items(bookID: book.id).first { $0.id == selectedItemID }
+    }
+
+    private var selectedItemBinding: Binding<OutlineItem?> {
+        Binding(
+            get: { selectedItem },
+            set: { selectedItemID = $0?.id }
+        )
+    }
+
+    private var errorPresented: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
+    }
+
+    @ViewBuilder
+    private func board(
+        layout: OutlineTimelineLayout,
+        itemsByID: [UUID: OutlineItem],
+        validSectionIDs: Set<UUID>
+    ) -> some View {
+        if mode == .narrative {
+            ScrollView(.vertical) {
+                HStack(alignment: .top, spacing: 0) {
+                    VStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            ForEach(["卷次", "節次", "幕標題"], id: \.self) { title in
+                                Text(title).font(.caption.weight(.semibold))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: narrativeRowHeights["header"] ?? 84)
+                        ForEach(layout.lanes) { lane in
+                            VStack(alignment: .leading, spacing: 0) {
+                                if !lane.stageBands.isEmpty {
+                                    Text("主線階段").font(.caption.weight(.semibold))
+                                        .frame(height: 38)
+                                }
+                                Text(lane.kind.rawValue).font(.caption).foregroundStyle(.secondary)
+                                Text(lane.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                    .padding(.top, 3)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(height: narrativeRowHeights[lane.id.uuidString] ?? 114, alignment: .top)
+                            .overlay(alignment: .bottom) { Divider() }
+                        }
+                        if layout.lanes.contains(where: { !$0.pendingItemIDs.isEmpty }) {
+                            Text("待安置").font(.subheadline.weight(.semibold))
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(height: narrativeRowHeights["pending"] ?? 100, alignment: .top)
+                        }
+                    }
+                    .frame(width: laneWidth + 20)
+                    .background(Color.workspacePanelBackground)
+                    ScrollView(.horizontal) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            timelineHeader(columns: layout.columns)
+                                .background(rowHeightReader("header"))
+                            ForEach(layout.lanes) { lane in
+                                timelineLane(lane, columns: layout.columns, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
+                                    .background(rowHeightReader(lane.id.uuidString))
+                            }
+                            pendingItems(lanes: layout.lanes, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
+                                .background(rowHeightReader("pending"))
+                        }
+                        .fixedSize(horizontal: true, vertical: true)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(20)
+            }
+            .onPreferenceChange(OutlineRowHeightsKey.self) { heights in
+                if narrativeRowHeights != heights { narrativeRowHeights = heights }
+            }
+        } else {
+        ScrollView([.horizontal, .vertical]) {
+            VStack(alignment: .leading, spacing: 0) {
+                timelineHeader(columns: layout.columns)
+                ForEach(layout.lanes) { lane in
+                    timelineLane(
+                        lane,
+                        columns: layout.columns,
                         itemsByID: itemsByID,
                         validSectionIDs: validSectionIDs
                     )
                 }
-                .padding(20)
+                pendingItems(
+                    lanes: layout.lanes,
+                    itemsByID: itemsByID,
+                    validSectionIDs: validSectionIDs
+                )
             }
+            .padding(20)
+        }
         }
     }
 
+    // 只同步內容高度；水平捲動不寫入狀態，也不觸發大綱資料重新投影。
+    private func rowHeightReader(_ id: String) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: OutlineRowHeightsKey.self, value: [id: geometry.size.height])
+        }
+    }
+
+    private func itemDetail(_ item: OutlineItem) -> some View {
+        let sections = BookStructure.orderedSections(in: book)
+        let stages = planningStore.orderedStages(storyLineID: item.storyLineID, sections: sections)
+        return VStack(spacing: 0) {
+            HStack {
+                Text("項目詳情")
+                    .font(.headline)
+                Spacer()
+                Button("關閉", systemImage: "xmark") { selectedItemID = nil }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+            }
+            .padding(12)
+            Divider()
+            ScrollView {
+                OutlineItemEditor(
+                    book: book,
+                    item: item,
+                    presentation: .narrative,
+                    availableStages: stages,
+                    onOpenOutlineItem: onOpenOutlineItem,
+                    errorMessage: $errorMessage,
+                    initiallyExpanded: true
+                )
+                .padding(12)
+            }
+        }
+        .background(Color.workspacePanelBackground)
+    }
+
+    @ViewBuilder
     private func timelineHeader(columns: [OutlineTimelineLayout.Column]) -> some View {
-        HStack(spacing: 0) {
-            Text("故事線")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: laneWidth, alignment: .leading)
-                .padding(.horizontal, 10)
-            if columns.isEmpty {
-                Text("尚未建立幕與節次")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: columnWidth, alignment: .center)
-            } else {
-                ForEach(columns) { column in
-                    VStack(spacing: 2) {
-                        Text(column.volumeTitle)
-                            .font(.caption.weight(.semibold))
-                        Text(column.sectionTitle)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .lineLimit(1)
-                    .frame(width: columnWidth)
-                    .padding(.vertical, 9)
-                    .background(Color.secondary.opacity(0.06))
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.secondary.opacity(0.18))
-                            .frame(width: 1)
+        if mode == .narrative, !columns.isEmpty {
+            VStack(spacing: 0) {
+                groupedHeaderRow(label: "卷次", groups: headerGroups(columns.map(\.volumeTitle)), emphasized: true)
+                groupedHeaderRow(label: "節次", groups: headerGroups(columns.map(\.sectionTitle)), emphasized: false)
+                groupedHeaderRow(label: "幕標題", groups: headerGroups(columns.map(\.headingTitle)), emphasized: false)
+            }
+        } else {
+            HStack(spacing: 0) {
+                if mode == .timeline { pinnedHeaderLabel("故事線") }
+                if columns.isEmpty {
+                    Text("尚未建立卷次與節次")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(width: columnWidth, alignment: .center)
+                } else {
+                    ForEach(columns) { column in
+                        VStack(spacing: 2) {
+                            Text(column.volumeTitle).font(.caption.weight(.semibold))
+                            Text(column.sectionTitle).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .lineLimit(1).frame(width: columnWidth).padding(.vertical, 9)
+                        .overlay(alignment: .leading) { Divider().frame(width: 1) }
                     }
                 }
             }
         }
-        .background(Color.workspacePanelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func pinnedHeaderLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .frame(width: laneWidth, alignment: .leading).padding(.horizontal, 10)
+            .background(Color.workspacePanelBackground)
+    }
+
+    private func groupedHeaderRow(label: String, groups: [(title: String, count: Int)], emphasized: Bool) -> some View {
+        HStack(spacing: 0) {
+            if mode == .timeline { pinnedHeaderLabel(label) }
+            ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                Text(group.title)
+                    .font(emphasized ? .caption.weight(.semibold) : .caption2.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(width: CGFloat(group.count) * columnWidth)
+                    .padding(.vertical, 6)
+                    .background(Color.secondary.opacity(0.06))
+                    .overlay(alignment: .leading) { Divider().frame(width: 1) }
+            }
+        }
+    }
+
+    private func headerGroups(_ values: [String]) -> [(title: String, count: Int)] {
+        values.reduce(into: []) { groups, value in
+            if groups.last?.title == value { groups[groups.count - 1].count += 1 }
+            else { groups.append((value, 1)) }
+        }
     }
 
     private func timelineLane(
@@ -251,45 +504,92 @@ private struct BookStructureTimelineView: View {
         itemsByID: [UUID: OutlineItem],
         validSectionIDs: Set<UUID>
     ) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(lane.kind.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(lane.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
+        VStack(spacing: 0) {
+            if mode == .narrative, !lane.stageBands.isEmpty {
+                stageBandRow(lane.stageBands, columns: columns)
             }
-            .frame(width: laneWidth, alignment: .leading)
-            .padding(10)
+            HStack(alignment: .top, spacing: 0) {
+                if mode == .timeline {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lane.kind.rawValue)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(lane.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                }
+                .frame(width: laneWidth, alignment: .leading)
+                .padding(10)
+                .background(Color.workspacePanelBackground.opacity(0.98))
+                .zIndex(1)
+                }
 
-            if columns.isEmpty {
-                Color.clear.frame(width: columnWidth, height: 76)
-            } else {
-                ForEach(columns) { column in
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(lane.entries.filter { $0.columnIndex == column.index }) { entry in
-                            if let item = itemsByID[entry.itemID] {
-                                TimelineOutlineItemCard(
-                                    item: item,
-                                    validSectionIDs: validSectionIDs,
-                                    onOpenOutlineItem: onOpenOutlineItem
-                                )
+                if columns.isEmpty {
+                    Color.clear.frame(width: columnWidth, height: 76)
+                } else {
+                    ForEach(columns) { column in
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(lane.entries.filter { $0.columnIndex == column.index }) { entry in
+                                if let item = itemsByID[entry.itemID] {
+                                    TimelineOutlineItemCard(
+                                        item: item,
+                                        validSectionIDs: validSectionIDs,
+                                        onSelect: mode == .narrative ? { selectedItemID = item.id } : nil,
+                                        onOpenOutlineItem: onOpenOutlineItem
+                                    )
+                                }
                             }
                         }
-                    }
-                    .padding(7)
-                    .frame(width: columnWidth, alignment: .topLeading)
-                    .frame(minHeight: 76, alignment: .topLeading)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.secondary.opacity(0.18))
-                            .frame(width: 1)
+                        .padding(7)
+                        .frame(width: columnWidth, alignment: .topLeading)
+                        .frame(minHeight: 76, alignment: .topLeading)
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.18))
+                                .frame(width: 1)
+                        }
                     }
                 }
             }
+            .background(Color.workspacePanelBackground.opacity(0.65))
+            .overlay(alignment: .bottom) { Divider() }
         }
-        .background(Color.workspacePanelBackground.opacity(0.65))
+    }
+
+    private func stageBandRow(
+        _ stageBands: [OutlineTimelineLayout.StageBand],
+        columns: [OutlineTimelineLayout.Column]
+    ) -> some View {
+        HStack(spacing: 0) {
+            if mode == .timeline {
+            Label("主線階段", systemImage: "rectangle.stack")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: laneWidth, alignment: .leading)
+                .padding(.horizontal, 10)
+                .background(Color.workspacePanelBackground.opacity(0.98))
+                .zIndex(1)
+            }
+
+            ZStack(alignment: .leading) {
+                Color.clear
+                    .frame(width: CGFloat(columns.count) * columnWidth, height: 38)
+                ForEach(stageBands) { stageBand in
+                    Text(stageBand.title.isEmpty ? "未命名階段" : stageBand.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .frame(
+                            width: CGFloat(stageBand.endColumnIndex - stageBand.startColumnIndex + 1) * columnWidth - 6,
+                            height: 28,
+                            alignment: .leading
+                        )
+                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                        .offset(x: CGFloat(stageBand.startColumnIndex) * columnWidth + 3)
+                }
+            }
+        }
+        .background(Color.workspacePanelBackground.opacity(0.82))
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -304,7 +604,7 @@ private struct BookStructureTimelineView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("待安置", systemImage: "tray")
                     .font(.subheadline.weight(.semibold))
-                Text("下列項目沒有可用的幕／節次位置，時間軸不會替作者猜測位置。")
+                Text("下列項目沒有可用的卷次／節次位置，\(mode == .narrative ? "敘事大綱" : "時間軸")不會替作者猜測位置。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LazyHStack(alignment: .top, spacing: 8) {
@@ -318,6 +618,7 @@ private struct BookStructureTimelineView: View {
                                     TimelineOutlineItemCard(
                                         item: item,
                                         validSectionIDs: validSectionIDs,
+                                        onSelect: mode == .narrative ? { selectedItemID = item.id } : nil,
                                         onOpenOutlineItem: onOpenOutlineItem
                                     )
                                         .frame(width: columnWidth - 20)
@@ -341,12 +642,17 @@ private struct BookStructureTimelineView: View {
 private struct TimelineOutlineItemCard: View {
     let item: OutlineItem
     let validSectionIDs: Set<UUID>
+    var onSelect: (() -> Void)? = nil
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
 
     var body: some View {
         Group {
-            if let anchor = resolvedAnchor {
+            if let onSelect {
+                Button(action: onSelect) { cardContent }
+                    .buttonStyle(.plain)
+                    .help("查看項目詳情")
+            } else if let anchor = resolvedAnchor {
                 Button { onOpenOutlineItem?(item, anchor) } label: { cardContent }
                     .buttonStyle(.plain)
                     .help("回到正文")
@@ -433,7 +739,7 @@ struct BookOutlineWorkspaceView: View {
     }
 
     private var selectedStoryLine: OutlineStoryLine? {
-        storyLines.first { $0.id == selectedStoryLineID } ?? storyLines.first
+        storyLines.first { $0.id == selectedStoryLineID } ?? preferredStoryLine
     }
 
     var body: some View {
@@ -553,13 +859,17 @@ struct BookOutlineWorkspaceView: View {
         storyLines.contains { $0.kind == .main }
     }
 
+    private var preferredStoryLine: OutlineStoryLine? {
+        storyLines.first { $0.kind == .main } ?? storyLines.first
+    }
+
     private func selectFirstStoryLineIfNeeded() {
         guard !storyLines.isEmpty else {
             selectedStoryLineID = nil
             return
         }
         if !storyLines.contains(where: { $0.id == selectedStoryLineID }) {
-            selectedStoryLineID = storyLines.first?.id
+            selectedStoryLineID = preferredStoryLine?.id
         }
     }
 
@@ -575,7 +885,8 @@ struct BookOutlineWorkspaceView: View {
         do {
             try planningStore.deleteStoryLine(storyLine)
             deleteStoryLineTarget = nil
-            selectedStoryLineID = planningStore.storyLines(bookID: book.id).first?.id
+            let remaining = planningStore.storyLines(bookID: book.id)
+            selectedStoryLineID = remaining.first(where: { $0.kind == .main })?.id ?? remaining.first?.id
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -777,46 +1088,73 @@ private struct StageStartEditorSheet: View {
     @State private var title = ""
     @State private var selectedVolumeID: UUID?
     @State private var selectedSectionID: UUID?
+    @State private var selectedHeadingOffset: Int?
 
     private var volumes: [Volume] { BookStructure.orderedVolumes(in: book) }
     private var sections: [Section] {
         guard let selectedVolumeID, let volume = volumes.first(where: { $0.id == selectedVolumeID }) else { return [] }
         return BookStructure.orderedSections(in: volume)
     }
+    private var selectedSection: Section? { sections.first { $0.id == selectedSectionID } }
+    private var headings: [(offset: Int, title: String)] {
+        guard let selectedSection else { return [] }
+        let attributed = NSAttributedString(selectedSection.content)
+        let text = attributed.string as NSString
+        var values: [(Int, String)] = []
+        var offset = 0
+        while offset < text.length {
+            let range = text.paragraphRange(for: NSRange(location: offset, length: 0))
+            let title = text.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+            let font = attributed.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            if !title.isEmpty, isSceneHeadingFont(font) { values.append((range.location, title)) }
+            let next = NSMaxRange(range)
+            if next <= offset { break }
+            offset = next
+        }
+        return values
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(stage == nil ? "建立主線階段" : "重新設定開始位置").font(.headline)
             if stage == nil { TextField("階段名稱", text: $title) }
-            Picker("開始幕", selection: $selectedVolumeID) {
-                Text("選擇幕").tag(Optional<UUID>.none)
-                ForEach(volumes) { volume in Text(volume.title.isEmpty ? "未命名幕" : volume.title).tag(Optional(volume.id)) }
+            Picker("開始卷次", selection: volumeSelection) {
+                Text("選擇卷次").tag(Optional<UUID>.none)
+                ForEach(volumes) { volume in Text(volume.title.isEmpty ? "未命名卷次" : volume.title).tag(Optional(volume.id)) }
             }
-            Picker("開始節次", selection: $selectedSectionID) {
-                Text("選擇節次").tag(Optional<UUID>.none)
+            Picker("開始節次", selection: sectionSelection) {
+                Text("停在卷次").tag(Optional<UUID>.none)
                 ForEach(sections) { section in Text(section.title.isEmpty ? "未命名節次" : section.title).tag(Optional(section.id)) }
             }
-            if volumes.isEmpty || (selectedVolumeID != nil && sections.isEmpty) {
-                Text("請先在左欄建立幕與節次，才能為主線設定開始位置。")
+            .disabled(selectedVolumeID == nil)
+            Picker("開始幕標題", selection: $selectedHeadingOffset) {
+                Text("停在節次").tag(Optional<Int>.none)
+                ForEach(headings, id: \.offset) { heading in Text(heading.title).tag(Optional(heading.offset)) }
+            }
+            .disabled(selectedSectionID == nil)
+            if volumes.isEmpty {
+                Text("請先建立卷次，才能為主線設定開始位置。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            HStack { Spacer(); Button("取消") { dismiss() }; Button(stage == nil ? "建立" : "儲存定位", action: create).buttonStyle(.borderedProminent).disabled(selectedVolumeID == nil || selectedSectionID == nil) }
+            HStack { Spacer(); Button("取消") { dismiss() }; Button(stage == nil ? "建立" : "儲存定位", action: create).buttonStyle(.borderedProminent).disabled(selectedVolumeID == nil) }
         }
         .padding(20).frame(width: 360)
-        .onChange(of: selectedVolumeID) { _, _ in selectedSectionID = nil }
+        .onAppear(perform: loadExistingLocation)
     }
 
     private func create() {
         guard let volumeID = selectedVolumeID,
-              let sectionID = selectedSectionID,
-              let volume = volumes.first(where: { $0.id == volumeID }),
-              let section = sections.first(where: { $0.id == sectionID }) else { return }
+              let volume = volumes.first(where: { $0.id == volumeID }) else { return }
+        let section = selectedSection
+        let heading = headings.first { $0.offset == selectedHeadingOffset }
         do {
             let location = OutlineStageStartLocation(
                     volumeID: volumeID,
-                    sectionID: sectionID,
+                    sectionID: section?.id,
                     volumeTitle: volume.title,
-                    sectionTitle: section.title
+                    sectionTitle: section?.title ?? "",
+                    headingText: heading?.title ?? "",
+                    headingOffset: heading?.offset
             )
             if let stage {
                 try planningStore.setStageStart(stage, to: location)
@@ -825,6 +1163,29 @@ private struct StageStartEditorSheet: View {
             }
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func loadExistingLocation() {
+        guard let stage, let anchor = planningStore.stageStart(stageID: stage.id) else { return }
+        selectedVolumeID = anchor.volumeID
+        let detail = planningStore.stageStartDetail(stageID: stage.id)
+        if detail?.granularity != .volume { selectedSectionID = anchor.sectionID }
+        if detail?.granularity == .heading { selectedHeadingOffset = detail?.headingOffset }
+    }
+
+    private var volumeSelection: Binding<UUID?> {
+        Binding(get: { selectedVolumeID }, set: {
+            selectedVolumeID = $0
+            selectedSectionID = nil
+            selectedHeadingOffset = nil
+        })
+    }
+
+    private var sectionSelection: Binding<UUID?> {
+        Binding(get: { selectedSectionID }, set: {
+            selectedSectionID = $0
+            selectedHeadingOffset = nil
+        })
     }
 }
 
@@ -911,17 +1272,26 @@ private struct StageSectionView: View {
 
     private var stageStartIsMissing: Bool {
         guard let start = planningStore.stageStart(stageID: stage.id) else { return true }
-        return !BookStructure.orderedVolumes(in: book).contains { volume in
-            volume.id == start.volumeID && BookStructure.orderedSections(in: volume).contains { $0.id == start.sectionID }
+        guard let volume = BookStructure.orderedVolumes(in: book).first(where: { $0.id == start.volumeID }) else { return true }
+        let detail = planningStore.stageStartDetail(stageID: stage.id)
+        if detail?.granularity == .volume { return false }
+        guard let section = BookStructure.orderedSections(in: volume).first(where: { $0.id == start.sectionID }) else { return true }
+        if detail?.granularity == .heading {
+            let scenes = ProseStructureParser.scenes(in: section)
+            return !scenes.contains { $0.title == detail?.headingTextSnapshot }
         }
+        return false
     }
 
     private var stageStartDescription: String {
         guard let start = planningStore.stageStart(stageID: stage.id) else { return "需要設定開始位置" }
-        if stageStartIsMissing { return "原定位：\(start.volumeTitleSnapshot) · \(start.sectionTitleSnapshot)（來源已刪除）" }
+        let detail = planningStore.stageStartDetail(stageID: stage.id)
+        let suffix = detail?.granularity == .heading ? " · \(detail?.headingTextSnapshot ?? "")" : ""
+        if stageStartIsMissing { return "原定位：\(start.volumeTitleSnapshot)\(start.sectionTitleSnapshot.isEmpty ? "" : " · \(start.sectionTitleSnapshot)")\(suffix)（來源已刪除）" }
         let volume = BookStructure.orderedVolumes(in: book).first { $0.id == start.volumeID }
+        if detail?.granularity == .volume { return "開始於：\(volume?.title ?? start.volumeTitleSnapshot)" }
         let section = volume.flatMap { BookStructure.orderedSections(in: $0).first { $0.id == start.sectionID } }
-        return "開始於：\(volume?.title ?? start.volumeTitleSnapshot) · \(section?.title ?? start.sectionTitleSnapshot)"
+        return "開始於：\(volume?.title ?? start.volumeTitleSnapshot) · \(section?.title ?? start.sectionTitleSnapshot)\(suffix)"
     }
 
     private func save() {
@@ -998,7 +1368,25 @@ private struct OutlineItemEditor: View {
     @Environment(StoryPlanningStore.self) private var planningStore
     @Binding var errorMessage: String?
     @State private var showingDeleteConfirmation = false
-    @State private var isExpanded = false
+    @State private var isExpanded: Bool
+
+    init(
+        book: Book,
+        item: OutlineItem,
+        presentation: BookOutlinePresentation,
+        availableStages: [OutlineStage],
+        onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil,
+        errorMessage: Binding<String?>,
+        initiallyExpanded: Bool = false
+    ) {
+        self.book = book
+        self.item = item
+        self.presentation = presentation
+        self.availableStages = availableStages
+        self.onOpenOutlineItem = onOpenOutlineItem
+        _errorMessage = errorMessage
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         let source = sourceLocation

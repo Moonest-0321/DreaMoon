@@ -68,7 +68,6 @@ struct EditorWorkspaceView: View {
             if isShowingPlanningWorkspace {
                 BookPlanningWorkspaceView(
                     book: book,
-                    onReturnToWriting: returnToWriting,
                     onOpenOutlineItem: openOutlineItem
                 )
                 .toolbar { workspaceToolbar }
@@ -165,15 +164,13 @@ struct EditorWorkspaceView: View {
                 Label("設定集", systemImage: "sidebar.right")
             }
             .help("顯示/隱藏右欄設定集")
-            Button(action: showPlanningWorkspace) {
-                Label("大綱", systemImage: "rectangle.3.group")
+            Button(action: isShowingPlanningWorkspace ? returnToWriting : showPlanningWorkspace) {
+                Label(
+                    isShowingPlanningWorkspace ? "回到文本編輯" : "大綱",
+                    systemImage: isShowingPlanningWorkspace ? "text.book.closed" : "rectangle.3.group"
+                )
             }
-            .disabled(isShowingPlanningWorkspace)
-            .help("開啟大綱工作區")
-            Button { showingShortcutHelp = true } label: {
-                Label("快捷鍵", systemImage: "keyboard")
-            }
-            .help("開啟快捷鍵說明")
+            .help(isShowingPlanningWorkspace ? "回到文本編輯" : "開啟大綱工作區")
         }
     }
 

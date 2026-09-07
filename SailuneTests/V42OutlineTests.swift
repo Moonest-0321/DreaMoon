@@ -1,11 +1,12 @@
 import XCTest
 import SwiftData
+import AppKit
 @testable import Sailune
 
 @MainActor
 final class V42OutlineTests: XCTestCase {
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -306,6 +307,40 @@ final class V42OutlineTests: XCTestCase {
         try store.setPlacement(item, kind: .stageStart)
         let reopened = try StoryPlanningStore(container: container)
         XCTAssertEqual(reopened.placement(outlineItemID: itemID)?.kind, .stageStart)
+    }
+
+    func testV4StageStartMigratesToV5AsSectionGranularity() throws {
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Sailune-story-planning-v4-v5-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: storeURL) }
+        let bookID = UUID()
+        let stageID: UUID
+        do {
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
+            let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: storeURL)])
+            let context = container.mainContext
+            let line = OutlineStoryLine(bookID: bookID, title: "主線", kind: .main)
+            let stage = OutlineStage(bookID: bookID, storyLineID: line.id, title: "舊階段")
+            context.insert(line)
+            context.insert(stage)
+            context.insert(OutlineStageStartAnchor(
+                stageID: stage.id,
+                bookID: bookID,
+                location: .init(volumeID: UUID(), sectionID: UUID(), volumeTitle: "第一卷", sectionTitle: "第一節")
+            ))
+            try context.save()
+            stageID = stage.id
+        }
+
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryPlanningMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: storeURL)]
+        )
+        let store = try StoryPlanningStore(container: container)
+        XCTAssertNotNil(store.stageStart(stageID: stageID))
+        XCTAssertNil(store.stageStartDetail(stageID: stageID))
     }
 
     func testSiblingPlacementReorderingPreservesChildren() throws {
@@ -623,6 +658,62 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertEqual(lane.entries.map(\.itemID), [atStart.id, prose.id, placed.id, atEnd.id])
         XCTAssertEqual(lane.entries.map(\.columnIndex), [0, 0, 0, 1])
         XCTAssertEqual(lane.pendingItemIDs, [pending.id])
+        XCTAssertEqual(
+            lane.stageBands,
+            [.init(stageID: stage.id, title: "啟程", startColumnIndex: 0, endColumnIndex: 1)]
+        )
+    }
+
+    func testTimelineLayoutProjectsValidMainStageBandsWithoutGuessingInvalidStarts() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "敘事階段帶", author: "作者")
+        let volume = Volume(title: "第一幕", book: book)
+        let sections = (0..<4).map { index in
+            Section(title: "第 \(index + 1) 節", sortOrder: index, volume: volume)
+        }
+        volume.sections = sections
+        book.volumes = [volume]
+
+        let main = try store.createStoryLine(bookID: book.id, kind: .main)
+        let opening = try store.createStage(
+            storyLine: main,
+            title: "鋪陳",
+            start: OutlineStageStartLocation(
+                volumeID: volume.id,
+                sectionID: sections[0].id,
+                volumeTitle: volume.title,
+                sectionTitle: sections[0].title
+            )
+        )
+        let turn = try store.createStage(
+            storyLine: main,
+            title: "轉折",
+            start: OutlineStageStartLocation(
+                volumeID: volume.id,
+                sectionID: sections[2].id,
+                volumeTitle: volume.title,
+                sectionTitle: sections[2].title
+            )
+        )
+        _ = try store.createStage(
+            storyLine: main,
+            title: "失效階段",
+            start: OutlineStageStartLocation(
+                volumeID: volume.id,
+                sectionID: UUID(),
+                volumeTitle: volume.title,
+                sectionTitle: "已刪除節次"
+            )
+        )
+
+        let lane = try XCTUnwrap(store.timelineLayout(book: book).lanes.first)
+        XCTAssertEqual(
+            lane.stageBands,
+            [
+                .init(stageID: opening.id, title: "鋪陳", startColumnIndex: 0, endColumnIndex: 1),
+                .init(stageID: turn.id, title: "轉折", startColumnIndex: 2, endColumnIndex: 3)
+            ]
+        )
     }
 
     func testTimelineLayoutDoesNotGuessPositionForDeletedProseSource() throws {
@@ -645,6 +736,75 @@ final class V42OutlineTests: XCTestCase {
         let lane = try XCTUnwrap(layout.lanes.first)
         XCTAssertTrue(lane.entries.isEmpty)
         XCTAssertEqual(lane.pendingItemIDs, [item.id])
+    }
+
+    func testNarrativeLayoutCreatesOneColumnPerSceneHeadingNotPerBodyParagraph() throws {
+        let source = NSMutableAttributedString(string: "第一幕\n王城陷落。\n守軍撤退。\n\n第二幕\n援軍抵達。")
+        source.addAttribute(.font, value: NSFont.systemFont(ofSize: 14), range: NSRange(location: 0, length: source.length))
+        let firstHeading = (source.string as NSString).range(of: "第一幕")
+        let secondHeading = (source.string as NSString).range(of: "第二幕")
+        source.addAttribute(.font, value: NSFont.systemFont(ofSize: 18, weight: .bold), range: firstHeading)
+        source.addAttribute(.font, value: NSFont.systemFont(ofSize: 18, weight: .bold), range: secondHeading)
+        let content = try AttributedString(source, including: \.appKit)
+        let book = Book(title: "測試書籍", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let section = Section(title: "第一節", content: content, sortOrder: 0, volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+
+        let layout = store.narrativeTimelineLayout(book: book)
+
+        XCTAssertEqual(layout.columns.map(\.volumeTitle), ["第一卷", "第一卷"])
+        XCTAssertEqual(layout.columns.map(\.sectionTitle), ["第一節", "第一節"])
+        XCTAssertEqual(layout.columns.map(\.headingTitle), ["第一幕", "第二幕"])
+    }
+
+    func testNarrativeStageBandsStartAtSelectedHeadingWithinSameSection() throws {
+        let source = NSMutableAttributedString(string: "第一幕\n開場。\n第二幕\n轉折。\n第三幕\n結局。")
+        source.addAttribute(.font, value: NSFont.systemFont(ofSize: 14), range: NSRange(location: 0, length: source.length))
+        for title in ["第一幕", "第二幕", "第三幕"] {
+            source.addAttribute(.font, value: NSFont.systemFont(ofSize: 18, weight: .bold), range: (source.string as NSString).range(of: title))
+        }
+        let book = Book(title: "階段定位", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let section = Section(title: "第一節", content: try AttributedString(source, including: \.appKit), sortOrder: 0, volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let main = try store.createStoryLine(bookID: book.id, kind: .main)
+        let opening = try store.createStage(storyLine: main, title: "開場", start: .init(volumeID: volume.id, sectionID: nil, volumeTitle: volume.title, sectionTitle: ""))
+        let turn = try store.createStage(storyLine: main, title: "轉折", start: .init(volumeID: volume.id, sectionID: section.id, volumeTitle: volume.title, sectionTitle: section.title, headingText: "第二幕", headingOffset: (source.string as NSString).range(of: "第二幕").location))
+        let ending = try store.createStage(storyLine: main, title: "結局", start: .init(volumeID: volume.id, sectionID: section.id, volumeTitle: volume.title, sectionTitle: section.title, headingText: "第三幕", headingOffset: (source.string as NSString).range(of: "第三幕").location))
+
+        let lane = try XCTUnwrap(store.narrativeTimelineLayout(book: book).lanes.first)
+        XCTAssertEqual(lane.stageBands, [
+            .init(stageID: opening.id, title: "開場", startColumnIndex: 0, endColumnIndex: 0),
+            .init(stageID: turn.id, title: "轉折", startColumnIndex: 1, endColumnIndex: 1),
+            .init(stageID: ending.id, title: "結局", startColumnIndex: 2, endColumnIndex: 2)
+        ])
+        XCTAssertEqual(store.timelineLayout(book: book).columns.count, 1)
+        try store.setStageStart(turn, to: .init(volumeID: volume.id, sectionID: section.id, volumeTitle: volume.title, sectionTitle: section.title))
+        XCTAssertEqual(store.narrativeTimelineLayout(book: book).lanes.first?.stageBands.first(where: { $0.stageID == turn.id })?.startColumnIndex, 0)
+    }
+
+    func testStageStartPersistsVolumeAndHeadingGranularity() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let line = try store.createStoryLine(bookID: UUID(), kind: .main)
+        let volumeID = UUID()
+        let volumeStage = try store.createStage(
+            storyLine: line,
+            start: .init(volumeID: volumeID, sectionID: nil, volumeTitle: "第一卷", sectionTitle: "")
+        )
+        let headingStage = try store.createStage(
+            storyLine: line,
+            start: .init(volumeID: volumeID, sectionID: UUID(), volumeTitle: "第一卷", sectionTitle: "第一節", headingText: "夜襲", headingOffset: 12)
+        )
+
+        XCTAssertEqual(store.stageStartDetail(stageID: volumeStage.id)?.granularity, .volume)
+        XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.granularity, .heading)
+        XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.headingTextSnapshot, "夜襲")
+        XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.headingOffset, 12)
     }
 
     private func removeStoreFiles(at url: URL) {

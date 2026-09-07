@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import AppKit
 
 enum StoryPlanningSchemaV2: VersionedSchema {
     static var versionIdentifier = Schema.Version(2, 0, 0)
@@ -33,16 +34,22 @@ enum StoryPlanningSchemaV4: VersionedSchema {
     }
 }
 
+enum StoryPlanningSchemaV5: VersionedSchema {
+    static var versionIdentifier = Schema.Version(5, 0, 0)
+    static var models: [any PersistentModel.Type] { StoryPlanningSchemaV4.models + [OutlineStageStartDetail.self] }
+}
+
 enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self]
+        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self, StoryPlanningSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
         [
             .lightweight(fromVersion: StoryPlanningSchemaV1.self, toVersion: StoryPlanningSchemaV2.self),
             .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self),
-            .lightweight(fromVersion: StoryPlanningSchemaV3.self, toVersion: StoryPlanningSchemaV4.self)
+            .lightweight(fromVersion: StoryPlanningSchemaV3.self, toVersion: StoryPlanningSchemaV4.self),
+            .lightweight(fromVersion: StoryPlanningSchemaV4.self, toVersion: StoryPlanningSchemaV5.self)
         ]
     }
 }
@@ -79,21 +86,116 @@ enum OutlineItemPlacementKind: String, CaseIterable, Identifiable, Hashable {
 
 struct OutlineStageStartLocation: Equatable {
     let volumeID: UUID
-    let sectionID: UUID
     let volumeTitle: String
+    let sectionID: UUID?
     let sectionTitle: String
+    let headingText: String
+    let headingOffset: Int?
+
+    var granularity: OutlineStageStartGranularity {
+        if headingOffset != nil { return .heading }
+        return sectionID == nil ? .volume : .section
+    }
+
+    init(
+        volumeID: UUID,
+        sectionID: UUID?,
+        volumeTitle: String,
+        sectionTitle: String,
+        headingText: String = "",
+        headingOffset: Int? = nil
+    ) {
+        self.volumeID = volumeID
+        self.volumeTitle = volumeTitle
+        self.sectionID = sectionID
+        self.sectionTitle = sectionTitle
+        self.headingText = headingText
+        self.headingOffset = headingOffset
+    }
+}
+
+enum OutlineStageStartGranularity: String, CaseIterable, Identifiable, Hashable {
+    case volume
+    case section
+    case heading
+    var id: String { rawValue }
+}
+
+struct ProseStructureScene: Equatable, Identifiable {
+    let sectionID: UUID
+    let title: String
+    let startOffset: Int
+    let endOffset: Int
+    var id: String { "\(sectionID.uuidString):\(startOffset):\(title)" }
+}
+
+enum ProseStructureParser {
+    static func scenes(in section: Section) -> [ProseStructureScene] {
+        let attributed = NSAttributedString(section.content)
+        let string = attributed.string as NSString
+        guard string.length > 0 else {
+            return [.init(sectionID: section.id, title: "尚未設定幕標題", startOffset: 0, endOffset: 0)]
+        }
+        var result: [ProseStructureScene] = []
+        var currentTitle = "尚未設定幕標題"
+        var currentStart = 0
+        var offset = 0
+        while offset < string.length {
+            let range = string.paragraphRange(for: NSRange(location: offset, length: 0))
+            let text = string.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+            let font = attributed.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            if !text.isEmpty, isSceneHeadingFont(font) {
+                if range.location > currentStart {
+                    result.append(.init(sectionID: section.id, title: currentTitle,
+                                        startOffset: currentStart, endOffset: range.location))
+                }
+                currentTitle = text
+                currentStart = range.location
+            }
+            let next = NSMaxRange(range)
+            if next <= offset { break }
+            offset = next
+        }
+        result.append(.init(sectionID: section.id, title: currentTitle,
+                            startOffset: currentStart, endOffset: string.length))
+        return result
+    }
 }
 
 /// 寬版時間軸的唯讀投影；它只保存目前畫面需要的位置資訊，
 /// 不建立第二份大綱資料，也不寫回故事規劃 store。
 struct OutlineTimelineLayout: Equatable {
     struct Column: Identifiable, Equatable {
+        let volumeID: UUID?
         let sectionID: UUID
         let volumeTitle: String
         let sectionTitle: String
+        let headingTitle: String
+        let contentStartOffset: Int?
+        let contentEndOffset: Int?
         let index: Int
 
-        var id: UUID { sectionID }
+        var id: String { "\(sectionID.uuidString):\(contentStartOffset ?? -1)" }
+
+        init(
+            volumeID: UUID? = nil,
+            sectionID: UUID,
+            volumeTitle: String,
+            sectionTitle: String,
+            headingTitle: String = "",
+            contentStartOffset: Int? = nil,
+            contentEndOffset: Int? = nil,
+            index: Int
+        ) {
+            self.volumeID = volumeID
+            self.sectionID = sectionID
+            self.volumeTitle = volumeTitle
+            self.sectionTitle = sectionTitle
+            self.headingTitle = headingTitle
+            self.contentStartOffset = contentStartOffset
+            self.contentEndOffset = contentEndOffset
+            self.index = index
+        }
     }
 
     struct Entry: Identifiable, Equatable {
@@ -104,12 +206,24 @@ struct OutlineTimelineLayout: Equatable {
         var id: UUID { itemID }
     }
 
+    /// 主線階段在正文結構軸上的唯讀範圍。失效或尚未設定的起點不會
+    /// 產生區段，避免畫面替作者猜測不存在的位置。
+    struct StageBand: Identifiable, Equatable {
+        let stageID: UUID
+        let title: String
+        let startColumnIndex: Int
+        let endColumnIndex: Int
+
+        var id: UUID { stageID }
+    }
+
     struct Lane: Identifiable, Equatable {
         let storyLineID: UUID
         let title: String
         let kind: OutlineStoryLineKind
         let entries: [Entry]
         let pendingItemIDs: [UUID]
+        let stageBands: [StageBand]
 
         var id: UUID { storyLineID }
     }
@@ -331,11 +445,40 @@ final class OutlineStageStartAnchor {
         self.stageID = stageID
         self.bookID = bookID
         self.volumeID = location.volumeID
-        self.sectionID = location.sectionID
+        self.sectionID = location.sectionID ?? location.volumeID
         self.volumeTitleSnapshot = location.volumeTitle
         self.sectionTitleSnapshot = location.sectionTitle
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+}
+
+/// V5 supplements the released V4 stage anchor without changing its schema snapshot.
+/// Existing rows without a detail record retain V4's section-level meaning.
+@Model
+final class OutlineStageStartDetail {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var stageID: UUID
+    var granularityRawValue: String
+    var headingTextSnapshot: String
+    var headingOffset: Int?
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(stageID: UUID, location: OutlineStageStartLocation) {
+        self.id = UUID()
+        self.stageID = stageID
+        self.granularityRawValue = location.granularity.rawValue
+        self.headingTextSnapshot = location.headingText
+        self.headingOffset = location.headingOffset
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+
+    var granularity: OutlineStageStartGranularity {
+        get { OutlineStageStartGranularity(rawValue: granularityRawValue) ?? .section }
+        set { granularityRawValue = newValue.rawValue; updatedAt = Date() }
     }
 }
 

@@ -150,6 +150,7 @@ final class StoryPlanningStore {
     private(set) var outlineItems: [OutlineItem] = []
     private(set) var outlineAnchors: [OutlineItemAnchor] = []
     private(set) var stageStartAnchors: [OutlineStageStartAnchor] = []
+    private(set) var stageStartDetails: [OutlineStageStartDetail] = []
     private(set) var itemPlacements: [OutlineItemPlacement] = []
 
     init(container: ModelContainer) throws {
@@ -169,6 +170,7 @@ final class StoryPlanningStore {
         outlineItems = try context.fetch(FetchDescriptor<OutlineItem>())
         outlineAnchors = try context.fetch(FetchDescriptor<OutlineItemAnchor>())
         stageStartAnchors = try context.fetch(FetchDescriptor<OutlineStageStartAnchor>())
+        stageStartDetails = try context.fetch(FetchDescriptor<OutlineStageStartDetail>())
         itemPlacements = try context.fetch(FetchDescriptor<OutlineItemPlacement>())
     }
 
@@ -197,12 +199,13 @@ final class StoryPlanningStore {
     }
 
     func orderedStages(storyLineID: UUID, sections: [Section]) -> [OutlineStage] {
-        let positions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
         return stages(storyLineID: storyLineID).sorted { lhs, rhs in
-            let lhsPosition = stageStart(stageID: lhs.id).flatMap { positions[$0.sectionID] }
-            let rhsPosition = stageStart(stageID: rhs.id).flatMap { positions[$0.sectionID] }
+            let lhsPosition = stageStartPosition(stageID: lhs.id, sections: sections)
+            let rhsPosition = stageStartPosition(stageID: rhs.id, sections: sections)
             switch (lhsPosition, rhsPosition) {
-            case let (.some(left), .some(right)) where left != right: return left < right
+            case let (.some(left), .some(right)) where left != right:
+                if left.sectionIndex != right.sectionIndex { return left.sectionIndex < right.sectionIndex }
+                return left.offset < right.offset
             case (.some, .none): return true
             case (.none, .some): return false
             default: return Self.stableOrder(lhs, rhs)
@@ -279,15 +282,41 @@ final class StoryPlanningStore {
             let volumeTitle = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
             return OutlineTimelineLayout.Column(
+                volumeID: section.volume?.id,
                 sectionID: section.id,
-                volumeTitle: volumeTitle.isEmpty ? "未命名幕" : volumeTitle,
+                volumeTitle: volumeTitle.isEmpty ? "未命名卷次" : volumeTitle,
                 sectionTitle: sectionTitle.isEmpty ? "未命名節次" : sectionTitle,
+                headingTitle: "",
+                contentStartOffset: nil,
+                contentEndOffset: nil,
                 index: index
             )
         }
 
         let lanes = storyLines(bookID: book.id).map { storyLine in
             let lineStages = orderedStages(storyLineID: storyLine.id, sections: sections)
+            let stageBands: [OutlineTimelineLayout.StageBand]
+            if storyLine.kind == .main, !columns.isEmpty {
+                stageBands = lineStages.compactMap { stage in
+                    guard let startIndex = stageStartPosition(stageID: stage.id, sections: sections)?.sectionIndex else { return nil }
+                    let nextStartIndex = lineStages
+                        .drop { $0.id != stage.id }
+                        .dropFirst()
+                        .compactMap { laterStage in
+                            stageStartPosition(stageID: laterStage.id, sections: sections)?.sectionIndex
+                        }
+                        .first { $0 > startIndex }
+                    let endIndex = nextStartIndex.map { $0 - 1 } ?? columns.index(before: columns.endIndex)
+                    return OutlineTimelineLayout.StageBand(
+                        stageID: stage.id,
+                        title: stage.title,
+                        startColumnIndex: startIndex,
+                        endColumnIndex: max(startIndex, endIndex)
+                    )
+                }
+            } else {
+                stageBands = []
+            }
             var orderedLineItems: [OutlineItem] = []
             if storyLine.kind == .main {
                 for stage in lineStages {
@@ -310,11 +339,10 @@ final class StoryPlanningStore {
                     guard storyLine.kind != .main else { return nil }
                     return atStart ? columns.startIndex : columns.index(before: columns.endIndex)
                 }
-                guard let start = stageStart(stageID: stageID),
-                      let startIndex = sectionPositions[start.sectionID] else { return nil }
+                guard let startIndex = stageStartPosition(stageID: stageID, sections: sections)?.sectionIndex else { return nil }
                 guard !atStart else { return startIndex }
                 let laterStarts = lineStages.dropFirst(stageIndex + 1).compactMap { laterStage in
-                    stageStart(stageID: laterStage.id).flatMap { sectionPositions[$0.sectionID] }
+                    stageStartPosition(stageID: laterStage.id, sections: sections)?.sectionIndex
                 }
                 if let nextStart = laterStarts.first, nextStart > startIndex {
                     return nextStart - 1
@@ -365,10 +393,96 @@ final class StoryPlanningStore {
                 title: storyLine.title,
                 kind: storyLine.kind,
                 entries: entries,
-                pendingItemIDs: pendingItemIDs
+                pendingItemIDs: pendingItemIDs,
+                stageBands: stageBands
             )
         }
         return OutlineTimelineLayout(columns: columns, lanes: lanes)
+    }
+
+    /// V4.4.2 adds scene-heading groups to the narrative axis while preserving
+    /// the existing section-level timeline projection and manual placements.
+    func narrativeTimelineLayout(book: Book) -> OutlineTimelineLayout {
+        let base = timelineLayout(book: book)
+        let sections = BookStructure.orderedSections(in: book)
+        var columns: [OutlineTimelineLayout.Column] = []
+        for section in sections {
+            let volumeTitle = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let scenes = ProseStructureParser.scenes(in: section)
+            for scene in scenes {
+                columns.append(.init(
+                    volumeID: section.volume?.id,
+                    sectionID: section.id,
+                    volumeTitle: volumeTitle.isEmpty ? "未命名卷次" : volumeTitle,
+                    sectionTitle: sectionTitle.isEmpty ? "未命名節次" : sectionTitle,
+                    headingTitle: scene.title,
+                    contentStartOffset: scene.startOffset,
+                    contentEndOffset: scene.endOffset,
+                    index: columns.count
+                ))
+            }
+        }
+        let firstColumnBySection = Dictionary(grouping: columns, by: \.sectionID).compactMapValues { $0.first?.index }
+        let baseColumnsByIndex = Dictionary(uniqueKeysWithValues: base.columns.map { ($0.index, $0) })
+
+        let lanes: [OutlineTimelineLayout.Lane] = base.lanes.map { lane in
+            let baseEntryByID = Dictionary(uniqueKeysWithValues: lane.entries.map { ($0.itemID, $0) })
+            var entries: [OutlineTimelineLayout.Entry] = []
+            var pending = lane.pendingItemIDs
+            for item in items(storyLineID: lane.storyLineID) where !pending.contains(item.id) {
+                if let anchor = anchor(outlineItemID: item.id),
+                   let section = sections.first(where: { $0.id == anchor.sectionID }) {
+                    let offset = anchor.resolvedOffset(in: String(section.content.characters))
+                    let column = columns.first {
+                        $0.sectionID == anchor.sectionID &&
+                        ($0.contentStartOffset ?? Int.min) <= offset &&
+                        offset < ($0.contentEndOffset ?? Int.max)
+                    } ?? columns.first { $0.sectionID == anchor.sectionID }
+                    if let column { entries.append(.init(itemID: item.id, columnIndex: column.index, sequence: offset)) }
+                    else { pending.append(item.id) }
+                } else if let baseEntry = baseEntryByID[item.id],
+                          let baseColumn = baseColumnsByIndex[baseEntry.columnIndex],
+                          let columnIndex = firstColumnBySection[baseColumn.sectionID] {
+                    entries.append(.init(itemID: item.id, columnIndex: columnIndex, sequence: baseEntry.sequence))
+                } else {
+                    pending.append(item.id)
+                }
+            }
+            // 敘事欄位細分到幕標題，必須直接解析階段起點，不能沿用節次時間軸的範圍。
+            let starts = orderedStages(storyLineID: lane.storyLineID, sections: sections).compactMap { stage -> (stage: OutlineStage, column: Int)? in
+                guard lane.kind == .main,
+                      let position = stageStartPosition(stageID: stage.id, sections: sections) else { return nil }
+                let sectionID = sections[position.sectionIndex].id
+                let column: Int?
+                if stageStartDetail(stageID: stage.id)?.granularity == .heading {
+                    column = columns.first {
+                        $0.sectionID == sectionID && $0.contentStartOffset == position.offset
+                    }?.index
+                } else {
+                    column = firstColumnBySection[sectionID]
+                }
+                guard let column else { return nil }
+                return (stage, column)
+            }
+            let bands: [OutlineTimelineLayout.StageBand] = starts.enumerated().map { index, start in
+                let nextColumn = starts.dropFirst(index + 1).first { $0.column > start.column }?.column
+                let end = nextColumn.map { $0 - 1 } ?? (columns.count - 1)
+                return .init(stageID: start.stage.id, title: start.stage.title,
+                             startColumnIndex: start.column, endColumnIndex: max(start.column, end))
+            }
+            var seen = Set<UUID>()
+            let uniquePending = pending.filter { seen.insert($0).inserted }
+            return OutlineTimelineLayout.Lane(
+                storyLineID: lane.storyLineID,
+                title: lane.title,
+                kind: lane.kind,
+                entries: entries,
+                pendingItemIDs: uniquePending,
+                stageBands: bands
+            )
+        }
+        return .init(columns: columns, lanes: lanes)
     }
 
     func anchor(outlineItemID: UUID) -> OutlineItemAnchor? {
@@ -377,6 +491,10 @@ final class StoryPlanningStore {
 
     func stageStart(stageID: UUID) -> OutlineStageStartAnchor? {
         stageStartAnchors.first { $0.stageID == stageID }
+    }
+
+    func stageStartDetail(stageID: UUID) -> OutlineStageStartDetail? {
+        stageStartDetails.first { $0.stageID == stageID }
     }
 
     func placement(outlineItemID: UUID) -> OutlineItemPlacement? {
@@ -468,6 +586,7 @@ final class StoryPlanningStore {
         // 階段與開始定位一併儲存，避免定位失敗後留下半成品。
         context.insert(stage)
         context.insert(OutlineStageStartAnchor(stageID: stage.id, bookID: stage.bookID, location: start))
+        context.insert(OutlineStageStartDetail(stageID: stage.id, location: start))
         do {
             try context.save()
             try reload()
@@ -483,10 +602,16 @@ final class StoryPlanningStore {
         let anchor = stageStart(stageID: stage.id) ?? OutlineStageStartAnchor(stageID: stage.id, bookID: stage.bookID, location: location)
         if stageStart(stageID: stage.id) == nil { context.insert(anchor) }
         anchor.volumeID = location.volumeID
-        anchor.sectionID = location.sectionID
+        anchor.sectionID = location.sectionID ?? location.volumeID
         anchor.volumeTitleSnapshot = location.volumeTitle
         anchor.sectionTitleSnapshot = location.sectionTitle
         anchor.updatedAt = Date()
+        let detail = stageStartDetail(stageID: stage.id) ?? OutlineStageStartDetail(stageID: stage.id, location: location)
+        if stageStartDetail(stageID: stage.id) == nil { context.insert(detail) }
+        detail.granularityRawValue = location.granularity.rawValue
+        detail.headingTextSnapshot = location.headingText
+        detail.headingOffset = location.headingOffset
+        detail.updatedAt = Date()
         stage.updatedAt = Date()
         do {
             try context.save()
@@ -679,6 +804,7 @@ final class StoryPlanningStore {
             for item in outlineItems where item.storyLineID == storyLine.id { context.delete(item) }
             let stageIDs = Set(stages.filter { $0.storyLineID == storyLine.id }.map(\.id))
             for start in stageStartAnchors where stageIDs.contains(start.stageID) { context.delete(start) }
+            for detail in stageStartDetails where stageIDs.contains(detail.stageID) { context.delete(detail) }
             for stage in stages where stage.storyLineID == storyLine.id { context.delete(stage) }
             context.delete(storyLine)
             try context.save()
@@ -729,6 +855,7 @@ final class StoryPlanningStore {
                 context.delete(item)
             }
             if let start = stageStart(stageID: stage.id) { context.delete(start) }
+            if let detail = stageStartDetail(stageID: stage.id) { context.delete(detail) }
             context.delete(stage)
             try context.save()
             try reload()
@@ -834,19 +961,36 @@ final class StoryPlanningStore {
         guard !stages.isEmpty else { return nil }
         let sectionPositions = Dictionary(uniqueKeysWithValues: sections.enumerated().map { ($1.id, $0) })
         guard let sectionIndex = sectionPositions[sectionID] else { return stages.last }
-        let starts = stages.compactMap { stage -> (stage: OutlineStage, sectionIndex: Int)? in
-            guard let start = stageStart(stageID: stage.id), let index = sectionPositions[start.sectionID] else { return nil }
-            return (stage, index)
+        let starts = stages.compactMap { stage -> (stage: OutlineStage, sectionIndex: Int, offset: Int)? in
+            guard let position = stageStartPosition(stageID: stage.id, sections: sections) else { return nil }
+            return (stage, position.sectionIndex, position.offset)
         }
         guard !starts.isEmpty else { return stages.last }
         let sortedStarts = starts.sorted {
             if $0.sectionIndex != $1.sectionIndex { return $0.sectionIndex < $1.sectionIndex }
+            if $0.offset != $1.offset { return $0.offset < $1.offset }
             return Self.stableOrder($0.stage, $1.stage)
         }
         let matching = sortedStarts.last {
-            $0.sectionIndex <= sectionIndex
+            $0.sectionIndex < sectionIndex || ($0.sectionIndex == sectionIndex && $0.offset <= anchorOffset)
         }
         return matching?.stage ?? stages.last
+    }
+
+    private func stageStartPosition(stageID: UUID, sections: [Section]) -> (sectionIndex: Int, offset: Int)? {
+        guard let anchor = stageStart(stageID: stageID) else { return nil }
+        switch stageStartDetail(stageID: stageID)?.granularity ?? .section {
+        case .volume:
+            guard let index = sections.firstIndex(where: { $0.volume?.id == anchor.volumeID }) else { return nil }
+            return (index, 0)
+        case .section:
+            guard let index = sections.firstIndex(where: { $0.id == anchor.sectionID }) else { return nil }
+            return (index, 0)
+        case .heading:
+            guard let index = sections.firstIndex(where: { $0.id == anchor.sectionID }),
+                  let offset = stageStartDetail(stageID: stageID)?.headingOffset else { return nil }
+            return (index, offset)
+        }
     }
 
     private func moveDependentPlacementsToPending(for item: OutlineItem) {

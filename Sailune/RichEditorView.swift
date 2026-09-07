@@ -114,7 +114,7 @@ private struct CharacterLinkUndoRecord {
     let range: NSRange
     let value: Any
 }
-fileprivate func isHeadingFont(_ font: NSFont?) -> Bool {
+func isSceneHeadingFont(_ font: NSFont?) -> Bool {
     guard let font else { return false }
     return font.pointSize == 18 && font.fontDescriptor.symbolicTraits.contains(.bold)
 }
@@ -292,7 +292,7 @@ final class SailuneTextView: CompositionAwareTextView {
         let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
                             .replacingOccurrences(of: "\r", with: "\n")
         let font = coordinator?.currentParagraphFont() ?? bodyFont
-        let attrs: [NSAttributedString.Key: Any] = isHeadingFont(font) ? headingAttrs : bodyAttrs
+        let attrs: [NSAttributedString.Key: Any] = isSceneHeadingFont(font) ? headingAttrs : bodyAttrs
         let attr = NSAttributedString(string: normalized, attributes: attrs)
         self.insertText(attr, replacementRange: self.selectedRange())
     }
@@ -1098,10 +1098,10 @@ struct RichEditorView: NSViewRepresentable {
         private func isHeading(forParagraphRange pr: NSRange, storage: NSTextStorage, tv: NSTextView) -> Bool {
             if pr.length > 0 {
                 let f = (storage.attribute(.font, at: pr.location, effectiveRange: nil) as? NSFont) ?? bodyFont
-                return isHeadingFont(f)
+                return isSceneHeadingFont(f)
             } else {
                 let f = (tv.typingAttributes[.font] as? NSFont) ?? bodyFont
-                return isHeadingFont(f)
+                return isSceneHeadingFont(f)
             }
         }
         func currentParagraphIsHeading() -> Bool {

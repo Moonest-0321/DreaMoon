@@ -4,6 +4,136 @@ import SwiftData
 
 @MainActor
 final class ItemV3Tests: XCTestCase {
+    func testCalendarDatesAndEditedEventsSurviveReopeningStore() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Sailune-calendar-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: url.path + suffix)
+            }
+        }
+        func openStore() throws -> ModelContainer {
+            let schema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+            return try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, url: url)])
+        }
+        func writeStore() throws {
+            let container = try openStore()
+            let context = container.mainContext
+            let book = Book(title: "重開測試", author: "作者")
+            context.insert(book)
+            try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+            let axis = try TimelineEngine.addSecondaryTimeline(for: book, name: "前史", in: context)
+            let node = Node(year: -3, month: 2)
+            context.insert(node)
+            node.timeline = axis
+            node.era = book.currentEra
+            let event = Event(title: "原標題", detail: "原內容")
+            context.insert(event)
+            event.node = node
+            try context.save()
+            event.title = "更新標題"
+            event.detail = "更新內容"
+            event.isVisible = false
+            try context.save()
+        }
+        try writeStore()
+        let reopened = try openStore()
+        let book = try XCTUnwrap(reopened.mainContext.fetch(FetchDescriptor<Book>()).first)
+        XCTAssertEqual(book.timelines.count, 2)
+        let node = try XCTUnwrap(reopened.mainContext.fetch(FetchDescriptor<Node>()).first)
+        XCTAssertEqual(node.year, -3)
+        XCTAssertEqual(node.month, 2)
+        XCTAssertNil(node.day)
+        XCTAssertEqual(node.timeline?.name, "前史")
+        XCTAssertEqual(node.era?.id, book.currentEra?.id)
+        let event = try XCTUnwrap(reopened.mainContext.fetch(FetchDescriptor<Event>()).first)
+        XCTAssertEqual(event.node?.id, node.id)
+        XCTAssertEqual(event.title, "更新標題")
+        XCTAssertEqual(event.detail, "更新內容")
+        XCTAssertFalse(event.isVisible)
+    }
+
+    func testCalendarProjectionGroupsDatesAndKeepsErasSeparate() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let era = Era(name: "第一紀元")
+        let otherEra = Era(name: "另一紀元")
+        context.insert(era)
+        context.insert(otherEra)
+        let nodes = [Node(year: 1), Node(year: 1, month: 2), Node(year: 1, month: 2, day: 3), Node(year: 1, month: 2, day: 4), Node(year: 0), Node(year: 1)]
+        for node in nodes { context.insert(node); node.era = era }
+        nodes[5].era = otherEra
+        let event = Event(title: "事件", detail: "")
+        context.insert(event)
+        event.node = nodes[2]
+        try context.save()
+        let yearCells = TimelineDateProjection.cells(nodes: nodes, events: [event], primary: true, granularity: .year)
+        XCTAssertEqual(yearCells.count, 2)
+        XCTAssertEqual(Set(yearCells.compactMap(\.eraID)), Set([era.id, otherEra.id]))
+        XCTAssertFalse(yearCells.flatMap(\.nodes).contains { $0.year == 0 })
+        XCTAssertEqual(TimelineDateProjection.cells(nodes: Array(nodes.prefix(4)), events: [event], primary: true, granularity: .month).count, 2)
+        XCTAssertEqual(TimelineDateProjection.cells(nodes: Array(nodes.prefix(4)), events: [event], primary: true, granularity: .day).count, 4)
+        event.isVisible = false
+        XCTAssertTrue(TimelineDateProjection.cells(nodes: nodes, events: [event], primary: true, granularity: .day).flatMap(\.events).isEmpty)
+        XCTAssertEqual(TimelineDateProjection.cells(nodes: nodes, events: [event], primary: false, granularity: .day).flatMap(\.events).count, 1)
+        nodes[2].isVisible = false
+        XCTAssertFalse(TimelineDateProjection.cells(nodes: nodes, events: [event], primary: true, granularity: .day).flatMap(\.nodes).contains { $0.id == nodes[2].id })
+    }
+
+    func testTimelineBootstrapAndEraChangeKeepExistingDates() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "曆法測試", author: "作者")
+        context.insert(book)
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+        let primary = try XCTUnwrap(TimelineEngine.Query.primaryTimeline(for: book))
+        let era = try XCTUnwrap(book.currentEra)
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+        XCTAssertEqual(book.timelines.count, 1)
+        XCTAssertEqual(book.currentEra?.id, era.id)
+        let node = Node(year: 12, month: nil, day: nil)
+        context.insert(node)
+        node.timeline = primary
+        node.era = era
+        try context.save()
+        let result = try TimelineEngine.EraChange.perform(for: book, input: .init(newName: "新紀元", newColor: "#2980B9"), in: context)
+        XCTAssertEqual(result.era.startOrdinal, era.startOrdinal + 12)
+        XCTAssertEqual(node.year, 12)
+        XCTAssertNil(node.month)
+        XCTAssertEqual(node.era?.id, era.id)
+        XCTAssertEqual(result.node.year, 1)
+        XCTAssertEqual(result.node.timeline?.id, primary.id)
+    }
+
+    func testTimelineDeletionPreservesOtherAxisAndProse() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "刪除測試", author: "作者")
+        context.insert(book)
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+        let primary = try XCTUnwrap(TimelineEngine.Query.primaryTimeline(for: book))
+        let secondary = try TimelineEngine.addSecondaryTimeline(for: book, name: "前史", in: context)
+        let section = Section(title: "正文", content: AttributedString("保留文字"))
+        context.insert(section)
+        let first = Node(year: 1)
+        let second = Node(year: 2, month: 3, day: 4)
+        context.insert(first)
+        context.insert(second)
+        first.timeline = primary
+        second.timeline = secondary
+        second.section = section
+        let event = Event(title: "副軸事件", detail: "內容")
+        context.insert(event)
+        event.node = second
+        try context.save()
+        let firstID = first.id
+        let sectionID = section.id
+        try PersistentModelDeletion.deleteTimeline(secondary, in: context)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Node>()).map(\.id), [firstID])
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Event>()).isEmpty)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Section>()).first?.id, sectionID)
+        XCTAssertEqual(String(section.content.characters), "保留文字")
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema(
             NovelWriterSchemaV5.models + [
@@ -16,7 +146,7 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV4.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,

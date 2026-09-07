@@ -25,7 +25,7 @@
 
 `ContentView` 負責書櫃，`BookOverviewView` 負責書籍與卷節結構及故事背景入口，`EditorWorkspaceView` 負責寫作與寬版大綱兩種同視窗呈現。寫作面使用 `NavigationSplitView`，寬版大綱則是獨立的中央 surface，不包含正文 sidebar，因此系統側邊欄控制也不會出現在大綱模式。進入前先提交待存文字；書籍、目前節次與 editor bridge 狀態由外層保留，返回正文或來源時重新建立文字 surface 並定位。
 
-`InspectorViews` 及各功能 View 負責右側設定集；`WorkspaceInspectorView` 保留「設定集／大綱」頂層切換，右欄大綱只提供敘事大綱與時間軸。`OutlineViews` 同時提供可重用的垂直敘事大綱、寬版 `BookPlanningWorkspaceView` 與橫向結構時間軸。故事背景不再放在右欄，而是在 `BookOverviewView` 以摘要卡及完整寬度編輯器呈現。
+`InspectorViews` 及各功能 View 負責右側設定集；`WorkspaceInspectorView` 保留「設定集／大綱」頂層切換，右欄大綱仍提供敘事大綱與時間軸。`OutlineViews` 提供右欄項目管理、寬版 `BookPlanningWorkspaceView` 與敘事橫向結構畫布。V4.4.3 的寬版及右欄時間軸均接入 `TimelinePanelView`：寬版日期／事件分欄，窄版日期展開；`TimelineDateProjection` 提供可測試的日期分組，排序與改元沿用 TimelineEngine。敘事模式保留主線階段帶與項目詳情，沒有 OutlineItem→Event 轉換。故事背景在 `BookOverviewView` 以摘要卡及完整寬度編輯器呈現。
 
 ### 編輯器橋接層
 
