@@ -39,9 +39,16 @@ enum StoryPlanningSchemaV5: VersionedSchema {
     static var models: [any PersistentModel.Type] { StoryPlanningSchemaV4.models + [OutlineStageStartDetail.self] }
 }
 
+/// V6 stores timeline-card presentation metadata beside story planning. Event
+/// remains in the main store, so cross-store references use stable UUIDs.
+enum StoryPlanningSchemaV6: VersionedSchema {
+    static var versionIdentifier = Schema.Version(6, 0, 0)
+    static var models: [any PersistentModel.Type] { StoryPlanningSchemaV5.models + [TimelineEventCardMetadata.self] }
+}
+
 enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self, StoryPlanningSchemaV5.self]
+        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self, StoryPlanningSchemaV5.self, StoryPlanningSchemaV6.self]
     }
 
     static var stages: [MigrationStage] {
@@ -49,8 +56,61 @@ enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: StoryPlanningSchemaV1.self, toVersion: StoryPlanningSchemaV2.self),
             .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self),
             .lightweight(fromVersion: StoryPlanningSchemaV3.self, toVersion: StoryPlanningSchemaV4.self),
-            .lightweight(fromVersion: StoryPlanningSchemaV4.self, toVersion: StoryPlanningSchemaV5.self)
+            .lightweight(fromVersion: StoryPlanningSchemaV4.self, toVersion: StoryPlanningSchemaV5.self),
+            .lightweight(fromVersion: StoryPlanningSchemaV5.self, toVersion: StoryPlanningSchemaV6.self)
         ]
+    }
+}
+
+enum TimelineExcerptMode: String, CaseIterable, Identifiable {
+    case automatic = "內文自動節錄"
+    case manual = "手動自填"
+
+    var id: String { rawValue }
+}
+
+/// Cross-store companion for a main-store Event. Deleting an outline source
+/// never deletes the Event; the UI instead exposes the missing source.
+@Model
+final class TimelineEventCardMetadata {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var eventID: UUID
+    var bookID: UUID
+    var outlineItemID: UUID?
+    var excerptModeRawValue: String
+    var manualExcerpt: String
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        eventID: UUID,
+        bookID: UUID,
+        outlineItemID: UUID? = nil,
+        excerptMode: TimelineExcerptMode = .automatic,
+        manualExcerpt: String = "",
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.eventID = eventID
+        self.bookID = bookID
+        self.outlineItemID = outlineItemID
+        self.excerptModeRawValue = excerptMode.rawValue
+        self.manualExcerpt = Self.limitedExcerpt(manualExcerpt)
+        self.updatedAt = updatedAt
+    }
+
+    var excerptMode: TimelineExcerptMode {
+        get { TimelineExcerptMode(rawValue: excerptModeRawValue) ?? .automatic }
+        set { excerptModeRawValue = newValue.rawValue; updatedAt = Date() }
+    }
+
+    func setManualExcerpt(_ value: String) {
+        manualExcerpt = Self.limitedExcerpt(value)
+        updatedAt = Date()
+    }
+
+    static func limitedExcerpt(_ value: String) -> String {
+        String(value.prefix(30))
     }
 }
 
@@ -230,6 +290,35 @@ struct OutlineTimelineLayout: Equatable {
 
     let columns: [Column]
     let lanes: [Lane]
+}
+
+/// 寬版敘事大綱的精簡唯讀投影。它只描述既有故事線、階段與項目的
+/// 閱讀順序，不建立副本，也不回寫任何排序資料。
+struct NarrativeOutlineList: Equatable {
+    struct Stage: Identifiable, Equatable {
+        let id: UUID
+        let title: String
+        let itemIDs: [UUID]
+    }
+
+    struct StoryLine: Identifiable, Equatable {
+        let id: UUID
+        let title: String
+        let kind: OutlineStoryLineKind
+        let stages: [Stage]
+        let unassignedItemIDs: [UUID]
+        let pendingItemIDs: [UUID]
+    }
+
+    let storyLines: [StoryLine]
+
+    var itemIDsInDisplayOrder: [UUID] {
+        storyLines.flatMap { storyLine in
+            storyLine.stages.flatMap(\.itemIDs)
+                + storyLine.unassignedItemIDs
+                + storyLine.pendingItemIDs
+        }
+    }
 }
 
 /// 將選填引導與自由文字保存於既有背景欄位，讓已發布的 schema V3 可直接讀取舊資料。

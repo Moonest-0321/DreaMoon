@@ -25,7 +25,7 @@
 - `Sailune-v5-item-copies.store`：`ItemCopy`、`ItemCopyHolding`、`ItemCopyHistory`。
 - `Sailune-v5-item-copy-level-selections.store`：副本目前手動選擇的等級。
 - `Sailune-v5-ability-progress.store`：能力進度相關資料。
-- `Sailune-v5-story-planning.store`：`StoryPlanningSchemaV4`，包含 V3 的故事規劃模型，以及 `OutlineStageStartAnchor`、`OutlineItemPlacement`。
+- `Sailune-v5-story-planning.store`：`StoryPlanningSchemaV6`，包含既有故事規劃模型、`OutlineStageStartDetail` 與 `TimelineEventCardMetadata`。
 
 獨立 store 的資料以穩定 UUID（例如 `itemID`、`copyID`、`characterID`、`sectionID`）互相連結；它們不是 SwiftData 的直接跨 store relationship。
 
@@ -51,6 +51,9 @@
 - `BookPlanningProfile.backgroundText` 相容保存故事背景引導與其他背景；非結構化舊值一律視為其他背景，避免遺失既有文字。
 - `OutlineTimelineLayout` 是執行期間的唯讀投影，不是 SwiftData 模型：欄位來自目前書籍的幕／節次順序，泳道來自故事線，卡片仍指向原本的 `OutlineItem`。V4.4.1 的 `StageBand` 只投影有效主線階段的起訖欄位；無法解析的位置只進入 `pendingItems`，失效階段不起帶，兩者都不會回寫或猜測安置資料。
 - StoryPlanning schema V5 新增 `OutlineStageStartDetail`，以 `stageID` 一對一補充 V4 階段錨點的定位粒度（卷次／節次／幕標題）、幕標題快照及 offset。沒有 detail 的 V4 舊錨點維持節次語意；V4 模型本身不變。
+- StoryPlanning schema V6 新增 `TimelineEventCardMetadata`，以唯一 `eventID` 連至主 store Event，並以可選 `outlineItemID` 連至敘事大綱；它保存 `bookID`、節錄模式、手動節錄與更新時間，不建立跨 store SwiftData relationship。
+- Event 的標題、詳情、Node、Section 與角色仍由主 store 擁有。metadata 與有效 OutlineItemAnchor 共同決定正文來源；anchor 的 sectionID 會回填 Event.section，供卷節顯示與跳轉。
+- 刪除 Event 後清理對應 metadata；刪除 OutlineItem 不跨 store 刪 Event，卡片改顯示來源失效。刪除 Node／Timeline 仍依主 store cascade 刪 Event，再以冪等清理移除孤立 metadata。
 
 ## 待改善的模型風險
 

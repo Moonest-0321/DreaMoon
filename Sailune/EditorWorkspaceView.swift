@@ -68,7 +68,8 @@ struct EditorWorkspaceView: View {
             if isShowingPlanningWorkspace {
                 BookPlanningWorkspaceView(
                     book: book,
-                    onOpenOutlineItem: openOutlineItem
+                    onOpenOutlineItem: openOutlineItem,
+                    onOpenTimelineSection: openTimelineSection
                 )
                 .toolbar { workspaceToolbar }
             } else {
@@ -160,10 +161,6 @@ struct EditorWorkspaceView: View {
                 } label: { Label("匯出 TXT", systemImage: "doc.text") }
                 Button { EpubExporter.exportBook(book: book) } label: { Label("匯出 EPUB", systemImage: "book.closed") }
             } label: { Label("更多", systemImage: "ellipsis.circle") }
-            Button { setInspectorPresented(!showInspector) } label: {
-                Label("設定集", systemImage: "sidebar.right")
-            }
-            .help("顯示/隱藏右欄設定集")
             Button(action: isShowingPlanningWorkspace ? returnToWriting : showPlanningWorkspace) {
                 Label(
                     isShowingPlanningWorkspace ? "回到文本編輯" : "大綱",
@@ -171,6 +168,10 @@ struct EditorWorkspaceView: View {
                 )
             }
             .help(isShowingPlanningWorkspace ? "回到文本編輯" : "開啟大綱工作區")
+            Button { setInspectorPresented(!showInspector) } label: {
+                Label("設定集", systemImage: "sidebar.right")
+            }
+            .help("顯示/隱藏右欄設定集")
         }
     }
 
@@ -200,6 +201,14 @@ struct EditorWorkspaceView: View {
         DispatchQueue.main.async {
             bridge.requestSelect(sectionID: section.id, range: NSRange(location: offset, length: 0))
         }
+    }
+
+    private func openTimelineSection(_ section: Section) {
+        guard BookStructure.orderedSections(in: book).contains(where: { $0.id == section.id }) else { return }
+        bridge.flushPendingSave()
+        isShowingPlanningWorkspace = false
+        columnVisibility = writingColumnVisibility
+        selectedSection = section
     }
 
     private func perform(_ command: PaletteCommand) {

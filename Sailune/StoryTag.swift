@@ -152,6 +152,7 @@ final class StoryPlanningStore {
     private(set) var stageStartAnchors: [OutlineStageStartAnchor] = []
     private(set) var stageStartDetails: [OutlineStageStartDetail] = []
     private(set) var itemPlacements: [OutlineItemPlacement] = []
+    private(set) var timelineEventCardMetadata: [TimelineEventCardMetadata] = []
 
     init(container: ModelContainer) throws {
         self.container = container
@@ -172,6 +173,7 @@ final class StoryPlanningStore {
         stageStartAnchors = try context.fetch(FetchDescriptor<OutlineStageStartAnchor>())
         stageStartDetails = try context.fetch(FetchDescriptor<OutlineStageStartDetail>())
         itemPlacements = try context.fetch(FetchDescriptor<OutlineItemPlacement>())
+        timelineEventCardMetadata = try context.fetch(FetchDescriptor<TimelineEventCardMetadata>())
     }
 
     func tags(bookID: UUID) -> [StoryTag] { tags.filter { $0.bookID == bookID } }
@@ -485,8 +487,89 @@ final class StoryPlanningStore {
         return .init(columns: columns, lanes: lanes)
     }
 
+    func narrativeOutlineList(book: Book) -> NarrativeOutlineList {
+        let sections = BookStructure.orderedSections(in: book)
+        let pendingByStoryLine = Dictionary(uniqueKeysWithValues: narrativeTimelineLayout(book: book).lanes.map {
+            ($0.storyLineID, Set($0.pendingItemIDs))
+        })
+
+        let groups = storyLines(bookID: book.id).map { storyLine in
+            let pending = pendingByStoryLine[storyLine.id] ?? []
+            let stages = orderedStages(storyLineID: storyLine.id, sections: sections).map { stage in
+                NarrativeOutlineList.Stage(
+                    id: stage.id,
+                    title: stage.title,
+                    itemIDs: orderedItems(storyLineID: storyLine.id, stageID: stage.id, sections: sections)
+                        .map(\.id)
+                        .filter { !pending.contains($0) }
+                )
+            }
+            let unassigned = orderedItems(storyLineID: storyLine.id, stageID: nil, sections: sections)
+                .map(\.id)
+                .filter { !pending.contains($0) }
+            let orderedPending = items(storyLineID: storyLine.id).map(\.id).filter { pending.contains($0) }
+            return NarrativeOutlineList.StoryLine(
+                id: storyLine.id,
+                title: storyLine.title,
+                kind: storyLine.kind,
+                stages: stages,
+                unassignedItemIDs: unassigned,
+                pendingItemIDs: orderedPending
+            )
+        }
+        return NarrativeOutlineList(storyLines: groups)
+    }
+
     func anchor(outlineItemID: UUID) -> OutlineItemAnchor? {
         outlineAnchors.first { $0.outlineItemID == outlineItemID }
+    }
+
+    func timelineMetadata(eventID: UUID) -> TimelineEventCardMetadata? {
+        timelineEventCardMetadata.first { $0.eventID == eventID }
+    }
+
+    @discardableResult
+    func ensureTimelineMetadata(
+        eventID: UUID,
+        bookID: UUID,
+        outlineItemID: UUID? = nil,
+        excerptMode: TimelineExcerptMode = .automatic,
+        manualExcerpt: String = ""
+    ) throws -> TimelineEventCardMetadata {
+        if let existing = timelineMetadata(eventID: eventID) {
+            existing.bookID = bookID
+            existing.outlineItemID = outlineItemID
+            existing.excerptMode = excerptMode
+            existing.setManualExcerpt(manualExcerpt)
+            try context.save()
+            return existing
+        }
+        let metadata = TimelineEventCardMetadata(
+            eventID: eventID,
+            bookID: bookID,
+            outlineItemID: outlineItemID,
+            excerptMode: excerptMode,
+            manualExcerpt: manualExcerpt
+        )
+        context.insert(metadata)
+        timelineEventCardMetadata.append(metadata)
+        try context.save()
+        return metadata
+    }
+
+    func deleteTimelineMetadata(eventID: UUID) throws {
+        guard let metadata = timelineMetadata(eventID: eventID) else { return }
+        context.delete(metadata)
+        try context.save()
+        timelineEventCardMetadata.removeAll { $0.eventID == eventID }
+    }
+
+    func removeOrphanedTimelineMetadata(validEventIDs: Set<UUID>) throws {
+        let orphans = timelineEventCardMetadata.filter { !validEventIDs.contains($0.eventID) }
+        guard !orphans.isEmpty else { return }
+        for metadata in orphans { context.delete(metadata) }
+        try context.save()
+        timelineEventCardMetadata.removeAll { !validEventIDs.contains($0.eventID) }
     }
 
     func stageStart(stageID: UUID) -> OutlineStageStartAnchor? {

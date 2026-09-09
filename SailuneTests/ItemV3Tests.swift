@@ -4,6 +4,33 @@ import SwiftData
 
 @MainActor
 final class ItemV3Tests: XCTestCase {
+    func testEditorBridgeKeepsCrossSectionSelectionUntilTargetSectionConsumesIt() {
+        let bridge = EditorBridge()
+        let sourceSectionID = UUID()
+        let targetSectionID = UUID()
+        let targetRange = NSRange(location: 27, length: 0)
+
+        bridge.requestSelect(sectionID: targetSectionID, range: targetRange)
+
+        XCTAssertNil(bridge.takePendingSelection(for: sourceSectionID))
+        XCTAssertEqual(bridge.takePendingSelection(for: targetSectionID), targetRange)
+        XCTAssertNil(bridge.takePendingSelection(for: targetSectionID))
+    }
+
+    func testEditorBridgeDefersSelectionWhileTargetSectionContentIsLoading() {
+        let bridge = EditorBridge()
+        let coordinator = RichEditorView.Coordinator()
+        let sectionID = UUID()
+        let targetRange = NSRange(location: 41, length: 0)
+        coordinator.lastSectionID = sectionID
+        coordinator.contentLoadSectionID = sectionID
+        bridge.coordinator = coordinator
+
+        bridge.requestSelect(sectionID: sectionID, range: targetRange)
+
+        XCTAssertEqual(bridge.takePendingSelection(for: sectionID), targetRange)
+    }
+
     func testCalendarDatesAndEditedEventsSurviveReopeningStore() throws {
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Sailune-calendar-\(UUID().uuidString).store")
         defer {
@@ -79,6 +106,45 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertFalse(TimelineDateProjection.cells(nodes: nodes, events: [event], primary: true, granularity: .day).flatMap(\.nodes).contains { $0.id == nodes[2].id })
     }
 
+    func testTimelineEraGroupsKeepChronologyAndEventOrder() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let firstEra = Era(name: "第一紀元")
+        let secondEra = Era(name: "第二紀元")
+        context.insert(firstEra)
+        context.insert(secondEra)
+        let firstNode = Node(year: 1, month: 1)
+        let secondNode = Node(year: 2, month: 1)
+        let noEraNode = Node(year: 3, month: 1)
+        context.insert(firstNode)
+        context.insert(secondNode)
+        context.insert(noEraNode)
+        firstNode.era = firstEra
+        secondNode.era = secondEra
+        let later = Event(title: "稍後")
+        let earlier = Event(title: "較早")
+        context.insert(later)
+        context.insert(earlier)
+        later.node = firstNode
+        earlier.node = firstNode
+        later.sortOrder = 2
+        earlier.sortOrder = 1
+        try context.save()
+
+        let cells = TimelineDateProjection.cells(
+            nodes: [noEraNode, secondNode, firstNode],
+            events: [later, earlier],
+            primary: false,
+            granularity: .month
+        )
+        let groups = TimelineDateProjection.eraGroups(cells: cells)
+
+        XCTAssertEqual(groups.map(\.name), ["第一紀元", "第二紀元", "未指定紀元"])
+        XCTAssertEqual(groups.flatMap(\.cells).map(\.ordinal), groups.flatMap(\.cells).map(\.ordinal).sorted())
+        XCTAssertEqual(groups.first?.cells.first?.events.map(\.id), [earlier.id, later.id])
+        XCTAssertEqual(TimelineDateProjection.eventsInDisplayOrder(cells: cells).map(\.id), [earlier.id, later.id])
+    }
+
     func testTimelineBootstrapAndEraChangeKeepExistingDates() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -146,7 +212,7 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -561,5 +627,40 @@ final class ItemV3Tests: XCTestCase {
             "名稱：霜紋長劍 · 能力：提高寒冷耐受力 · 代價：持續消耗體力 · 其他：劍身出現白色紋路"
         )
         XCTAssertEqual(ItemLevel(itemID: UUID(), name: "初始").compactOverview, "尚未填寫概述")
+    }
+
+    func testTimelineRelativeLabelsRestartAtViewportAndDateBoundaries() {
+        let eraID = UUID()
+        func cell(_ id: String, _ year: Int, _ month: Int, _ day: Int) -> TimelineCell {
+            TimelineCell(
+                id: id,
+                kind: .day,
+                ordinal: year * 10_000 + month * 100 + day,
+                eraID: eraID,
+                eraHex: "#888888",
+                eraName: "安夢",
+                era: nil,
+                nodes: [],
+                repYear: year,
+                repMonth: month,
+                repDay: day,
+                events: []
+            )
+        }
+        let cells = [cell("a", 4, 6, 18), cell("b", 4, 7, 16), cell("c", 4, 7, 21), cell("d", 5, 1, 3)]
+
+        XCTAssertEqual(
+            TimelineDateProjection.relativeLabels(cells: cells, granularity: .day, firstVisibleIndex: 0),
+            ["4年6月18日", "7月16日", "21日", "5年1月3日"]
+        )
+        XCTAssertEqual(
+            Array(TimelineDateProjection.relativeLabels(cells: cells, granularity: .day, firstVisibleIndex: 1)[1...]),
+            ["4年7月16日", "21日", "5年1月3日"]
+        )
+    }
+
+    func testTimelineExcerptCountsEmojiAsVisibleCharacters() {
+        let value = String(repeating: "🌙", count: 31)
+        XCTAssertEqual(TimelineCardProjection.normalizedExcerpt(value).count, 30)
     }
 }

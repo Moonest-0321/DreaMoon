@@ -6,7 +6,7 @@ import AppKit
 @MainActor
 final class V42OutlineTests: XCTestCase {
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -332,7 +332,7 @@ final class V42OutlineTests: XCTestCase {
             stageID = stage.id
         }
 
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
         let container = try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -805,6 +805,186 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.granularity, .heading)
         XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.headingTextSnapshot, "夜襲")
         XCTAssertEqual(store.stageStartDetail(stageID: headingStage.id)?.headingOffset, 12)
+    }
+
+    func testNarrativeOutlineListKeepsStoryStageProseAndPendingOrder() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "精簡敘事大綱", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let section = Section(title: "第一節", content: AttributedString("甲乙丙丁"), sortOrder: 0, volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+
+        let main = try store.createStoryLine(bookID: book.id, kind: .main)
+        let stage = try store.createStage(
+            storyLine: main,
+            title: "開場",
+            start: .init(
+                volumeID: volume.id,
+                sectionID: section.id,
+                volumeTitle: volume.title,
+                sectionTitle: section.title
+            )
+        )
+        let later = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "後發生",
+            anchorText: "丙",
+            anchorOffset: 2,
+            bookID: book.id,
+            sectionID: section.id,
+            sections: [section]
+        )
+        let earlier = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "先發生",
+            anchorText: "甲",
+            anchorOffset: 0,
+            bookID: book.id,
+            sectionID: section.id,
+            sections: [section]
+        )
+        try store.moveOutlineItem(later, to: stage)
+        try store.moveOutlineItem(earlier, to: stage)
+        let pending = try store.createOutlineItem(storyLine: main, stage: stage, title: "待安置")
+
+        let projection = store.narrativeOutlineList(book: book)
+        let storyLine = try XCTUnwrap(projection.storyLines.first)
+        XCTAssertEqual(storyLine.id, main.id)
+        XCTAssertEqual(storyLine.stages.map(\.id), [stage.id])
+        XCTAssertEqual(storyLine.stages.first?.itemIDs, [earlier.id, later.id])
+        XCTAssertEqual(storyLine.pendingItemIDs, [pending.id])
+        XCTAssertTrue(storyLine.unassignedItemIDs.isEmpty)
+        XCTAssertEqual(projection.itemIDsInDisplayOrder, [earlier.id, later.id, pending.id])
+    }
+
+    func testTimelineMetadataPersistsLimitsExcerptAndEnsureIsIdempotent() throws {
+        let container = try makePlanningContainer()
+        let store = try StoryPlanningStore(container: container)
+        let eventID = UUID()
+        let bookID = UUID()
+        let outlineItemID = UUID()
+        let first = try store.ensureTimelineMetadata(
+            eventID: eventID,
+            bookID: bookID,
+            outlineItemID: outlineItemID,
+            excerptMode: .manual,
+            manualExcerpt: String(repeating: "夢", count: 35)
+        )
+        let second = try store.ensureTimelineMetadata(
+            eventID: eventID,
+            bookID: bookID,
+            outlineItemID: outlineItemID,
+            excerptMode: .manual,
+            manualExcerpt: "短節錄"
+        )
+
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(store.timelineEventCardMetadata.count, 1)
+        XCTAssertEqual(second.manualExcerpt, "短節錄")
+        XCTAssertEqual(try StoryPlanningStore(container: container).timelineMetadata(eventID: eventID)?.outlineItemID, outlineItemID)
+    }
+
+    func testTimelineMetadataOrphanCleanupIsIdempotent() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let kept = UUID()
+        let removed = UUID()
+        try store.ensureTimelineMetadata(eventID: kept, bookID: UUID())
+        try store.ensureTimelineMetadata(eventID: removed, bookID: UUID())
+
+        try store.removeOrphanedTimelineMetadata(validEventIDs: [kept])
+        try store.removeOrphanedTimelineMetadata(validEventIDs: [kept])
+
+        XCTAssertNotNil(store.timelineMetadata(eventID: kept))
+        XCTAssertNil(store.timelineMetadata(eventID: removed))
+    }
+
+    func testTimelineAutomaticExcerptUsesResolvedProseAndThirtyCharacters() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "時間卡", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let text = "前文\n  夜探皇宮開始，守衛正在換班。" + String(repeating: "後", count: 40)
+        let section = Section(title: "第三節", content: AttributedString(text), volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "夜探皇宮",
+            anchorText: "夜探皇宮開始",
+            anchorOffset: 5,
+            bookID: book.id,
+            sectionID: section.id,
+            sections: [section]
+        )
+        let anchor = try XCTUnwrap(store.anchor(outlineItemID: item.id))
+
+        let excerpt = TimelineCardProjection.automaticExcerpt(anchor: anchor, section: section)
+
+        XCTAssertTrue(excerpt.hasPrefix("夜探皇宮開始，守衛正在換班。"))
+        XCTAssertEqual(excerpt.count, 30)
+        XCTAssertFalse(excerpt.contains("\n"))
+    }
+
+    func testStoryPlanningV5MigratesToV6WithoutChangingExistingOutlineData() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("story-v5-v6-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: url) }
+        let bookID = UUID()
+        let itemID = UUID()
+        do {
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV5.self)
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: StoryPlanningMigrationPlan.self,
+                configurations: [ModelConfiguration(schema: schema, url: url)]
+            )
+            let context = container.mainContext
+            let line = OutlineStoryLine(bookID: bookID, title: "主線", kind: .main)
+            let item = OutlineItem(id: itemID, bookID: bookID, storyLineID: line.id, title: "舊大綱")
+            context.insert(line)
+            context.insert(item)
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+        let reopened = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryPlanningMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: url)]
+        )
+        let store = try StoryPlanningStore(container: reopened)
+
+        XCTAssertEqual(store.items(bookID: bookID).map(\.id), [itemID])
+        XCTAssertTrue(store.timelineEventCardMetadata.isEmpty)
+    }
+
+    func testTimelineCardBecomesUnwrittenWhenOutlineSourceIsDeleted() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "來源失效", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let section = Section(title: "第一節", content: AttributedString("城門失守，守軍撤退。"), volume: volume)
+        volume.sections = [section]
+        book.volumes = [volume]
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "城門失守",
+            anchorText: "城門失守",
+            anchorOffset: 0,
+            bookID: book.id,
+            sectionID: section.id,
+            sections: [section]
+        )
+        let event = Event(title: "城門失守")
+        let metadata = try store.ensureTimelineMetadata(eventID: event.id, bookID: book.id, outlineItemID: item.id)
+
+        let written = TimelineCardProjection.presentation(event: event, book: book, metadata: metadata, planningStore: store)
+        XCTAssertTrue(written.isWritten)
+        XCTAssertEqual(written.locationText, "第一卷・第一節")
+
+        try store.deleteOutlineItem(item)
+        let invalid = TimelineCardProjection.presentation(event: event, book: book, metadata: metadata, planningStore: store)
+        XCTAssertFalse(invalid.isWritten)
+        XCTAssertEqual(invalid.locationText, "來源失效")
     }
 
     private func removeStoreFiles(at url: URL) {

@@ -1,10 +1,12 @@
 # 文件與實作一致性檢查
 
-> 檢查日期：2026-09-05
+> 檢查日期：2026-09-09
 >
 > 範圍：`docs/*.md` 與目前 `Sailune/*.swift` 的公開 UI、資料模型及匯出流程
 
 ## 已確認一致
+
+- 2026-09-09 V4.4.6：寬版世界時間軸以等距日期 slot 顯示 Event 卡片；敘事來源 metadata 位於 StoryPlanning schema V6，跨 store 只用 UUID。刪卡保留 Node／OutlineItem／Section／正文；刪 Node／Timeline 仍 cascade Event 並清理孤立 metadata。右側唯讀清單、主 store schema、匯出與角色關聯不變。
 
 - 2026-09-07 V4.4.3：時間軸入口接回原曆法模型；不改寫敘事大綱、正文引用、匯出或 schema。已核對釘子刪除的事件 cascade 與歷史定位清理，修正 data-model 原本誤稱事件保留的文字。以下帶舊版號的敘述保留為歷史紀錄。
 

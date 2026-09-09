@@ -1,6 +1,6 @@
 # 備份、遷移與資料修復
 
-V4.4.2 的 StoryPlanning schema V5 以新增 `OutlineStageStartDetail` 的輕量遷移升級 V4。既有 `OutlineStageStartAnchor` 不改寫；缺少 detail 的舊資料在執行時視為節次定位。主書庫正文與大綱項目錨點不參與此遷移。
+V4.4.6 的 StoryPlanning schema V6 以新增 `TimelineEventCardMetadata` 的輕量遷移升級 V5；既有大綱與主 store Event 均不改寫。V4.4.2 的 V4→V5 階段定位遷移仍完整保留。
 
 ## 目前啟動順序
 
@@ -8,7 +8,7 @@ V4.4.2 的 StoryPlanning schema V5 以新增 `OutlineStageStartDetail` 的輕量
 2. 建立／開啟 V5 主資料庫。
 3. 將舊資料匯入 V5；若 V5 已有資料，先驗證匯入完整性。
 4. 執行懸空資料修復與 V4／V5 回填。
-5. 開啟物品副本、能力進度與故事規劃的獨立 store；故事規劃 store 依 `StoryPlanningMigrationPlan` lightweight migration 至 V3，再轉換舊結構標籤。
+5. 開啟物品副本、能力進度與故事規劃的獨立 store；故事規劃 store 依 `StoryPlanningMigrationPlan` lightweight migration 至 V6，再轉換舊結構標籤。
 6. 完成各 store 的資料修復後才顯示主畫面。
 
 ## 目前資料檔
@@ -52,3 +52,5 @@ V4.4.2 的 StoryPlanning schema V5 以新增 `OutlineStageStartDetail` 的輕量
 - V3→V4 以 lightweight migration 開啟。既有階段不從最早正文項目猜測開始位置，既有手動項目不猜測安置位置；兩者保留原資料並在 UI 顯示需設定／待安置提示。檔案型測試驗證舊 V3 資料重開後 UUID 與數量不變。
 - V4.4 的寬版工作區、時間軸投影及故事背景入口搬移均為呈現層變更，不新增 schema、不複製 `OutlineItem`，也不搬動 `backgroundText`；因此不需要新的資料遷移。無法解析的時間軸位置只在執行期間列入待安置區。
 - 主 store 內既有 `Timeline`、`Node`、`Event` 不刪除、不改寫，也不自動複製為 V4.2 `OutlineItem`；第一版採保留策略，避免在時間語意尚未定案時錯誤轉換使用者資料。
+- V5→V6 只新增空的 `TimelineEventCardMetadata` entity；不替舊 Event 猜測 OutlineItem。舊 Event 若已有有效 Section，執行期仍視為已寫入相容卡；作者主動綁定後才建立 metadata。
+- 新建／綁定採先保存主 Event、再保存 metadata；後者失敗時保留 Event 並允許重試。刪 Event 後若 metadata 清理失敗，孤立記錄不顯示，下一次時間軸載入時冪等清理。

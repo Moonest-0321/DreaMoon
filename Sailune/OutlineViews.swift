@@ -1,5 +1,27 @@
 import SwiftUI
 
+/// 大綱操作共用點擊範圍；保留系統的焦點與停用語意。
+struct PlanningActionStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 10)
+            .frame(minWidth: 28, minHeight: prominent ? 32 : 30)
+            .foregroundStyle(
+                configuration.role == .destructive
+                    ? Color.red
+                    : (prominent ? Color.white : Color.primary)
+            )
+            .background(prominent ? Color.accentColor : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.22), lineWidth: prominent ? 0 : 1))
+            .contentShape(Rectangle())
+            .opacity(!isEnabled ? 0.4 : (configuration.isPressed ? 0.65 : 1))
+    }
+}
+
 private struct OutlineRowHeightsKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] { [:] }
 
@@ -134,6 +156,7 @@ private enum BookPlanningWorkspaceTab: String, CaseIterable, Identifiable {
 struct BookPlanningWorkspaceView: View {
     let book: Book
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    var onOpenTimelineSection: ((Section) -> Void)? = nil
     @State private var selectedTab: BookPlanningWorkspaceTab = .narrative
 
     var body: some View {
@@ -158,7 +181,11 @@ struct BookPlanningWorkspaceView: View {
             case .narrative:
                 NarrativeOutlineTimelineView(book: book, onOpenOutlineItem: onOpenOutlineItem)
             case .timeline:
-                TimelinePanelView(book: book, allowsWideLayout: true)
+                TimelinePanelView(
+                    book: book,
+                    allowsWideLayout: true,
+                    onOpenSection: onOpenTimelineSection
+                )
             }
         }
         .background(Color.appBackground)
@@ -182,20 +209,19 @@ private struct NarrativeOutlineTimelineView: View {
                 Label("正文順序與敘事節奏", systemImage: "rectangle.3.group")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("依卷次／節次比較故事線、階段與事件密度")
+                Text("依故事線與階段閱讀標題順序")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("故事線管理", systemImage: "slider.horizontal.3") {
+                Button("管理故事線與階段", systemImage: "slider.horizontal.3") {
                     showingOutlineManager = true
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(PlanningActionStyle())
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
             Divider()
-            OutlineStructureBoardView(
+            NarrativeOutlineListView(
                 book: book,
-                mode: .narrative,
                 onOpenOutlineItem: onOpenOutlineItem
             )
         }
@@ -206,6 +232,7 @@ private struct NarrativeOutlineTimelineView: View {
                         .font(.headline)
                     Spacer()
                     Button("完成") { showingOutlineManager = false }
+                        .buttonStyle(PlanningActionStyle(prominent: true))
                         .keyboardShortcut(.defaultAction)
                 }
                 .padding(12)
@@ -220,6 +247,245 @@ private struct NarrativeOutlineTimelineView: View {
                 )
             }
             .frame(minWidth: 520, idealWidth: 620, minHeight: 560)
+        }
+    }
+}
+
+@MainActor
+private struct NarrativeOutlineListView: View {
+    let book: Book
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @State private var collapsedStoryLines: Set<UUID> = []
+    @State private var collapsedSections: Set<String> = []
+    @State private var selectedItemID: UUID?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        let projection = planningStore.narrativeOutlineList(book: book)
+        let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if projection.storyLines.isEmpty {
+                    ContentUnavailableView(
+                        "尚未建立故事線",
+                        systemImage: "point.topleft.down.to.point.bottomright.curvepath",
+                        description: Text("使用上方「管理故事線與階段」建立第一條故事線。")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                } else {
+                    ForEach(projection.storyLines) { storyLine in
+                        storyLineSection(storyLine, itemsByID: itemsByID)
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .sheet(item: selectedItemBinding) { item in
+            itemDetail(item)
+                .frame(minWidth: 420, idealWidth: 520, minHeight: 480)
+        }
+        .alert("大綱無法儲存", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("好") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "未知錯誤")
+        }
+    }
+
+    private var selectedItemBinding: Binding<OutlineItem?> {
+        Binding(
+            get: {
+                guard let selectedItemID else { return nil }
+                return planningStore.items(bookID: book.id).first { $0.id == selectedItemID }
+            },
+            set: { selectedItemID = $0?.id }
+        )
+    }
+
+    private func storyLineSection(
+        _ storyLine: NarrativeOutlineList.StoryLine,
+        itemsByID: [UUID: OutlineItem]
+    ) -> some View {
+        let collapsed = collapsedStoryLines.contains(storyLine.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            disclosureButton(
+                title: storyLine.title.isEmpty ? storyLine.kind.rawValue : storyLine.title,
+                collapsed: collapsed,
+                count: storyLine.stages.flatMap(\.itemIDs).count + storyLine.unassignedItemIDs.count + storyLine.pendingItemIDs.count
+            ) {
+                toggleStoryLine(storyLine.id)
+            }
+            .font(.headline)
+
+            if !collapsed {
+                VStack(alignment: .leading, spacing: 8) {
+                    if storyLine.kind == .main {
+                        if !storyLine.unassignedItemIDs.isEmpty || storyLine.stages.isEmpty {
+                            itemSection(
+                                id: "\(storyLine.id):unassigned",
+                                title: "未分階段",
+                                itemIDs: storyLine.unassignedItemIDs,
+                                itemsByID: itemsByID
+                            )
+                        }
+                        ForEach(storyLine.stages) { stage in
+                            itemSection(
+                                id: "\(storyLine.id):\(stage.id)",
+                                title: stage.title.isEmpty ? "未命名階段" : stage.title,
+                                itemIDs: stage.itemIDs,
+                                itemsByID: itemsByID
+                            )
+                        }
+                    } else {
+                        itemRows(storyLine.unassignedItemIDs, itemsByID: itemsByID)
+                    }
+                    if !storyLine.pendingItemIDs.isEmpty {
+                        itemSection(
+                            id: "\(storyLine.id):pending",
+                            title: "待安置",
+                            itemIDs: storyLine.pendingItemIDs,
+                            itemsByID: itemsByID
+                        )
+                    }
+                    if storyLine.stages.isEmpty && storyLine.unassignedItemIDs.isEmpty && storyLine.pendingItemIDs.isEmpty {
+                        Text("尚無項目")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 32)
+                    }
+                }
+                .padding(.leading, 18)
+            }
+        }
+        .padding(14)
+        .background(Color.workspacePanelBackground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.16)))
+    }
+
+    private func itemSection(
+        id: String,
+        title: String,
+        itemIDs: [UUID],
+        itemsByID: [UUID: OutlineItem]
+    ) -> some View {
+        let collapsed = collapsedSections.contains(id)
+        return VStack(alignment: .leading, spacing: 6) {
+            disclosureButton(title: title, collapsed: collapsed, count: itemIDs.count) {
+                toggleSection(id)
+            }
+            .font(.subheadline.weight(.semibold))
+            if !collapsed {
+                if itemIDs.isEmpty {
+                    Text("尚無項目").font(.callout).foregroundStyle(.secondary).padding(.leading, 28)
+                } else {
+                    itemRows(itemIDs, itemsByID: itemsByID)
+                }
+            }
+        }
+    }
+
+    private func itemRows(_ itemIDs: [UUID], itemsByID: [UUID: OutlineItem]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(itemIDs, id: \.self) { itemID in
+                if let item = itemsByID[itemID] {
+                    Button { open(item) } label: {
+                        HStack(spacing: 10) {
+                            Text(item.title.isEmpty ? "未命名大綱項目" : item.title)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 12)
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                    .help(item.title.isEmpty ? "未命名大綱項目" : item.title)
+                }
+            }
+        }
+        .padding(.leading, 18)
+    }
+
+    private func disclosureButton(
+        title: String,
+        collapsed: Bool,
+        count: Int,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .frame(width: 12)
+                Text(title)
+                Spacer()
+                Text("\(count)").font(.caption).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(collapsed ? "展開" : "收合")\(title)")
+    }
+
+    private func open(_ item: OutlineItem) {
+        let validSectionIDs = Set(BookStructure.orderedSections(in: book).map(\.id))
+        if let anchor = planningStore.anchor(outlineItemID: item.id), validSectionIDs.contains(anchor.sectionID) {
+            onOpenOutlineItem?(item, anchor)
+        } else {
+            selectedItemID = item.id
+        }
+    }
+
+    private func itemDetail(_ item: OutlineItem) -> some View {
+        let stages = planningStore.orderedStages(
+            storyLineID: item.storyLineID,
+            sections: BookStructure.orderedSections(in: book)
+        )
+        return VStack(spacing: 0) {
+            HStack {
+                Text("項目詳情").font(.headline)
+                Spacer()
+                Button("關閉", systemImage: "xmark") { selectedItemID = nil }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(PlanningActionStyle())
+            }
+            .padding(12)
+            Divider()
+            ScrollView {
+                OutlineItemEditor(
+                    book: book,
+                    item: item,
+                    presentation: .narrative,
+                    availableStages: stages,
+                    onOpenOutlineItem: onOpenOutlineItem,
+                    errorMessage: $errorMessage,
+                    initiallyExpanded: true
+                )
+                .padding(12)
+            }
+        }
+        .background(Color.workspacePanelBackground)
+    }
+
+    private func toggleStoryLine(_ id: UUID) {
+        withAnimation(.snappy) {
+            if collapsedStoryLines.contains(id) { collapsedStoryLines.remove(id) }
+            else { collapsedStoryLines.insert(id) }
+        }
+    }
+
+    private func toggleSection(_ id: String) {
+        withAnimation(.snappy) {
+            if collapsedSections.contains(id) { collapsedSections.remove(id) }
+            else { collapsedSections.insert(id) }
         }
     }
 }
@@ -420,7 +686,8 @@ private struct OutlineStructureBoardView: View {
                 Spacer()
                 Button("關閉", systemImage: "xmark") { selectedItemID = nil }
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(PlanningActionStyle())
+                    .help("關閉項目詳情")
             }
             .padding(12)
             Divider()
@@ -534,6 +801,7 @@ private struct OutlineStructureBoardView: View {
                                     TimelineOutlineItemCard(
                                         item: item,
                                         validSectionIDs: validSectionIDs,
+                                        isSelected: selectedItemID == item.id,
                                         onSelect: mode == .narrative ? { selectedItemID = item.id } : nil,
                                         onOpenOutlineItem: onOpenOutlineItem
                                     )
@@ -618,6 +886,7 @@ private struct OutlineStructureBoardView: View {
                                     TimelineOutlineItemCard(
                                         item: item,
                                         validSectionIDs: validSectionIDs,
+                                        isSelected: selectedItemID == item.id,
                                         onSelect: mode == .narrative ? { selectedItemID = item.id } : nil,
                                         onOpenOutlineItem: onOpenOutlineItem
                                     )
@@ -642,6 +911,7 @@ private struct OutlineStructureBoardView: View {
 private struct TimelineOutlineItemCard: View {
     let item: OutlineItem
     let validSectionIDs: Set<UUID>
+    var isSelected = false
     var onSelect: (() -> Void)? = nil
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
@@ -663,6 +933,7 @@ private struct TimelineOutlineItemCard: View {
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(statusColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2))
     }
 
     private var cardContent: some View {
@@ -785,7 +1056,7 @@ struct BookOutlineWorkspaceView: View {
     }
 
     private var storyLineToolbar: some View {
-        HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             if presentation == .narrative {
                 Picker("故事線", selection: selectedStoryLineBinding) {
                     if storyLines.isEmpty {
@@ -804,25 +1075,28 @@ struct BookOutlineWorkspaceView: View {
                 Spacer()
             }
 
-            Menu {
-                ForEach(OutlineStoryLineKind.allCases) { kind in
-                    Button(kind.rawValue) { createStoryLine(kind) }
-                        .disabled(kind == .main && hasMainStoryLine)
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(OutlineStoryLineKind.allCases) { kind in
+                        Button(kind.rawValue) { createStoryLine(kind) }
+                            .disabled(kind == .main && hasMainStoryLine)
+                    }
+                } label: {
+                    Label("新增故事線", systemImage: "plus")
                 }
-            } label: {
-                Image(systemName: "plus")
-            }
-            .menuStyle(.borderlessButton)
-            .help("新增故事線")
+                .controlSize(.large)
+                .help("新增故事線")
 
-            if presentation == .narrative, let selectedStoryLine {
-                Button(role: .destructive) { deleteStoryLineTarget = selectedStoryLine } label: {
-                    Image(systemName: "trash")
+                if presentation == .narrative, let selectedStoryLine {
+                    Button(role: .destructive) { deleteStoryLineTarget = selectedStoryLine } label: {
+                        Label("刪除故事線", systemImage: "trash")
+                    }
+                    .buttonStyle(PlanningActionStyle())
+                    .help("刪除故事線")
                 }
-                .buttonStyle(.borderless)
-                .help("刪除故事線")
             }
         }
+        .buttonStyle(PlanningActionStyle())
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
@@ -947,7 +1221,7 @@ private struct StoryLineContentView: View {
                 Button("新增主線階段", systemImage: "rectangle.stack.badge.plus") {
                     createStage()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(PlanningActionStyle())
             }
         }
     }
@@ -965,7 +1239,7 @@ private struct StoryLineContentView: View {
                 errorMessage: $errorMessage
             )
             Button("建立第一個階段", action: createStage)
-                .buttonStyle(.bordered)
+                .buttonStyle(PlanningActionStyle(prominent: true))
         } else {
             ForEach(stages) { stage in
                 StageSectionView(
@@ -1006,8 +1280,7 @@ private struct StoryLineContentView: View {
         Button("新增大綱項目", systemImage: "plus") {
             createItem(stage: stage)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
+        .buttonStyle(PlanningActionStyle(prominent: true))
     }
 
     private var storyLineTitleBinding: Binding<String> {
@@ -1136,7 +1409,13 @@ private struct StageStartEditorSheet: View {
                 Text("請先建立卷次，才能為主線設定開始位置。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            HStack { Spacer(); Button("取消") { dismiss() }; Button(stage == nil ? "建立" : "儲存定位", action: create).buttonStyle(.borderedProminent).disabled(selectedVolumeID == nil) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.buttonStyle(PlanningActionStyle())
+                Button(stage == nil ? "建立" : "儲存定位", action: create)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
+                    .disabled(selectedVolumeID == nil)
+            }
         }
         .padding(20).frame(width: 360)
         .onAppear(perform: loadExistingLocation)
@@ -1208,8 +1487,11 @@ private struct StageSectionView: View {
             HStack {
                 Button { isExpanded.toggle() } label: {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .frame(minWidth: 28, minHeight: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(isExpanded ? "收合階段" : "展開階段")
                 Image(systemName: "rectangle.stack")
                     .foregroundStyle(.secondary)
                 TextField("階段名稱", text: stageTitleBinding)
@@ -1218,9 +1500,9 @@ private struct StageSectionView: View {
                     .onSubmit(save)
                 Spacer()
                 Button(role: .destructive) { showingDeleteConfirmation = true } label: {
-                    Image(systemName: "trash")
+                    Label("刪除階段", systemImage: "trash")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(PlanningActionStyle())
                 .help("刪除階段")
             }
             Text(stageStartDescription)
@@ -1229,8 +1511,7 @@ private struct StageSectionView: View {
             Button(stageStartIsMissing ? "設定開始位置" : "重新定位", systemImage: "mappin.and.ellipse") {
                 showingStartEditor = true
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
+            .buttonStyle(PlanningActionStyle())
             if isExpanded {
                 ForEach(items) { item in
                     OutlineItemEditor(
@@ -1243,8 +1524,7 @@ private struct StageSectionView: View {
                     )
                 }
                 Button("新增大綱項目", systemImage: "plus", action: createItem)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
             }
         }
         .padding(10)
@@ -1342,8 +1622,7 @@ private struct UnassignedStageSectionView: View {
                     OutlineItemEditor(book: book, item: item, presentation: presentation, availableStages: allStages, onOpenOutlineItem: onOpenOutlineItem, errorMessage: $errorMessage)
                 }
                 Button("新增大綱項目", systemImage: "plus", action: createItem)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
             }
         }
         .padding(10)
@@ -1417,17 +1696,16 @@ private struct OutlineItemEditor: View {
                     Button("來源：回到正文", systemImage: "text.book.closed") {
                         onOpenOutlineItem?(item, anchor)
                     }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
+                    .buttonStyle(PlanningActionStyle())
                 } else if planningStore.anchor(outlineItemID: item.id) != nil {
                     Label("來源已刪除", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
 
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     if planningStore.anchor(outlineItemID: item.id) != nil {
-                        Label(item.status.displayTitle, systemImage: item.status == .occurred ? "checkmark.circle.fill" : "doc.text")
+                        Label("狀態：\(item.status.displayTitle)", systemImage: item.status == .occurred ? "checkmark.circle.fill" : "doc.text")
                             .foregroundStyle(summaryColor)
                             .font(.caption.weight(.semibold))
                     } else if item.status == .occurred {
@@ -1446,7 +1724,6 @@ private struct OutlineItemEditor: View {
                                 Text(status.displayTitle).tag(status)
                             }
                         }
-                        .labelsHidden()
                         .fixedSize()
                     }
 
@@ -1464,9 +1741,10 @@ private struct OutlineItemEditor: View {
                                 Button(stage.title) { move(to: stage) }
                             }
                         } label: {
-                            Label(currentStageTitle, systemImage: "arrow.left.arrow.right")
+                            Label("階段：\(currentStageTitle)", systemImage: "arrow.left.arrow.right")
+                                .lineLimit(2)
                         }
-                        .fixedSize()
+                        .controlSize(.large)
                     }
                 }
 
@@ -1485,21 +1763,20 @@ private struct OutlineItemEditor: View {
                             Button("接在「\(target.title)」後") { place(.afterItem, after: target) }
                         }
                     } label: {
-                        Label(placementTitle, systemImage: "arrowshape.turn.up.right")
+                        Label("位置：\(placementTitle)", systemImage: "arrowshape.turn.up.right")
+                            .lineLimit(2)
                     }
-                    .fixedSize()
+                    .controlSize(.large)
                 }
 
                 HStack {
                     Spacer()
                     Button("儲存", systemImage: "square.and.arrow.down", action: save)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
                     Button(role: .destructive) { showingDeleteConfirmation = true } label: {
-                        Image(systemName: "trash")
+                        Label("刪除項目", systemImage: "trash")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(PlanningActionStyle())
                     .help("刪除大綱項目")
                 }
                 } label: {

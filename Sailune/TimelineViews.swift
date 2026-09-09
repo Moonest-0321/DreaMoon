@@ -91,11 +91,175 @@ struct WorkspaceInspectorView: View {
 
             switch outlineTab {
             case .narrative:
-                BookOutlineWorkspaceView(book: book, presentation: .narrative, onOpenOutlineItem: onOpenOutlineItem)
+                NarrativeOutlineNavigationView(
+                    book: book,
+                    onOpenOutlineItem: onOpenOutlineItem
+                )
             case .timeline:
-                TimelinePanelView(book: book)
+                TimelineOutlineNavigationView(
+                    book: book,
+                    onOpenSection: onSelectSection
+                )
             }
         }
+    }
+}
+
+@MainActor
+private struct NarrativeOutlineNavigationView: View {
+    let book: Book
+    var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)?
+    @Environment(StoryPlanningStore.self) private var planningStore
+
+    private var orderedItems: [OutlineItem] {
+        let itemsByID = Dictionary(
+            uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) }
+        )
+        return planningStore.narrativeOutlineList(book: book).itemIDsInDisplayOrder.compactMap { itemsByID[$0] }
+    }
+
+    var body: some View {
+        OutlineNavigationList(items: orderedItems) { item in
+            guard let anchor = validAnchor(for: item) else { return nil }
+            return { onOpenOutlineItem?(item, anchor) }
+        }
+    }
+
+    private func validAnchor(for item: OutlineItem) -> OutlineItemAnchor? {
+        guard let anchor = planningStore.anchor(outlineItemID: item.id) else { return nil }
+        let sectionIDs = Set(BookStructure.orderedSections(in: book).map(\.id))
+        return sectionIDs.contains(anchor.sectionID) ? anchor : nil
+    }
+}
+
+@MainActor
+private struct TimelineOutlineNavigationView: View {
+    let book: Book
+    var onOpenSection: ((Section) -> Void)?
+    @Query private var allTimelines: [Timeline]
+    @Query private var allNodes: [Node]
+    @Query private var allEvents: [Event]
+
+    init(book: Book, onOpenSection: ((Section) -> Void)? = nil) {
+        self.book = book
+        self.onOpenSection = onOpenSection
+        let bookID = book.id
+        _allTimelines = Query(filter: #Predicate<Timeline> { $0.book?.id == bookID })
+        _allNodes = Query()
+        _allEvents = Query()
+    }
+
+    private var primaryTimeline: Timeline? {
+        allTimelines.sorted { lhs, rhs in
+            if lhs.isPrimary != rhs.isPrimary { return lhs.isPrimary }
+            return lhs.sortOrder < rhs.sortOrder
+        }.first
+    }
+
+    private var orderedEvents: [Event] {
+        guard let primaryTimeline else { return [] }
+        let nodes = TimelineEngine.Query.sorted(
+            allNodes.filter { $0.timeline?.id == primaryTimeline.id && (!$0.isVisible ? !primaryTimeline.isPrimary : true) }
+        )
+        let cells = TimelineDateProjection.cells(
+            nodes: nodes,
+            events: allEvents,
+            primary: primaryTimeline.isPrimary,
+            granularity: .day
+        )
+        return TimelineDateProjection.eventsInDisplayOrder(cells: cells)
+    }
+
+    var body: some View {
+        OutlineNavigationList(items: orderedEvents) { event in
+            guard let section = validSection(for: event) else { return nil }
+            return { onOpenSection?(section) }
+        }
+    }
+
+    private func validSection(for event: Event) -> Section? {
+        guard let section = event.section else { return nil }
+        return BookStructure.orderedSections(in: book).contains(where: { $0.id == section.id }) ? section : nil
+    }
+}
+
+private struct OutlineNavigationList<Item: Identifiable>: View {
+    let items: [Item]
+    let title: (Item) -> String
+    let action: (Item) -> (() -> Void)?
+
+    init(items: [Item], title: @escaping (Item) -> String, action: @escaping (Item) -> (() -> Void)?) {
+        self.items = items
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        if items.isEmpty {
+            ContentUnavailableView("尚無可顯示的標題", systemImage: "list.bullet")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(items) { item in
+                        row(item)
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ item: Item) -> some View {
+        let displayTitle = normalizedTitle(item)
+        if let action = action(item) {
+            Button(action: action) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    titleText(displayTitle)
+                    Spacer(minLength: 4)
+                    Image(systemName: "arrow.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(displayTitle)
+            .accessibilityLabel(displayTitle)
+        } else {
+            titleText(displayTitle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .foregroundStyle(.secondary)
+                .help(displayTitle)
+                .accessibilityLabel(displayTitle)
+        }
+    }
+
+    private func titleText(_ value: String) -> some View {
+        Text(value)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+    }
+
+    private func normalizedTitle(_ item: Item) -> String {
+        let value = title(item).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "未命名項目" : value
+    }
+}
+
+private extension OutlineNavigationList where Item == OutlineItem {
+    init(items: [OutlineItem], action: @escaping (OutlineItem) -> (() -> Void)?) {
+        self.init(items: items, title: \OutlineItem.title, action: action)
+    }
+}
+
+private extension OutlineNavigationList where Item == Event {
+    init(items: [Event], action: @escaping (Event) -> (() -> Void)?) {
+        self.init(items: items, title: \Event.title, action: action)
     }
 }
 
@@ -117,6 +281,15 @@ struct TimelineCell: Identifiable {
     let repDay: Int?
     let events: [Event]
     var label: String = ""
+}
+
+struct TimelineEraGroup: Identifiable {
+    let id: String
+    let eraID: UUID?
+    let name: String
+    let colorHex: String
+    let era: Era?
+    let cells: [TimelineCell]
 }
 
 private final class CellAccum {
@@ -152,17 +325,15 @@ private struct EventGroup: Identifiable {
     }
 }
 
-// MARK: - 事件操作鈕常駐淡顯（可見性與 hover 脫鉤，根治點不到）
-
-private let eventActionIdleOpacity: Double = 0.3
-
 // MARK: - 時間軸面板
 
 @MainActor
 struct TimelinePanelView: View {
     let book: Book
     let allowsWideLayout: Bool
+    var onOpenSection: ((Section) -> Void)?
     @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
 
     @Query private var allTimelines: [Timeline]
     @Query private var allNodes: [Node]
@@ -194,11 +365,19 @@ struct TimelinePanelView: View {
     @State private var newNodeEraID: UUID? = nil
     @State private var showingEraManager = false
     @State private var selectedCellID: String?
+    @State private var collapsedEraGroups: Set<String> = []
+    @State private var collapsedWideCells: Set<String> = []
+    @State private var selectedEvent: Event?
     @State private var operationError: String?
+    @State private var firstVisibleWideCellIndex = 0
+    @State private var pendingDeleteEvent: Event?
+    @State private var showingCreateEvent = false
+    @State private var createEventFromOutline = false
 
-    init(book: Book, allowsWideLayout: Bool = false) {
+    init(book: Book, allowsWideLayout: Bool = false, onOpenSection: ((Section) -> Void)? = nil) {
         self.book = book
         self.allowsWideLayout = allowsWideLayout
+        self.onOpenSection = onOpenSection
         let bookID = book.id
         _allTimelines = Query(filter: #Predicate<Timeline> { $0.book?.id == bookID })
         // SwiftData cannot translate nested optional relationship paths such as
@@ -227,6 +406,18 @@ struct TimelinePanelView: View {
 
     private var isPrimarySelected: Bool { selectedTimeline?.isPrimary ?? false }
 
+    private var operationErrorBinding: Binding<Bool> {
+        Binding(get: { operationError != nil }, set: { if !$0 { operationError = nil } })
+    }
+
+    private var deleteEventBinding: Binding<Bool> {
+        Binding(get: { pendingDeleteEvent != nil }, set: { if !$0 { pendingDeleteEvent = nil } })
+    }
+
+    private var deleteTimelineBinding: Binding<Bool> {
+        Binding(get: { pendingDeleteTimeline != nil }, set: { if !$0 { pendingDeleteTimeline = nil } })
+    }
+
     private var visibleNodes: [Node] {
         guard let t = selectedTimeline else { return [] }
         let ofTimeline = allNodes.filter { $0.timeline?.id == t.id }
@@ -244,15 +435,15 @@ struct TimelinePanelView: View {
         }
         .background(Color(nsColor: .controlBackgroundColor))
         .task {
-            do { try TimelineEngine.Bootstrap.ensure(for: book, in: modelContext) }
+            do {
+                try TimelineEngine.Bootstrap.ensure(for: book, in: modelContext)
+                try cleanTimelineMetadataOrphans()
+            }
             catch { operationError = error.localizedDescription }
         }
         .onChange(of: selectedTimeline?.id) { _, _ in resetSelection() }
         .onChange(of: granularity) { _, _ in resetSelection() }
-        .alert("時間軸操作失敗", isPresented: Binding(
-            get: { operationError != nil },
-            set: { if !$0 { operationError = nil } }
-        )) { Button("好") { operationError = nil } } message: {
+        .alert("時間軸操作失敗", isPresented: operationErrorBinding) { Button("好") { operationError = nil } } message: {
             Text(operationError ?? "未知錯誤")
         }
         .popover(item: $editingEra) { era in
@@ -268,6 +459,14 @@ struct TimelinePanelView: View {
             } else {
                 Text("確定刪除這 \(n) 個時間釘子？其下事件將一併刪除，且無法復原。")
             }
+        }
+        .alert("刪除事件卡片",
+               isPresented: deleteEventBinding,
+               presenting: pendingDeleteEvent) { event in
+            Button("取消", role: .cancel) { pendingDeleteEvent = nil }
+            Button("刪除", role: .destructive) { performDeleteEvent(event) }
+        } message: { _ in
+            Text("只會刪除此事件卡片；日期節點、敘事大綱與正文都會保留。")
         }
         .alert("新增副軸", isPresented: $showingAddSecondary) {
             TextField("副軸名稱", text: $newSecondaryName)
@@ -291,8 +490,7 @@ struct TimelinePanelView: View {
             }
         }
         .alert("刪除副軸",
-               isPresented: Binding(get: { pendingDeleteTimeline != nil },
-                                    set: { if !$0 { pendingDeleteTimeline = nil } }),
+               isPresented: deleteTimelineBinding,
                presenting: pendingDeleteTimeline) { t in
             Button("取消", role: .cancel) { pendingDeleteTimeline = nil }
             Button("刪除", role: .destructive) { performDeleteTimeline(t) }
@@ -312,6 +510,32 @@ struct TimelinePanelView: View {
         }
         .popover(isPresented: $showingEraManager) {
             EraManagerPopover(book: book)
+        }
+        .popover(isPresented: $showingEraChange) {
+            EraChangePopover(book: book)
+        }
+        .sheet(isPresented: $showingCreateEvent) {
+            TimelineEventCreationView(
+                book: book,
+                timeline: selectedTimeline,
+                eras: allEras,
+                startsFromOutline: createEventFromOutline
+            )
+        }
+        .sheet(item: $selectedEvent) { event in
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("事件詳情").font(.headline)
+                    Spacer()
+                    Button("完成") { selectedEvent = nil }
+                        .buttonStyle(PlanningActionStyle(prominent: true))
+                }
+                Divider()
+                TimelineEventBindingControls(event: event, book: book)
+                EventRow(event: event, allCharacters: sortedCharacters)
+            }
+            .padding(16)
+            .frame(minWidth: 420, idealWidth: 520, minHeight: 260)
         }
     }
 
@@ -333,8 +557,8 @@ struct TimelinePanelView: View {
                     ForEach(bookTimelines, id: \.id) { t in
                         Button { selectedTimelineID = t.id } label: {
                             Text(t.isPrimary ? "主軸" : (t.name.isEmpty ? "副軸" : t.name))
-                                .font(.caption)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .font(.body)
+                                .padding(.horizontal, 10).frame(minHeight: 30)
                                 .background(
                                     Capsule().fill(selectedTimeline?.id == t.id
                                                    ? Color.accentColor.opacity(0.2)
@@ -357,45 +581,25 @@ struct TimelinePanelView: View {
                             }
                         }
                     }
-                    Button { openAddNode() } label: {
-                        Image(systemName: "mappin.circle.fill").font(.caption)
-                            .padding(.horizontal, 6).padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(selectedTimeline == nil)
-                    .help("新增時間釘子到當前軸（含副軸）")
-                    Button { showingEraManager = true } label: {
-                        Image(systemName: "list.bullet.rectangle").font(.caption)
-                            .padding(.horizontal, 6).padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .help("年號管理：新增／編輯紀元，填負序數可建前史紀元")
-                    Button {
-                        newSecondaryName = ""
-                        showingAddSecondary = true
-                    } label: {
-                        Image(systemName: "plus").font(.caption)
-                            .padding(.horizontal, 6).padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .help("新增副軸")
-                    Button { showingEraChange = true } label: {
-                        Image(systemName: "calendar.badge.plus").font(.caption)
-                            .padding(.horizontal, 6).padding(.vertical, 4)
-                            .foregroundStyle(isPrimarySelected ? .primary : .tertiary)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!isPrimarySelected)
-                    .help(isPrimarySelected
-                          ? "改元（踰年推進敘事，落主軸並切換當前年號）"
-                          : "改元為全書敘事推進，請於主軸操作；副軸請用年號管理＋📌")
-                    .popover(isPresented: $showingEraChange) {
-                        EraChangePopover(book: book)
-                    }
                 }
                 .padding(.horizontal, 12)
             }
-            Picker("", selection: $granularity) {
+            ViewThatFits(in: .horizontal) {
+                if allowsWideLayout {
+                    HStack {
+                        addNodeButton
+                        timelineActions
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    addNodeButton
+                    Menu("時間軸操作", systemImage: "ellipsis.circle") { timelineActions }
+                        .controlSize(.large)
+                }
+            }
+            .buttonStyle(PlanningActionStyle())
+            .padding(.horizontal, 12)
+            Picker("日期顯示粒度", selection: $granularity) {
                 ForEach(SailuneTimelineGranularity.allCases) { g in
                     Text(g.rawValue).tag(g)
                 }
@@ -406,54 +610,47 @@ struct TimelinePanelView: View {
         .padding(.vertical, 8)
     }
 
+    private var addNodeButton: some View {
+        Menu("新增", systemImage: "plus.circle.fill") {
+            Button("新增預排事件", systemImage: "rectangle.dashed") {
+                createEventFromOutline = false
+                showingCreateEvent = true
+            }
+            Button("從敘事大綱加入", systemImage: "text.badge.plus") {
+                createEventFromOutline = true
+                showingCreateEvent = true
+            }
+            Divider()
+            Button("只新增日期節點", systemImage: "mappin.circle", action: openAddNode)
+        }
+            .buttonStyle(PlanningActionStyle(prominent: true))
+            .disabled(selectedTimeline == nil)
+            .help(selectedTimeline == nil ? "請先選擇時間軸" : "新增事件或日期節點")
+    }
+
+    @ViewBuilder
+    private var timelineActions: some View {
+        Button("紀元管理", systemImage: "list.bullet.rectangle") {
+            showingEraManager = true
+        }
+            .help("新增或編輯紀元")
+        Button("新增副軸", systemImage: "plus") {
+            newSecondaryName = ""
+            showingAddSecondary = true
+        }
+        Button("改元", systemImage: "calendar.badge.plus") {
+            showingEraChange = true
+        }
+            .disabled(!isPrimarySelected)
+            .help(isPrimarySelected ? "建立新紀元並推進主軸" : "請切換至主軸後改元")
+    }
+
     private var axisContent: some View {
         let cells = buildCells()
         let cellIDs = cells.map(\.id)
-        return GeometryReader { geometry in
-            if allowsWideLayout && geometry.size.width >= 760 && !cells.isEmpty {
-                HStack(spacing: 0) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-                                eraHeaderIfNeeded(cell: cell, previous: index > 0 ? cells[index - 1] : nil)
-                                Button {
-                                    selectedCellID = cell.id
-                                } label: {
-                                    HStack {
-                                        Circle().fill(Color(hex: cell.eraHex) ?? .gray).frame(width: 9, height: 9)
-                                        Text(cell.label)
-                                        Spacer()
-                                        Text("\(cell.events.count)").foregroundStyle(.secondary)
-                                    }
-                                    .padding(12)
-                                    .background(selectedCellID == cell.id ? Color.accentColor.opacity(0.15) : Color.clear)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .frame(width: min(340, geometry.size.width * 0.32))
-                    Divider()
-                    if let cell = cells.first(where: { $0.id == selectedCellID }) {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack {
-                                    Text("\(cell.eraName) · \(cell.label)").font(.title3.weight(.semibold))
-                                    Spacer()
-                                    Button("刪除時間釘子", role: .destructive) { requestDeleteNodes(cell.nodes) }
-                                }
-                                Divider()
-                                drillDown(cell)
-                            }
-                            .padding(20)
-                        }
-                        .frame(maxWidth: .infinity)
-                    } else {
-                        ContentUnavailableView("選擇日期", systemImage: "calendar", description: Text("從左側時間軸選擇日期，查看或新增事件。"))
-                            .frame(maxWidth: .infinity)
-                    }
-                }
+        return Group {
+            if allowsWideLayout {
+                wideOutlineContent(cells: cells)
             } else {
                 compactAxisContent(cells: cells)
             }
@@ -461,6 +658,217 @@ struct TimelinePanelView: View {
         .onChange(of: cellIDs) { _, ids in
             if let selectedCellID, !ids.contains(selectedCellID) { self.selectedCellID = nil }
             expandedCells.formIntersection(ids)
+            collapsedWideCells.formIntersection(ids)
+            let eraIDs = Set(TimelineDateProjection.eraGroups(cells: cells).map(\.id))
+            collapsedEraGroups.formIntersection(eraIDs)
+        }
+    }
+
+    private func wideOutlineContent(cells: [TimelineCell]) -> some View {
+        let labels = TimelineDateProjection.relativeLabels(
+            cells: cells,
+            granularity: granularity,
+            firstVisibleIndex: firstVisibleWideCellIndex
+        )
+        return Group {
+            if cells.isEmpty {
+                ContentUnavailableView(
+                    "尚無時間記錄",
+                    systemImage: "clock",
+                    description: Text("使用上方「新增」建立預排事件、加入敘事大綱項目或建立日期節點。")
+                )
+                .padding(.top, 40)
+            } else {
+                ScrollView([.horizontal, .vertical]) {
+                    LazyHStack(alignment: .top, spacing: 0) {
+                        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+                            wideTimelineSlot(cell, label: labels[index], isLast: index == cells.count - 1)
+                                .frame(width: 190, alignment: .top)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                }
+                .onScrollGeometryChange(for: Int.self) { geometry in
+                    max(0, Int(geometry.contentOffset.x / 190))
+                } action: { _, index in
+                    firstVisibleWideCellIndex = min(index, max(0, cells.count - 1))
+                }
+            }
+        }
+    }
+
+    private func wideTimelineSlot(_ cell: TimelineCell, label: String, isLast: Bool) -> some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 2) {
+                Text(cell.eraName.isEmpty ? " " : cell.eraName)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text(label).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            .frame(height: 38)
+            ZStack {
+                Rectangle().fill(Color.secondary.opacity(0.5)).frame(height: 1)
+                Circle().fill(Color(hex: cell.eraHex) ?? .accentColor).frame(width: 9, height: 9)
+                if isLast {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            .frame(height: 18)
+            VStack(spacing: 10) {
+                ForEach(cell.events, id: \.id) { event in
+                    timelineCard(event)
+                }
+            }
+            .padding(.horizontal, 7)
+            .padding(.top, 8)
+        }
+    }
+
+    private func timelineCard(_ event: Event) -> some View {
+        let presentation = TimelineCardProjection.presentation(
+            event: event,
+            book: book,
+            metadata: planningStore.timelineMetadata(eventID: event.id),
+            planningStore: planningStore
+        )
+        return TimelineEventCardView(
+            event: event,
+            presentation: presentation,
+            onOpen: { open(event) },
+            onDelete: { pendingDeleteEvent = event }
+        )
+    }
+
+    private func performDeleteEvent(_ event: Event) {
+        let eventID = event.id
+        modelContext.delete(event)
+        do {
+            try modelContext.save()
+            try planningStore.deleteTimelineMetadata(eventID: eventID)
+            pendingDeleteEvent = nil
+        } catch {
+            modelContext.rollback()
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func wideEraSection(_ group: TimelineEraGroup) -> some View {
+        let collapsed = collapsedEraGroups.contains(group.id)
+        let color = Color(hex: group.colorHex) ?? .gray
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button { toggleWideEra(group.id) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                            .frame(width: 12)
+                        RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+                        Text(group.name).font(.headline)
+                        Spacer()
+                        Text("\(group.cells.count)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if let era = group.era {
+                    Button("編輯紀元", systemImage: "pencil") { editingEra = era }
+                        .buttonStyle(PlanningActionStyle())
+                }
+            }
+            if !collapsed {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(group.cells) { cell in
+                        wideDateSection(cell)
+                    }
+                }
+                .padding(.leading, 18)
+            }
+        }
+        .padding(14)
+        .background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(0.2)))
+    }
+
+    private func wideDateSection(_ cell: TimelineCell) -> some View {
+        let collapsed = collapsedWideCells.contains(cell.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button { toggleWideCell(cell.id) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                            .frame(width: 12)
+                        Text(cell.label).font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("\(cell.events.count)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button("刪除時間釘子", systemImage: "trash", role: .destructive) {
+                    requestDeleteNodes(cell.nodes)
+                }
+                .buttonStyle(PlanningActionStyle())
+            }
+            if !collapsed {
+                VStack(alignment: .leading, spacing: 3) {
+                    if cell.events.isEmpty && addingEventToCell != cell.id {
+                        Text("尚無事件").font(.callout).foregroundStyle(.secondary).padding(.leading, 18)
+                    } else {
+                        ForEach(cell.events, id: \.id) { event in
+                            Button { open(event) } label: {
+                                HStack(spacing: 10) {
+                                    Text(event.title.isEmpty ? "未命名事件" : event.title)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                    Spacer(minLength: 12)
+                                    Image(systemName: "arrow.right").foregroundStyle(.tertiary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                            .help(event.title.isEmpty ? "未命名事件" : event.title)
+                        }
+                    }
+                    if addingEventToCell == cell.id {
+                        addEventForm(cell: cell)
+                    } else {
+                        Button("新增事件", systemImage: "plus.circle") {
+                            selectedCharIDs = []
+                            withAnimation(.snappy) { addingEventToCell = cell.id }
+                        }
+                        .buttonStyle(PlanningActionStyle(prominent: true))
+                    }
+                }
+                .padding(.leading, 18)
+            }
+        }
+    }
+
+    private func open(_ event: Event) {
+        if let section = event.section, BookStructure.orderedSections(in: book).contains(where: { $0.id == section.id }) {
+            onOpenSection?(section)
+        } else {
+            selectedEvent = event
+        }
+    }
+
+    private func toggleWideEra(_ id: String) {
+        withAnimation(.snappy) {
+            if collapsedEraGroups.contains(id) { collapsedEraGroups.remove(id) }
+            else { collapsedEraGroups.insert(id) }
+        }
+    }
+
+    private func toggleWideCell(_ id: String) {
+        withAnimation(.snappy) {
+            if collapsedWideCells.contains(id) { collapsedWideCells.remove(id) }
+            else { collapsedWideCells.insert(id) }
         }
     }
 
@@ -468,6 +876,8 @@ struct TimelinePanelView: View {
         selectedCellID = nil
         expandedCells = []
         collapsedCharGroups = []
+        collapsedEraGroups = []
+        collapsedWideCells = []
         // 已輸入的事件草稿保留，重新選擇日期後可繼續使用。
         addingEventToCell = nil
     }
@@ -510,12 +920,8 @@ struct TimelinePanelView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let era = cell.era {
-                    Button { editingEra = era } label: {
-                        Image(systemName: "pencil")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .padding(4).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    Button("編輯紀元", systemImage: "pencil") { editingEra = era }
+                    .buttonStyle(PlanningActionStyle())
                     .help("編輯年號名稱與顏色")
                 }
             }
@@ -550,11 +956,10 @@ struct TimelinePanelView: View {
                             .background(Color.accentColor.opacity(0.15))
                             .clipShape(Capsule())
                     }
-                    Button { requestDeleteNodes(cell.nodes) } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption).foregroundStyle(.tertiary)
+                    Button("刪除釘子", systemImage: "trash", role: .destructive) {
+                        requestDeleteNodes(cell.nodes)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlanningActionStyle())
                     .help("刪除時間釘子")
                 }
                 .contentShape(Rectangle())
@@ -611,9 +1016,8 @@ struct TimelinePanelView: View {
                     withAnimation(.snappy) { addingEventToCell = cell.id }
                 } label: {
                     Label("新增事件", systemImage: "plus.circle")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlanningActionStyle(prominent: true))
                 .padding(.leading, 4).padding(.top, 2)
             }
         }
@@ -695,12 +1099,12 @@ struct TimelinePanelView: View {
                 Button("取消") {
                     withAnimation(.snappy) { cancelAddEvent() }
                 }
-                .buttonStyle(.borderless).font(.caption)
+                .buttonStyle(PlanningActionStyle())
                 Spacer()
                 Button("儲存") {
                     withAnimation(.snappy) { commitAddEvent(to: cell) }
                 }
-                .buttonStyle(.borderedProminent).font(.caption)
+                .buttonStyle(PlanningActionStyle(prominent: true))
                 .disabled(newEventTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -753,6 +1157,7 @@ struct TimelinePanelView: View {
     private func performDeleteNodes() {
         do {
             try PersistentModelDeletion.deleteNodes(pendingDeleteNodes, in: modelContext)
+            try cleanTimelineMetadataOrphans()
         } catch {
             operationError = error.localizedDescription
         }
@@ -780,10 +1185,16 @@ struct TimelinePanelView: View {
         }
         do {
             try PersistentModelDeletion.deleteTimeline(t, in: modelContext)
+            try cleanTimelineMetadataOrphans()
         } catch {
             operationError = error.localizedDescription
         }
         pendingDeleteTimeline = nil
+    }
+
+    private func cleanTimelineMetadataOrphans() throws {
+        let validEventIDs = Set(try modelContext.fetch(FetchDescriptor<Event>()).map(\.id))
+        try planningStore.removeOrphanedTimelineMetadata(validEventIDs: validEventIDs)
     }
 
     private func openAddNode() {
@@ -870,6 +1281,107 @@ enum TimelineDateProjection {
         return cells
     }
 
+    static func eraGroups(cells: [TimelineCell]) -> [TimelineEraGroup] {
+        var groups: [TimelineEraGroup] = []
+        var indexByID: [String: Int] = [:]
+        for cell in cells {
+            let id = cell.eraID?.uuidString ?? "none"
+            if let index = indexByID[id] {
+                let existing = groups[index]
+                groups[index] = TimelineEraGroup(
+                    id: existing.id,
+                    eraID: existing.eraID,
+                    name: existing.name,
+                    colorHex: existing.colorHex,
+                    era: existing.era,
+                    cells: existing.cells + [cell]
+                )
+            } else {
+                indexByID[id] = groups.count
+                groups.append(TimelineEraGroup(
+                    id: id,
+                    eraID: cell.eraID,
+                    name: cell.eraName.isEmpty ? (cell.eraID == nil ? "未指定紀元" : "未命名紀元") : cell.eraName,
+                    colorHex: cell.eraHex,
+                    era: cell.era,
+                    cells: [cell]
+                ))
+            }
+        }
+        return groups
+    }
+
+    static func eventsInDisplayOrder(cells: [TimelineCell]) -> [Event] {
+        cells.flatMap { cell in
+            cell.events.sorted { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+    }
+
+    static func relativeLabels(
+        cells: [TimelineCell],
+        granularity: SailuneTimelineGranularity,
+        firstVisibleIndex: Int
+    ) -> [String] {
+        guard !cells.isEmpty else { return [] }
+        let start = min(max(0, firstVisibleIndex), cells.count - 1)
+        var labels = cells.map(\.label)
+        var lastYear: Int?
+        var lastMonth: Int?
+        var lastEraID: UUID?
+        for index in cells.indices {
+            let cell = cells[index]
+            let beginsVisibleSequence = index == start
+            let eraChanged = index > start && cell.eraID != lastEraID
+            if index < start { continue }
+            if beginsVisibleSequence || eraChanged {
+                labels[index] = fullLabel(for: cell, granularity: granularity)
+                lastYear = cell.repYear
+                lastMonth = cell.repMonth
+                lastEraID = cell.eraID
+                continue
+            }
+            switch granularity {
+            case .year:
+                labels[index] = "\(cell.repYear)年"
+            case .month:
+                if cell.repYear == lastYear, let month = cell.repMonth {
+                    labels[index] = "\(month)月"
+                } else {
+                    labels[index] = fullLabel(for: cell, granularity: granularity)
+                }
+            case .day:
+                if cell.repYear == lastYear, cell.repMonth == lastMonth, let day = cell.repDay {
+                    labels[index] = "\(day)日"
+                } else if cell.repYear == lastYear, let month = cell.repMonth, let day = cell.repDay {
+                    labels[index] = "\(month)月\(day)日"
+                } else {
+                    labels[index] = fullLabel(for: cell, granularity: granularity)
+                }
+            }
+            lastYear = cell.repYear
+            lastMonth = cell.repMonth
+            lastEraID = cell.eraID
+        }
+        return labels
+    }
+
+    private static func fullLabel(for cell: TimelineCell, granularity: SailuneTimelineGranularity) -> String {
+        switch granularity {
+        case .year:
+            return "\(cell.repYear)年"
+        case .month:
+            guard let month = cell.repMonth else { return "\(cell.repYear)年" }
+            return "\(cell.repYear)年\(month)月"
+        case .day:
+            guard let month = cell.repMonth else { return "\(cell.repYear)年" }
+            guard let day = cell.repDay else { return "\(cell.repYear)年\(month)月" }
+            return "\(cell.repYear)年\(month)月\(day)日"
+        }
+    }
+
     private static func assignLabels(_ cells: inout [TimelineCell], granularity: SailuneTimelineGranularity) {
         var lastYear: Int? = nil
         var lastMonth: Int? = nil
@@ -914,7 +1426,325 @@ enum TimelineDateProjection {
     }
 }
 
+struct TimelineCardPresentation {
+    let isWritten: Bool
+    let locationText: String
+    let excerpt: String
+    let accessibilityText: String
+}
+
+private struct TimelineEventCardView: View {
+    let event: Event
+    let presentation: TimelineCardPresentation
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(event.title.isEmpty ? "未命名事件" : event.title)
+                        .font(.callout.weight(.semibold)).lineLimit(1)
+                        .padding(.trailing, 20)
+                    Text(presentation.locationText)
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    if !presentation.excerpt.isEmpty {
+                        Text(presentation.excerpt)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
+                .padding(10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button(action: onDelete) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(8)
+            .help("刪除事件卡片")
+        }
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+        .overlay { border }
+        .help(presentation.accessibilityText)
+        .accessibilityLabel(presentation.accessibilityText)
+    }
+
+    @ViewBuilder
+    private var border: some View {
+        if presentation.isWritten {
+            RoundedRectangle(cornerRadius: 9).stroke(Color.secondary.opacity(0.55), lineWidth: 1)
+        } else {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                .foregroundStyle(Color.secondary.opacity(0.65))
+        }
+    }
+}
+
+@MainActor
+enum TimelineCardProjection {
+    static func presentation(
+        event: Event,
+        book: Book,
+        metadata: TimelineEventCardMetadata?,
+        planningStore: StoryPlanningStore
+    ) -> TimelineCardPresentation {
+        let sections = BookStructure.orderedSections(in: book)
+        let legacySection = event.section.flatMap { section in sections.first { $0.id == section.id } }
+        var resolvedSection: Section?
+        var sourceIsValid = false
+        var excerpt = ""
+
+        if let metadata,
+           metadata.bookID == book.id,
+           let outlineItemID = metadata.outlineItemID,
+           planningStore.items(bookID: book.id).contains(where: { $0.id == outlineItemID }),
+           let anchor = planningStore.anchor(outlineItemID: outlineItemID),
+           anchor.bookID == book.id,
+           let section = sections.first(where: { $0.id == anchor.sectionID }) {
+            resolvedSection = section
+            sourceIsValid = true
+            excerpt = metadata.excerptMode == .manual
+                ? TimelineEventCardMetadata.limitedExcerpt(metadata.manualExcerpt)
+                : automaticExcerpt(anchor: anchor, section: section)
+        } else if let metadata, metadata.excerptMode == .manual {
+            excerpt = TimelineEventCardMetadata.limitedExcerpt(metadata.manualExcerpt)
+        }
+
+        let section = resolvedSection ?? legacySection
+        let location: String
+        if let section {
+            let volume = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            location = "\(volume.isEmpty ? "未命名卷次" : volume)・\(sectionTitle.isEmpty ? "未命名節次" : sectionTitle)"
+        } else if metadata?.outlineItemID != nil {
+            location = "來源失效"
+        } else {
+            location = "尚未綁定"
+        }
+        let isWritten = sourceIsValid || legacySection != nil
+        let title = event.title.isEmpty ? "未命名事件" : event.title
+        return TimelineCardPresentation(
+            isWritten: isWritten,
+            locationText: location,
+            excerpt: excerpt,
+            accessibilityText: "\(title)，\(isWritten ? "已寫入" : "未寫入")，\(location)\(excerpt.isEmpty ? "" : "，\(excerpt)")"
+        )
+    }
+
+    static func automaticExcerpt(anchor: OutlineItemAnchor, section: Section) -> String {
+        let plainText = String(section.content.characters)
+        let offset = anchor.resolvedOffset(in: plainText)
+        let nsText = plainText as NSString
+        guard offset < nsText.length else { return normalizedExcerpt(anchor.anchorText) }
+        let candidate = nsText.substring(from: offset)
+        let normalized = normalizedExcerpt(candidate)
+        return normalized.isEmpty ? normalizedExcerpt(anchor.anchorText) : normalized
+    }
+
+    static func normalizedExcerpt(_ value: String) -> String {
+        let normalized = value
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return String(normalized.prefix(30))
+    }
+}
+
+@MainActor
+private struct TimelineEventCreationView: View {
+    let book: Book
+    let timeline: Timeline?
+    let eras: [Era]
+    let startsFromOutline: Bool
+    @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var yearText = ""
+    @State private var monthText = ""
+    @State private var dayText = ""
+    @State private var title = ""
+    @State private var detail = ""
+    @State private var selectedEraID: UUID?
+    @State private var selectedOutlineItemID: UUID?
+    @State private var excerptMode: TimelineExcerptMode = .automatic
+    @State private var manualExcerpt = ""
+    @State private var saveError: String?
+
+    private var outlineItems: [OutlineItem] {
+        planningStore.items(bookID: book.id).filter { planningStore.anchor(outlineItemID: $0.id) != nil }
+    }
+
+    private var parsedYear: Int? { Int(yearText).flatMap { $0 > 0 ? $0 : nil } }
+    private var parsedMonth: Int? { monthText.isEmpty ? nil : Int(monthText).flatMap { (1...12).contains($0) ? $0 : nil } }
+    private var parsedDay: Int? { dayText.isEmpty ? nil : Int(dayText).flatMap { (1...31).contains($0) ? $0 : nil } }
+    private var canSave: Bool {
+        parsedYear != nil && timeline != nil && (!startsFromOutline || selectedOutlineItemID != nil)
+            && !(dayText.isEmpty == false && parsedMonth == nil)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(startsFromOutline ? "從敘事大綱加入" : "新增預排事件").font(.title3.weight(.semibold))
+                Spacer()
+            }
+            if startsFromOutline {
+                Picker("敘事大綱項目", selection: $selectedOutlineItemID) {
+                    Text("請選擇").tag(Optional<UUID>.none)
+                    ForEach(outlineItems, id: \.id) { item in
+                        Text(item.title.isEmpty ? "未命名項目" : item.title).tag(item.id as UUID?)
+                    }
+                }
+            }
+            Picker("紀元", selection: $selectedEraID) {
+                Text("未指定紀元").tag(Optional<UUID>.none)
+                ForEach(eras, id: \.id) { era in
+                    Text(era.name.isEmpty ? "未命名紀元" : era.name).tag(era.id as UUID?)
+                }
+            }
+            HStack {
+                TextField("年", text: $yearText).frame(width: 90)
+                TextField("月", text: $monthText).frame(width: 70)
+                TextField("日", text: $dayText).frame(width: 70)
+            }
+            TextField("標題（最多 10 字，留白則使用月／日）", text: $title)
+                .onChange(of: title) { _, value in title = String(value.prefix(10)) }
+            TextField("事件詳情（選填）", text: $detail, axis: .vertical).lineLimit(2...4)
+            Picker("節錄來源", selection: $excerptMode) {
+                ForEach(TimelineExcerptMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+            }
+            .pickerStyle(.segmented)
+            if excerptMode == .manual {
+                TextField("手動節錄（最多 30 字）", text: $manualExcerpt, axis: .vertical)
+                    .lineLimit(2...2)
+                    .onChange(of: manualExcerpt) { _, value in manualExcerpt = String(value.prefix(30)) }
+            }
+            if let saveError { Text(saveError).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("取消") { dismiss() }
+                Spacer()
+                Button("加入時間軸") { commit() }
+                    .buttonStyle(PlanningActionStyle(prominent: true))
+                    .disabled(!canSave)
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(20)
+        .frame(width: 480)
+        .onAppear {
+            selectedEraID = book.currentEra?.id
+            if startsFromOutline { selectedOutlineItemID = outlineItems.first?.id }
+        }
+    }
+
+    private func commit() {
+        guard let timeline, let year = parsedYear else { return }
+        let node = Node(year: year, month: parsedMonth, day: parsedDay)
+        node.timeline = timeline
+        node.era = eras.first { $0.id == selectedEraID } ?? book.currentEra
+        let fallbackTitle: String
+        if let month = parsedMonth, let day = parsedDay { fallbackTitle = "\(month)/\(day)" }
+        else if let month = parsedMonth { fallbackTitle = "\(month)月" }
+        else { fallbackTitle = "\(year)年" }
+        let event = Event(title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallbackTitle : String(title.prefix(10)), detail: detail)
+        event.node = node
+        if let itemID = selectedOutlineItemID,
+           let anchor = planningStore.anchor(outlineItemID: itemID) {
+            event.section = BookStructure.orderedSections(in: book).first { $0.id == anchor.sectionID }
+        }
+        modelContext.insert(node)
+        modelContext.insert(event)
+        do {
+            try modelContext.save()
+            try planningStore.ensureTimelineMetadata(
+                eventID: event.id,
+                bookID: book.id,
+                outlineItemID: selectedOutlineItemID,
+                excerptMode: excerptMode,
+                manualExcerpt: manualExcerpt
+            )
+            dismiss()
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+}
+
 // MARK: - 事件列（操作鈕常駐淡顯）
+
+@MainActor
+private struct TimelineEventBindingControls: View {
+    @Bindable var event: Event
+    let book: Book
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(\.modelContext) private var modelContext
+    @State private var selectedOutlineItemID: UUID?
+    @State private var excerptMode: TimelineExcerptMode = .automatic
+    @State private var manualExcerpt = ""
+    @State private var saveError: String?
+
+    private var availableItems: [OutlineItem] {
+        planningStore.items(bookID: book.id).filter { planningStore.anchor(outlineItemID: $0.id) != nil }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("時間卡片來源").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Picker("敘事大綱項目", selection: $selectedOutlineItemID) {
+                Text("尚未綁定").tag(Optional<UUID>.none)
+                ForEach(availableItems, id: \.id) { item in
+                    Text(item.title.isEmpty ? "未命名項目" : item.title).tag(item.id as UUID?)
+                }
+            }
+            Picker("節錄來源", selection: $excerptMode) {
+                ForEach(TimelineExcerptMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+            }
+            .pickerStyle(.segmented)
+            if excerptMode == .manual {
+                TextField("手動節錄（最多 30 字）", text: $manualExcerpt, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...2)
+                    .onChange(of: manualExcerpt) { _, value in manualExcerpt = String(value.prefix(30)) }
+            }
+            HStack {
+                if let saveError { Text(saveError).font(.caption2).foregroundStyle(.red) }
+                Spacer()
+                Button("儲存卡片來源") { saveBinding() }
+                    .buttonStyle(PlanningActionStyle(prominent: true))
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .onAppear {
+            let metadata = planningStore.timelineMetadata(eventID: event.id)
+            selectedOutlineItemID = metadata?.outlineItemID
+            excerptMode = metadata?.excerptMode ?? .automatic
+            manualExcerpt = metadata?.manualExcerpt ?? ""
+        }
+    }
+
+    private func saveBinding() {
+        let section = selectedOutlineItemID
+            .flatMap { planningStore.anchor(outlineItemID: $0) }
+            .flatMap { anchor in BookStructure.orderedSections(in: book).first { $0.id == anchor.sectionID } }
+        event.section = section
+        do {
+            try modelContext.save()
+            try planningStore.ensureTimelineMetadata(
+                eventID: event.id,
+                bookID: book.id,
+                outlineItemID: selectedOutlineItemID,
+                excerptMode: excerptMode,
+                manualExcerpt: manualExcerpt
+            )
+            saveError = nil
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+}
 
 @MainActor
 private struct EventRow: View {
@@ -932,6 +1762,9 @@ private struct EventRow: View {
             if editing {
                 TextField("事件標題", text: $event.title)
                     .textFieldStyle(.roundedBorder).font(.caption)
+                    .onChange(of: event.title) { _, value in
+                        if value.count > 10 { event.title = String(value.prefix(10)) }
+                    }
                 TextField("詳情（選填）", text: $event.detail, axis: .vertical)
                     .textFieldStyle(.roundedBorder).font(.caption2).lineLimit(2...4)
 
@@ -975,11 +1808,11 @@ private struct EventRow: View {
                         editing = false
                         hovering = false
                     }
-                    .buttonStyle(.borderedProminent).font(.caption2)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .leading, spacing: 6) {
                     Circle()
                         .fill(event.isVisible ? Color.accentColor : Color.secondary.opacity(0.4))
                         .frame(width: 5, height: 5)
@@ -993,42 +1826,34 @@ private struct EventRow: View {
                         }
                     }
                     Spacer(minLength: 4)
-                    HStack(spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Button {
                             event.isVisible.toggle()
                             do { try modelContext.save(); saveError = nil }
                             catch { event.isVisible.toggle(); saveError = error.localizedDescription }
                         } label: {
-                            Image(systemName: event.isVisible ? "eye.fill" : "eye.slash")
-                                .font(.caption2)
-                                .foregroundStyle(event.isVisible ? .secondary : .tertiary)
-                                .padding(4).contentShape(Rectangle())
+                            Label(event.isVisible ? "主軸：顯示中" : "主軸：已隱藏", systemImage: event.isVisible ? "eye.fill" : "eye.slash")
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlanningActionStyle())
                         .help("顯示於主時間軸")
                         Button {
                             selectedIDs = Set(event.characters.map { $0.id.uuidString })
                             editing = true
                         } label: {
-                            Image(systemName: "pencil")
-                                .font(.caption2).foregroundStyle(.secondary)
-                                .padding(4).contentShape(Rectangle())
+                            Label("編輯事件", systemImage: "pencil")
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlanningActionStyle())
                         .help("編輯事件")
                         Button {
                             modelContext.delete(event)
                             do { try modelContext.save() }
                             catch { saveError = error.localizedDescription }
                         } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption2).foregroundStyle(.tertiary)
-                                .padding(4).contentShape(Rectangle())
+                            Label("刪除事件", systemImage: "trash").foregroundStyle(.red)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlanningActionStyle())
                         .help("刪除事件")
                     }
-                    .opacity(hovering ? 1.0 : eventActionIdleOpacity)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -1152,9 +1977,10 @@ private struct AddNodePopover: View {
 
             HStack {
                 Button("取消") { dismiss() }
+                    .buttonStyle(PlanningActionStyle())
                 Spacer()
                 Button("新增") { commit() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PlanningActionStyle(prominent: true))
                     .disabled(!canSave || target == nil)
             }
         }
@@ -1210,9 +2036,9 @@ private struct EraManagerPopover: View {
             }
             .frame(maxHeight: 260)
             Button { addEra() } label: {
-                Label("新增紀元", systemImage: "plus.circle").font(.caption)
+                Label("新增紀元", systemImage: "plus.circle")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlanningActionStyle())
             HStack {
                 Spacer()
                 Button("完成") {
@@ -1220,7 +2046,7 @@ private struct EraManagerPopover: View {
                     catch { saveError = error.localizedDescription; return }
                     dismiss()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PlanningActionStyle(prominent: true))
             }
         }
         .padding(16)
@@ -1320,6 +2146,7 @@ private struct EraChangePopover: View {
                     } catch { saveError = error.localizedDescription; return }
                     dismiss()
                 }
+                .buttonStyle(PlanningActionStyle(prominent: true))
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }

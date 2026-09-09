@@ -136,12 +136,21 @@ final class EditorBridge {
         }
     }
     func requestSelect(sectionID: UUID, range: NSRange) {
-        guard coordinator?.lastSectionID != sectionID else {
+        if let coordinator,
+           coordinator.lastSectionID == sectionID,
+           coordinator.contentLoadSectionID != sectionID {
             requestSelect(range: range)
             return
         }
         pendingSectionID = sectionID
         pendingSelection = range
+    }
+    func takePendingSelection(for sectionID: UUID) -> NSRange? {
+        guard let pendingSelection,
+              pendingSectionID == nil || pendingSectionID == sectionID else { return nil }
+        self.pendingSelection = nil
+        pendingSectionID = nil
+        return pendingSelection
     }
     func reloadVisibleContent() { coordinator?.reloadFromModel() }
     func flushPendingSave() { coordinator?.flushPendingSave() }
@@ -459,7 +468,12 @@ struct RichEditorView: NSViewRepresentable {
                       let coordinator,
                       coordinator.lastSectionID == sectionID else { return }
                 coordinator.apply(initial, to: textView, resetSelection: false)
+                coordinator.contentLoadSectionID = nil
+                if let range = bridge.takePendingSelection(for: sectionID) {
+                    coordinator.select(range: range)
+                }
             }
+            context.coordinator.contentLoadSectionID = sectionID
         }
         return scrollView
     }
@@ -480,7 +494,12 @@ struct RichEditorView: NSViewRepresentable {
             ) { [weak textView, weak coord] in
                 guard let textView, let coord, coord.lastSectionID == sectionID else { return }
                 coord.apply(content, to: textView, resetSelection: true)
+                coord.contentLoadSectionID = nil
+                if let range = bridge.takePendingSelection(for: sectionID) {
+                    coord.select(range: range)
+                }
             }
+            coord.contentLoadSectionID = sectionID
             // 修 422：view update 途中不可同步改 @State，丟下一 runloop
             let wc = section.wordCount
             let wcCallback = onWordCountChange
@@ -503,10 +522,9 @@ struct RichEditorView: NSViewRepresentable {
         coord.outlineMarkers = outlineMarkers
         coord.bridge = bridge
         bridge.coordinator = coord
-        if let pendingSelection = bridge.pendingSelection,
-           bridge.pendingSectionID == nil || bridge.pendingSectionID == coord.lastSectionID {
-            bridge.pendingSelection = nil
-            bridge.pendingSectionID = nil
+        if coord.contentLoadSectionID != coord.lastSectionID,
+           let sectionID = coord.lastSectionID,
+           let pendingSelection = bridge.takePendingSelection(for: sectionID) {
             coord.select(range: pendingSelection)
         }
     }
@@ -566,6 +584,7 @@ struct RichEditorView: NSViewRepresentable {
         var section: Section?
         var lastCommitted: AttributedString = AttributedString("")
         var lastSectionID: UUID? = nil
+        var contentLoadSectionID: UUID?
         var onWordCountChange: ((Int) -> Void)?
         var onHeadingStateChange: ((Bool) -> Void)?
         var onSaveStateChange: ((EditorSaveState) -> Void)?
