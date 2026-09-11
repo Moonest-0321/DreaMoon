@@ -33,6 +33,8 @@ struct WorkspaceInspectorView: View {
     let currentSection: Section?
     var focusedCharacter: Character? = nil
     var focusRequestID = UUID()
+    var settingsDestination: EditorSettingsDestination? = nil
+    var settingsRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
     var onOpenStoryTag: ((StoryTag) -> Void)? = nil
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
@@ -58,6 +60,8 @@ struct WorkspaceInspectorView: View {
                     currentSection: currentSection,
                     focusedCharacter: focusedCharacter,
                     focusRequestID: focusRequestID,
+                    settingsDestination: settingsDestination,
+                    settingsRequestID: settingsRequestID,
                     onSelectSection: onSelectSection,
                     onOpenStoryTag: onOpenStoryTag
                 )

@@ -43,6 +43,8 @@ struct EditorWorkspaceView: View {
     @State private var keyboardMonitor = EditorKeyboardMonitor()
     @State private var focusedCharacter: Character?
     @State private var characterFocusRequestID = UUID()
+    @State private var settingsDestination: EditorSettingsDestination?
+    @State private var settingsRequestID = UUID()
     @State private var isShowingPlanningWorkspace = false
     @State private var hasLoadedPlanningWorkspace = false
     @State private var writingColumnVisibility: NavigationSplitViewVisibility = .automatic
@@ -70,11 +72,17 @@ struct EditorWorkspaceView: View {
                 EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
                     .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
             } detail: {
-                EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
-                    focusedCharacter = character
-                    characterFocusRequestID = UUID()
-                    setInspectorPresented(true)
-                }
+                EditorCenterView(
+                    section: selectedSection,
+                    bridge: bridge,
+                    book: book,
+                    onOpenCharacter: { character in
+                        focusedCharacter = character
+                        characterFocusRequestID = UUID()
+                        setInspectorPresented(true)
+                    },
+                    onOpenSettings: openSettings
+                )
                 .toolbar { workspaceToolbar }
             }
             .opacity(isShowingPlanningWorkspace ? 0 : 1)
@@ -101,6 +109,8 @@ struct EditorWorkspaceView: View {
                 currentSection: selectedSection,
                 focusedCharacter: focusedCharacter,
                 focusRequestID: characterFocusRequestID,
+                settingsDestination: settingsDestination,
+                settingsRequestID: settingsRequestID,
                 onSelectSection: { section in
                     bridge.flushPendingSave()
                     selectedSection = section
@@ -251,6 +261,13 @@ struct EditorWorkspaceView: View {
         withTransaction(transaction) {
             showInspector = presented
         }
+    }
+
+    private func openSettings(_ destination: EditorSettingsDestination) {
+        focusedCharacter = nil
+        settingsDestination = destination
+        settingsRequestID = UUID()
+        setInspectorPresented(true)
     }
 }
 
@@ -783,6 +800,7 @@ struct EditorCenterView: View {
     let bridge: EditorBridge
     let book: Book
     let onOpenCharacter: (Character) -> Void
+    let onOpenSettings: (EditorSettingsDestination) -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(StoryPlanningStore.self) private var planningStore
     @State private var liveWordCount: Int = 0
@@ -1001,6 +1019,7 @@ struct EditorCenterView: View {
                             }
                             return trueNames + aliases
                         },
+                        onOpenSettings: onOpenSettings,
                         onCreateStoryTag: { kind, text, range in
                             // The marker refreshes the editor from the model;
                             // commit first so creating a tag never discards a

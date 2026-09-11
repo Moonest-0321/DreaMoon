@@ -37,6 +37,12 @@ enum CharacterReferenceSource: Equatable {
     case legacy
 }
 
+enum EditorSettingsDestination: String {
+    case item
+    case ability
+    case organization
+}
+
 struct CharacterReference: Equatable {
     let characterID: UUID
     let source: CharacterReferenceSource
@@ -308,57 +314,105 @@ final class SailuneTextView: CompositionAwareTextView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.automaticallyInsertsWritingToolsItems = false
         let selectedText = selectedPlainText()
+        menu.addItem(editingToolbarItem())
+        menu.addItem(NSMenuItem.separator())
+
+        menu.addItem(storyTagMenuItem(title: "敘事大綱", kind: .main, enabled: !selectedText.isEmpty))
+        menu.addItem(storyTagMenuItem(title: "修改", kind: .revision, enabled: !selectedText.isEmpty))
+        menu.addItem(storyTagMenuItem(title: "草稿", kind: .plannedAddition, enabled: !selectedText.isEmpty))
+        menu.addItem(characterMenuItem(selectedText: selectedText))
+        menu.addItem(settingsMenuItem(title: "物品", destination: .item))
+        menu.addItem(settingsMenuItem(title: "能力", destination: .ability))
+        menu.addItem(settingsMenuItem(title: "組織", destination: .organization))
+        menu.addItem(NSMenuItem.separator())
+        for item in NSMenuItem.writingToolsItems {
+            item.title = "寫作工具"
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func editingToolbarItem() -> NSMenuItem {
+        let selectionExists = selectedRange().length > 0
+        let buttons = [
+            editingToolbarButton(symbol: "scissors", title: "剪下", action: #selector(cut(_:)), enabled: isEditable && selectionExists),
+            editingToolbarButton(symbol: "doc.on.doc", title: "複製", action: #selector(copy(_:)), enabled: selectionExists),
+            editingToolbarButton(symbol: "clipboard", title: "貼上", action: #selector(paste(_:)), enabled: isEditable && NSPasteboard.general.string(forType: .string) != nil)
+        ]
+        let stack = NSStackView(views: buttons)
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        stack.setFrameSize(NSSize(width: 112, height: 32))
+
+        let item = NSMenuItem()
+        item.view = stack
+        return item
+    }
+
+    private func editingToolbarButton(symbol: String, title: String, action: Selector, enabled: Bool) -> NSButton {
+        let button = NSButton(
+            image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage(),
+            target: self,
+            action: action
+        )
+        button.bezelStyle = .texturedRounded
+        button.imagePosition = .imageOnly
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        button.isEnabled = enabled
+        button.setFrameSize(NSSize(width: 28, height: 24))
+        return button
+    }
+
+    private func storyTagMenuItem(title: String, kind: StoryTagKind, enabled: Bool) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(createStoryTagFromSelection(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = kind.rawValue
+        item.isEnabled = enabled
+        return item
+    }
+
+    private func characterMenuItem(selectedText: String) -> NSMenuItem {
         let preview = String(selectedText.prefix(24))
-        let createCharacterItem = NSMenuItem(
+        let characterMenu = NSMenu(title: "角色")
+
+        let createItem = NSMenuItem(
             title: preview.isEmpty ? "建立角色" : "建立角色「\(preview)」",
             action: #selector(createCharacterFromSelection(_:)),
             keyEquivalent: ""
         )
-        createCharacterItem.target = self
-        createCharacterItem.isEnabled = coordinator?.canCreateCharacter(named: selectedText) == true
-        menu.addItem(createCharacterItem)
+        createItem.target = self
+        createItem.isEnabled = coordinator?.canCreateCharacter(named: selectedText) == true
+        characterMenu.addItem(createItem)
 
-        let linkCharacterItem = NSMenuItem(
+        let linkItem = NSMenuItem(
             title: preview.isEmpty ? "連結到角色" : "連結到角色「\(preview)」",
             action: #selector(linkCharacterFromSelection(_:)),
             keyEquivalent: ""
         )
-        linkCharacterItem.target = self
-        linkCharacterItem.isEnabled = coordinator?.canLinkCharacter(named: selectedText) == true
-        menu.addItem(linkCharacterItem)
+        linkItem.target = self
+        linkItem.isEnabled = coordinator?.canLinkCharacter(named: selectedText) == true
+        characterMenu.addItem(linkItem)
 
-        let unlinkCharacterItem = NSMenuItem(
-            title: "解除角色連結",
-            action: #selector(unlinkCharacterFromSelection(_:)),
-            keyEquivalent: ""
-        )
-        unlinkCharacterItem.target = self
-        unlinkCharacterItem.isEnabled = selectedRangeHasCharacterLink()
-        menu.addItem(unlinkCharacterItem)
-        menu.addItem(NSMenuItem.separator())
+        let unlinkItem = NSMenuItem(title: "解除角色連結", action: #selector(unlinkCharacterFromSelection(_:)), keyEquivalent: "")
+        unlinkItem.target = self
+        unlinkItem.isEnabled = selectedRangeHasCharacterLink()
+        characterMenu.addItem(unlinkItem)
 
-        let storyTagsMenu = NSMenu(title: "加入大綱／標籤")
-        for kind in StoryTagKind.outlineCreationCases + StoryTagKind.allCases {
-            let item = NSMenuItem(
-                title: kind.editorActionTitle,
-                action: #selector(createStoryTagFromSelection(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = kind.rawValue
-            item.isEnabled = selectedRange().length > 0
-            storyTagsMenu.addItem(item)
-        }
-        let storyTagsItem = NSMenuItem(title: "加入大綱／標籤", action: nil, keyEquivalent: "")
-        storyTagsItem.submenu = storyTagsMenu
-        menu.addItem(storyTagsItem)
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "剪下", action: #selector(cut(_:)), keyEquivalent: "x")
-        menu.addItem(withTitle: "複製", action: #selector(copy(_:)), keyEquivalent: "c")
-        menu.addItem(withTitle: "貼上", action: #selector(paste(_:)), keyEquivalent: "v")
-        menu.addItem(withTitle: "全選", action: #selector(selectAll(_:)), keyEquivalent: "a")
-        return menu
+        let item = NSMenuItem(title: "角色", action: nil, keyEquivalent: "")
+        item.submenu = characterMenu
+        return item
+    }
+
+    private func settingsMenuItem(title: String, destination: EditorSettingsDestination) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(openSettingsFromSelection(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = destination.rawValue
+        return item
     }
 
     @objc func createCharacterFromSelection(_ sender: Any?) {
@@ -371,6 +425,12 @@ final class SailuneTextView: CompositionAwareTextView {
 
     @objc func unlinkCharacterFromSelection(_ sender: Any?) {
         coordinator?.unlinkSelectedCharacter()
+    }
+
+    @objc func openSettingsFromSelection(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let destination = EditorSettingsDestination(rawValue: rawValue) else { return }
+        coordinator?.openSettings(destination: destination)
     }
 
     private func selectedPlainText() -> String {
@@ -425,6 +485,7 @@ struct RichEditorView: NSViewRepresentable {
     var onCreateCharacter: ((String) -> CharacterReference?)? = nil
     var resolveCharacterReference: ((String) -> CharacterReference?)? = nil
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
+    var onOpenSettings: ((EditorSettingsDestination) -> Void)? = nil
     var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)? = nil
     var storyTags: () -> [StoryTag] = { [] }
     var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
@@ -448,6 +509,7 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.onCreateCharacter = onCreateCharacter
         context.coordinator.resolveCharacterReference = resolveCharacterReference
         context.coordinator.characterSuggestions = characterSuggestions
+        context.coordinator.onOpenSettings = onOpenSettings
         context.coordinator.onCreateStoryTag = onCreateStoryTag
         context.coordinator.storyTags = storyTags
         context.coordinator.outlineMarkers = outlineMarkers
@@ -517,6 +579,7 @@ struct RichEditorView: NSViewRepresentable {
         coord.onCreateCharacter = onCreateCharacter
         coord.resolveCharacterReference = resolveCharacterReference
         coord.characterSuggestions = characterSuggestions
+        coord.onOpenSettings = onOpenSettings
         coord.onCreateStoryTag = onCreateStoryTag
         coord.storyTags = storyTags
         coord.outlineMarkers = outlineMarkers
@@ -597,6 +660,7 @@ struct RichEditorView: NSViewRepresentable {
         var onCreateCharacter: ((String) -> CharacterReference?)?
         var resolveCharacterReference: ((String) -> CharacterReference?)?
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
+        var onOpenSettings: ((EditorSettingsDestination) -> Void)?
         var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)?
         var storyTags: () -> [StoryTag] = { [] }
         var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
@@ -650,6 +714,9 @@ struct RichEditorView: NSViewRepresentable {
             let text = (tv.string as NSString).substring(with: range)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             onCreateStoryTag?(kind, text, range)
+        }
+        func openSettings(destination: EditorSettingsDestination) {
+            onOpenSettings?(destination)
         }
         private func applyStoryTagMarkers(to textView: NSTextView) {
             guard let storage = textView.textStorage else { return }

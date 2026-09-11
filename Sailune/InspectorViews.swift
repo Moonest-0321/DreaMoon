@@ -479,16 +479,20 @@ struct InspectorRootView: View {
     let currentSection: Section?
     let focusedCharacter: Character?
     let focusRequestID: UUID
+    let settingsDestination: EditorSettingsDestination?
+    let settingsRequestID: UUID
     let onSelectSection: ((Section) -> Void)?
     let onOpenStoryTag: ((StoryTag) -> Void)?
     @State private var selectedTab: InspectorTab = .character
     @State private var route: InspectorRoute = .list
 
-    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil, onOpenStoryTag: ((StoryTag) -> Void)? = nil) {
+    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), settingsDestination: EditorSettingsDestination? = nil, settingsRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil, onOpenStoryTag: ((StoryTag) -> Void)? = nil) {
         self.book = book
         self.currentSection = currentSection
         self.focusedCharacter = focusedCharacter
         self.focusRequestID = focusRequestID
+        self.settingsDestination = settingsDestination
+        self.settingsRequestID = settingsRequestID
         self.onSelectSection = onSelectSection
         self.onOpenStoryTag = onOpenStoryTag
     }
@@ -574,12 +578,27 @@ struct InspectorRootView: View {
         .onAppear { showFocusedCharacter() }
         .onChange(of: focusedCharacter?.id) { _, _ in showFocusedCharacter() }
         .onChange(of: focusRequestID) { _, _ in showFocusedCharacter() }
+        .onAppear { showRequestedSettings() }
+        .onChange(of: settingsRequestID) { _, _ in showRequestedSettings() }
     }
 
     private func showFocusedCharacter() {
         guard let focusedCharacter else { return }
         selectedTab = .character
         navigate(to: .detail(focusedCharacter))
+    }
+
+    private func showRequestedSettings() {
+        guard let settingsDestination else { return }
+        route = .list
+        switch settingsDestination {
+        case .item:
+            selectedTab = .item
+        case .ability:
+            selectedTab = .ability
+        case .organization:
+            selectedTab = .character
+        }
     }
 
     /// The center editor and the inspector both host AppKit text views. Replacing

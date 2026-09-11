@@ -4,6 +4,56 @@ import SwiftData
 
 @MainActor
 final class ItemV3Tests: XCTestCase {
+    func testEditorContextMenuKeepsApprovedToolOrderAndTagKinds() {
+        let textView = contextTextView(text: "反白文字", selectedLength: 4)
+
+        let menu = textView.menu(for: contextMenuEvent())
+        XCTAssertEqual(
+            Array(menu?.items.dropFirst(2).prefix(7).map(\.title) ?? []),
+            ["敘事大綱", "修改", "草稿", "角色", "物品", "能力", "組織"]
+        )
+        XCTAssertEqual(menu?.items[2].representedObject as? String, StoryTagKind.main.rawValue)
+        XCTAssertEqual(menu?.items[3].representedObject as? String, StoryTagKind.revision.rawValue)
+        XCTAssertEqual(menu?.items[4].representedObject as? String, StoryTagKind.plannedAddition.rawValue)
+        XCTAssertTrue(menu?.items[2].isEnabled == true)
+        XCTAssertTrue(menu?.items[3].isEnabled == true)
+        XCTAssertTrue(menu?.items[4].isEnabled == true)
+    }
+
+    func testEditorContextMenuDisablesTextTagsWithoutSelection() {
+        let textView = contextTextView(text: "沒有反白", selectedLength: 0)
+
+        let menu = textView.menu(for: contextMenuEvent())
+        XCTAssertFalse(menu?.items[2].isEnabled == true)
+        XCTAssertFalse(menu?.items[3].isEnabled == true)
+        XCTAssertFalse(menu?.items[4].isEnabled == true)
+    }
+
+    private func contextMenuEvent() -> NSEvent {
+        NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )!
+    }
+
+    private func contextTextView(text: String, selectedLength: Int) -> SailuneTextView {
+        let storage = NSTextStorage(string: text)
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+        let textView = SailuneTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), textContainer: container)
+        textView.setSelectedRange(NSRange(location: 0, length: selectedLength))
+        return textView
+    }
+
     func testEditorBridgeKeepsCrossSectionSelectionUntilTargetSectionConsumesIt() {
         let bridge = EditorBridge()
         let sourceSectionID = UUID()

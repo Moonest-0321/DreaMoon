@@ -1,14 +1,34 @@
 # 當前工作交接
 
-> 狀態：closed
+> 狀態：active
 >
 > 更新時間：2026-09-11（Asia/Taipei）
 >
-> 工作單元：敘事大綱加入流程修正與文本／大綱切換效能
+> 工作單元：V4.4.9 文本右鍵創作工具選單
 >
 > 對應工作單：`docs/work-items/current.md`
 >
-> 目前階段：完成
+> 目前階段：實作中
+
+## V4.4.9 接手起點
+
+- 使用者提供一張文本右鍵選單草圖，希望 V4.4.9 改為該資訊架構：頂端剪下／複製／貼上圖示，下方依序為創作工具文字選項。
+- 已查證 `Sailune/RichEditorView.swift`：`SailuneTextView.menu(for:)` 目前為角色建立／連結／解除、加入大綱／標籤子選單、剪下／複製／貼上／全選；尚無物品、能力、組織或書籤正文入口。
+- 本輪只建立工作單與交接，沒有修改功能程式、測試、資料或正式規格。開始時 `git status --short` 無輸出，未發現使用者未提交修改。
+- 已決定：前三項正確名稱為「敘事大綱、修改、草稿」；修改與草稿均屬文本標籤操作，沿用既有建立行為；後續為角色、物品、能力、組織、寫作工具。寫作工具是 Apple／macOS 內建功能，僅恢復系統入口。R 已批准。
+- U 已於 2026-09-11 批准：頂端是自訂原生 `NSMenu` item 內的剪下／複製／貼上三個圖示按鈕，以下是單層工具列；角色保留建立／連結／解除的子選單。其餘設定工具只接目前入口，不新增文字辨識、建立或資料連結；書寫工具委派給系統原生 action。未畫出的全選僅維持 ⌘A。
+- 已核對目前 macOS 26.5 SDK：`NSMenuItem.writingToolsItems` 是標準書寫工具 menu item，且 `NSMenu.automaticallyInsertsWritingToolsItems` 可避免自訂 context menu 重複插入；專案部署目標亦為 macOS 26.5。
+- I 計畫：拆出可測試的選單組裝、以既有 selector 實作圖示剪下／複製／貼上、原樣接回三種故事規劃與角色動作、用一次性導覽請求開啟既有物品／能力／組織設定位置，以及用標準 `writingToolsItems` 恢復 Apple 功能。新增單元／導覽測試、UI 冒煙、完整建置與 diff 驗證；不改 schema、資料或 Apple Intelligence 行為。
+- I 已於 2026-09-11 批准；功能程式與測試可開始修改。唯一下一步：完成右鍵選單、設定集導覽與書寫工具整合後執行測試與 UI 驗證。
+
+### V4.4.9 實作檢查點
+
+- 已修改 `RichEditorView.swift`、`EditorWorkspaceView.swift`、`TimelineViews.swift`、`InspectorViews.swift` 與 `ItemV3Tests.swift`。開始時工作樹乾淨；本輪沒有覆蓋使用者修改，沒有 schema、遷移、刪除或匯出變更。
+- `SailuneTextView.menu(for:)` 改為頂端圖示剪下／複製／貼上、敘事大綱／修改／草稿、角色子選單、物品／能力／組織與 Apple「寫作工具」。前三個創作動作仍用既有 StoryTag／OutlineItem 建立路徑；角色動作與原有連結／undo 不變。
+- 新增一次性設定集導覽請求：物品、能力開相對應既有分頁；組織回到現有角色設定的管理入口，不新建組織分頁。Apple 書寫工具採 `NSMenuItem.writingToolsItems`，自訂選單禁用自動插入以避免重複。
+- 驗證：完整 73 項 macOS 測試、Debug、無簽章 Release 與 `git diff --check` 均通過。初次受限沙箱測試因既有 SwiftData macro plugin 問題失敗；允許完整 Xcode 環境後通過。新增兩項測試涵蓋工具順序、kind 與未反白停用。
+- 未完成：實機 UI 冒煙。嘗試用桌面 UI 自動化連線 Sailune 時逾時，因此不能宣稱已目視確認圖示列、選單寬度、設定集跳轉或 Apple 書寫工具；沒有對正式使用者資料操作。
+- 唯一下一步：開啟 `/tmp/DreaMoonV449Debug/Build/Products/Debug/Sailune.app`，以測試資料驗收反白／未反白的右鍵選單、三種 tag、角色子選單、設定集入口及書寫工具可用與不可用狀態。
 
 ## 新工作單元檢查點
 
