@@ -170,6 +170,57 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(result.node.timeline?.id, primary.id)
     }
 
+    func testEraChangeAppendsAfterLastEraWhenCurrentEraIsEarlier() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "末端改元", author: "作者")
+        context.insert(book)
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+        let primary = try XCTUnwrap(TimelineEngine.Query.primaryTimeline(for: book))
+        let firstEra = try XCTUnwrap(book.currentEra)
+        firstEra.name = "初元"
+        let lastEra = Era(name: "後元", color: "#888888", startOrdinal: 10)
+        let lastNode = Node(year: 7)
+        context.insert(lastEra)
+        context.insert(lastNode)
+        lastNode.era = lastEra
+        lastNode.timeline = primary
+        book.currentEra = firstEra
+        try context.save()
+
+        let result = try TimelineEngine.EraChange.perform(
+            for: book,
+            input: .init(newName: "新元", newColor: "#2980B9"),
+            in: context
+        )
+
+        XCTAssertEqual(result.era.startOrdinal, 17)
+        XCTAssertEqual(book.currentEra?.id, result.era.id)
+        XCTAssertEqual(lastNode.era?.id, lastEra.id)
+        XCTAssertEqual(lastNode.year, 7)
+    }
+
+    func testEraChangeTreatsCurrentEraWithoutNodesAsYearOne() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let book = Book(title: "空年號改元", author: "作者")
+        let era = Era(name: "空元", color: "#888888", startOrdinal: 20)
+        context.insert(book)
+        context.insert(era)
+        book.currentEra = era
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+
+        let result = try TimelineEngine.EraChange.perform(
+            for: book,
+            input: .init(newName: "次元", newColor: "#2980B9"),
+            in: context
+        )
+
+        XCTAssertEqual(result.era.startOrdinal, 21)
+        XCTAssertEqual(result.node.year, 1)
+        XCTAssertEqual(book.currentEra?.id, result.era.id)
+    }
+
     func testTimelineDeletionPreservesOtherAxisAndProse() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -656,6 +707,50 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertEqual(
             Array(TimelineDateProjection.relativeLabels(cells: cells, granularity: .day, firstVisibleIndex: 1)[1...]),
             ["4年7月16日", "21日", "5年1月3日"]
+        )
+    }
+
+    func testTimelineSlotsExpandEventsHorizontallyAndKeepEmptyCells() {
+        let first = Event(title: "第一件")
+        let second = Event(title: "第二件")
+        first.sortOrder = 2
+        second.sortOrder = 1
+        let eventCell = TimelineCell(
+            id: "event", kind: .day, ordinal: 40_618, eraID: nil, eraHex: "#888888",
+            eraName: "", era: nil, nodes: [], repYear: 4, repMonth: 6, repDay: 18,
+            events: [first, second]
+        )
+        let emptyCell = TimelineCell(
+            id: "empty", kind: .day, ordinal: 40_721, eraID: nil, eraHex: "#888888",
+            eraName: "", era: nil, nodes: [], repYear: 4, repMonth: 7, repDay: 21,
+            events: []
+        )
+
+        let slots = TimelineDateProjection.slots(cells: [eventCell, emptyCell])
+
+        XCTAssertEqual(slots.count, 3)
+        XCTAssertEqual(slots.compactMap(\.event?.id), [second.id, first.id])
+        XCTAssertNil(slots.last?.event)
+        XCTAssertEqual(
+            TimelineDateProjection.relativeLabels(slots: slots, granularity: .day, firstVisibleIndex: 0),
+            ["4年6月18日", "18日", "7月21日"]
+        )
+    }
+
+    func testTimelineSlotsRespectExplicitSameDateInsertionOrder() {
+        let first = Event(title: "先加入")
+        let second = Event(title: "後加入")
+        first.sortOrder = 0
+        second.sortOrder = 1
+        let cell = TimelineCell(
+            id: "same-date", kind: .day, ordinal: 40_618, eraID: nil, eraHex: "#888888",
+            eraName: "", era: nil, nodes: [], repYear: 4, repMonth: 6, repDay: 18,
+            events: [second, first]
+        )
+
+        XCTAssertEqual(
+            TimelineDateProjection.slots(cells: [cell]).compactMap(\.event?.title),
+            ["先加入", "後加入"]
         )
     }
 

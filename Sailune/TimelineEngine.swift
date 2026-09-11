@@ -44,9 +44,9 @@ enum TimelineEngine {
         @discardableResult
         static func perform(for book: Book, input: Input, in context: ModelContext) throws -> (era: Era, node: Node) {
             try Bootstrap.ensure(for: book, in: context)
-            guard let prevEra = book.currentEra else { throw EngineError.noCurrentEra }
+            guard let prevEra = try Query.lastEra(for: book, in: context) else { throw EngineError.noCurrentEra }
             guard let primary = Query.primaryTimeline(for: book) else { throw EngineError.noPrimaryTimeline }
-            let lastYear = (try Query.maxYear(of: prevEra, in: context)) ?? 1
+            let lastYear = (try Query.maxYear(of: prevEra, for: book, in: context)) ?? 1
             let newStart = prevEra.startOrdinal + lastYear
             let newEra = Era(name: input.newName, color: input.newColor, startOrdinal: newStart)
             context.insert(newEra)
@@ -84,6 +84,30 @@ enum TimelineEngine {
         static func maxYear(of era: Era, in context: ModelContext) throws -> Int? {
             let all = try context.fetch(FetchDescriptor<Node>())
             return all.filter { $0.era?.id == era.id }.map(\.year).max()
+        }
+        static func maxYear(of era: Era, for book: Book, in context: ModelContext) throws -> Int? {
+            let bookTimelineIDs = Set(book.timelines.map(\.id))
+            return try context.fetch(FetchDescriptor<Node>())
+                .filter { node in
+                    guard let timelineID = node.timeline?.id else { return false }
+                    return node.era?.id == era.id && bookTimelineIDs.contains(timelineID)
+                }
+                .map(\.year)
+                .max()
+        }
+        static func lastEra(for book: Book, in context: ModelContext) throws -> Era? {
+            let bookTimelineIDs = Set(book.timelines.map(\.id))
+            let nodeEras = try context.fetch(FetchDescriptor<Node>())
+                .filter { node in
+                    guard let timelineID = node.timeline?.id else { return false }
+                    return bookTimelineIDs.contains(timelineID)
+                }
+                .compactMap(\.era)
+            let candidates = nodeEras + [book.currentEra].compactMap { $0 }
+            return candidates.max { lhs, rhs in
+                if lhs.startOrdinal != rhs.startOrdinal { return lhs.startOrdinal < rhs.startOrdinal }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
         }
         static func sorted(_ nodes: [Node]) -> [Node] { nodes.sorted(by: compareNodes) }
         static func nodesSorted(for timeline: Timeline) -> [Node] { sorted(timeline.nodes) }

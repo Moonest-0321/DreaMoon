@@ -44,6 +44,7 @@ struct EditorWorkspaceView: View {
     @State private var focusedCharacter: Character?
     @State private var characterFocusRequestID = UUID()
     @State private var isShowingPlanningWorkspace = false
+    @State private var hasLoadedPlanningWorkspace = false
     @State private var writingColumnVisibility: NavigationSplitViewVisibility = .automatic
 
     private var neighboringSections: (previous: Section?, next: Section?) {
@@ -64,26 +65,33 @@ struct EditorWorkspaceView: View {
     }
 
     var body: some View {
-        Group {
-            if isShowingPlanningWorkspace {
+        ZStack {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
+                    .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+            } detail: {
+                EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
+                    focusedCharacter = character
+                    characterFocusRequestID = UUID()
+                    setInspectorPresented(true)
+                }
+                .toolbar { workspaceToolbar }
+            }
+            .opacity(isShowingPlanningWorkspace ? 0 : 1)
+            .allowsHitTesting(!isShowingPlanningWorkspace)
+            .accessibilityHidden(isShowingPlanningWorkspace)
+
+            if hasLoadedPlanningWorkspace {
                 BookPlanningWorkspaceView(
                     book: book,
                     onOpenOutlineItem: openOutlineItem,
                     onOpenTimelineSection: openTimelineSection
                 )
-                .toolbar { workspaceToolbar }
-            } else {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    EditorSidebarView(book: book, selectedSection: $selectedSection, bridge: bridge)
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
-                } detail: {
-                    EditorCenterView(section: selectedSection, bridge: bridge, book: book) { character in
-                        focusedCharacter = character
-                        characterFocusRequestID = UUID()
-                        setInspectorPresented(true)
-                    }
-                    .toolbar { workspaceToolbar }
-                }
+                    .opacity(isShowingPlanningWorkspace ? 1 : 0)
+                    .allowsHitTesting(isShowingPlanningWorkspace)
+                    .accessibilityHidden(!isShowingPlanningWorkspace)
+            } else if isShowingPlanningWorkspace {
+                ProgressView("整理大綱…")
             }
         }
         .navigationTitle("")
@@ -180,11 +188,14 @@ struct EditorWorkspaceView: View {
     }
 
     private func showPlanningWorkspace() {
-        bridge.flushPendingSave()
+        NSApp.keyWindow?.makeFirstResponder(nil)
         writingColumnVisibility = columnVisibility
         columnVisibility = .detailOnly
         setInspectorPresented(false)
         isShowingPlanningWorkspace = true
+        if !hasLoadedPlanningWorkspace {
+            DispatchQueue.main.async { hasLoadedPlanningWorkspace = true }
+        }
     }
 
     private func returnToWriting() {

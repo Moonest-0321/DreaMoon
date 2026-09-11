@@ -292,6 +292,24 @@ struct TimelineEraGroup: Identifiable {
     let cells: [TimelineCell]
 }
 
+struct TimelineSlot: Identifiable {
+    let id: String
+    let cell: TimelineCell
+    let event: Event?
+}
+
+@MainActor
+enum TimelineOutlineSourceProjection {
+    static func orderedItems(book: Book, planningStore: StoryPlanningStore) -> [OutlineItem] {
+        let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
+        return planningStore.narrativeOutlineList(book: book).itemIDsInDisplayOrder.compactMap { itemsByID[$0] }
+    }
+
+    static func eventTitle(for item: OutlineItem) -> String {
+        String(item.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))
+    }
+}
+
 private final class CellAccum {
     let kind: CellKind
     var ordinal: Int
@@ -372,7 +390,6 @@ struct TimelinePanelView: View {
     @State private var firstVisibleWideCellIndex = 0
     @State private var pendingDeleteEvent: Event?
     @State private var showingCreateEvent = false
-    @State private var createEventFromOutline = false
 
     init(book: Book, allowsWideLayout: Bool = false, onOpenSection: ((Section) -> Void)? = nil) {
         self.book = book
@@ -519,7 +536,7 @@ struct TimelinePanelView: View {
                 book: book,
                 timeline: selectedTimeline,
                 eras: allEras,
-                startsFromOutline: createEventFromOutline
+                startsFromOutline: false
             )
         }
         .sheet(item: $selectedEvent) { event in
@@ -613,11 +630,6 @@ struct TimelinePanelView: View {
     private var addNodeButton: some View {
         Menu("新增", systemImage: "plus.circle.fill") {
             Button("新增預排事件", systemImage: "rectangle.dashed") {
-                createEventFromOutline = false
-                showingCreateEvent = true
-            }
-            Button("從敘事大綱加入", systemImage: "text.badge.plus") {
-                createEventFromOutline = true
                 showingCreateEvent = true
             }
             Divider()
@@ -665,8 +677,9 @@ struct TimelinePanelView: View {
     }
 
     private func wideOutlineContent(cells: [TimelineCell]) -> some View {
+        let slots = TimelineDateProjection.slots(cells: cells)
         let labels = TimelineDateProjection.relativeLabels(
-            cells: cells,
+            slots: slots,
             granularity: granularity,
             firstVisibleIndex: firstVisibleWideCellIndex
         )
@@ -675,14 +688,14 @@ struct TimelinePanelView: View {
                 ContentUnavailableView(
                     "尚無時間記錄",
                     systemImage: "clock",
-                    description: Text("使用上方「新增」建立預排事件、加入敘事大綱項目或建立日期節點。")
+                    description: Text("使用上方「新增」建立預排事件或日期節點；正文事件請從敘事大綱加入。")
                 )
                 .padding(.top, 40)
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     LazyHStack(alignment: .top, spacing: 0) {
-                        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-                            wideTimelineSlot(cell, label: labels[index], isLast: index == cells.count - 1)
+                        ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
+                            wideTimelineSlot(slot, label: labels[index], isLast: index == slots.count - 1)
                                 .frame(width: 190, alignment: .top)
                         }
                     }
@@ -692,14 +705,15 @@ struct TimelinePanelView: View {
                 .onScrollGeometryChange(for: Int.self) { geometry in
                     max(0, Int(geometry.contentOffset.x / 190))
                 } action: { _, index in
-                    firstVisibleWideCellIndex = min(index, max(0, cells.count - 1))
+                    firstVisibleWideCellIndex = min(index, max(0, slots.count - 1))
                 }
             }
         }
     }
 
-    private func wideTimelineSlot(_ cell: TimelineCell, label: String, isLast: Bool) -> some View {
-        VStack(spacing: 0) {
+    private func wideTimelineSlot(_ slot: TimelineSlot, label: String, isLast: Bool) -> some View {
+        let cell = slot.cell
+        return VStack(spacing: 0) {
             VStack(spacing: 2) {
                 Text(cell.eraName.isEmpty ? " " : cell.eraName)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -717,9 +731,15 @@ struct TimelinePanelView: View {
                 }
             }
             .frame(height: 18)
-            VStack(spacing: 10) {
-                ForEach(cell.events, id: \.id) { event in
+            Group {
+                if let event = slot.event {
                     timelineCard(event)
+                } else {
+                    Text("尚無事件")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 76)
+                        .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
                 }
             }
             .padding(.horizontal, 7)
@@ -1220,6 +1240,21 @@ struct TimelinePanelView: View {
 // 寬窄版共用的唯讀日期投影，與捲動、選取及編輯狀態分離。
 @MainActor
 enum TimelineDateProjection {
+    static func slots(cells: [TimelineCell]) -> [TimelineSlot] {
+        cells.flatMap { cell in
+            let orderedEvents = cell.events.sorted { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            if orderedEvents.isEmpty {
+                return [TimelineSlot(id: "\(cell.id):empty", cell: cell, event: nil)]
+            }
+            return orderedEvents.map { event in
+                TimelineSlot(id: "\(cell.id):\(event.id.uuidString)", cell: cell, event: event)
+            }
+        }
+    }
+
     static func cells(nodes: [Node], events: [Event], primary: Bool, granularity: SailuneTimelineGranularity) -> [TimelineCell] {
         var groups: [String: CellAccum] = [:]
         var order: [String] = []
@@ -1368,6 +1403,18 @@ enum TimelineDateProjection {
         return labels
     }
 
+    static func relativeLabels(
+        slots: [TimelineSlot],
+        granularity: SailuneTimelineGranularity,
+        firstVisibleIndex: Int
+    ) -> [String] {
+        relativeLabels(
+            cells: slots.map(\.cell),
+            granularity: granularity,
+            firstVisibleIndex: firstVisibleIndex
+        )
+    }
+
     private static func fullLabel(for cell: TimelineCell, granularity: SailuneTimelineGranularity) -> String {
         switch granularity {
         case .year:
@@ -1497,10 +1544,15 @@ enum TimelineCardProjection {
         var sourceIsValid = false
         var excerpt = ""
 
+        let linkedOutlineItem: OutlineItem? = metadata.flatMap { metadata -> OutlineItem? in
+            guard metadata.bookID == book.id, let outlineItemID = metadata.outlineItemID else { return nil }
+            return planningStore.items(bookID: book.id).first { $0.id == outlineItemID }
+        }
+
         if let metadata,
            metadata.bookID == book.id,
            let outlineItemID = metadata.outlineItemID,
-           planningStore.items(bookID: book.id).contains(where: { $0.id == outlineItemID }),
+           linkedOutlineItem?.id == outlineItemID,
            let anchor = planningStore.anchor(outlineItemID: outlineItemID),
            anchor.bookID == book.id,
            let section = sections.first(where: { $0.id == anchor.sectionID }) {
@@ -1519,6 +1571,8 @@ enum TimelineCardProjection {
             let volume = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
             location = "\(volume.isEmpty ? "未命名卷次" : volume)・\(sectionTitle.isEmpty ? "未命名節次" : sectionTitle)"
+        } else if linkedOutlineItem != nil {
+            location = "尚無正文來源"
         } else if metadata?.outlineItemID != nil {
             location = "來源失效"
         } else {
@@ -1553,49 +1607,51 @@ enum TimelineCardProjection {
 }
 
 @MainActor
-private struct TimelineEventCreationView: View {
+struct TimelineEventCreationView: View {
     let book: Book
     let timeline: Timeline?
     let eras: [Era]
     let startsFromOutline: Bool
+    var outlineItemID: UUID? = nil
+    var onCreated: (() -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @Environment(StoryPlanningStore.self) private var planningStore
     @Environment(\.dismiss) private var dismiss
+    @Query private var allEvents: [Event]
     @State private var yearText = ""
     @State private var monthText = ""
     @State private var dayText = ""
     @State private var title = ""
     @State private var detail = ""
     @State private var selectedEraID: UUID?
-    @State private var selectedOutlineItemID: UUID?
     @State private var excerptMode: TimelineExcerptMode = .automatic
     @State private var manualExcerpt = ""
     @State private var saveError: String?
 
     private var outlineItems: [OutlineItem] {
-        planningStore.items(bookID: book.id).filter { planningStore.anchor(outlineItemID: $0.id) != nil }
+        TimelineOutlineSourceProjection.orderedItems(book: book, planningStore: planningStore)
     }
 
     private var parsedYear: Int? { Int(yearText).flatMap { $0 > 0 ? $0 : nil } }
     private var parsedMonth: Int? { monthText.isEmpty ? nil : Int(monthText).flatMap { (1...12).contains($0) ? $0 : nil } }
     private var parsedDay: Int? { dayText.isEmpty ? nil : Int(dayText).flatMap { (1...31).contains($0) ? $0 : nil } }
     private var canSave: Bool {
-        parsedYear != nil && timeline != nil && (!startsFromOutline || selectedOutlineItemID != nil)
+        parsedYear != nil && timeline != nil && (!startsFromOutline || selectedOutlineItem != nil)
             && !(dayText.isEmpty == false && parsedMonth == nil)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(startsFromOutline ? "從敘事大綱加入" : "新增預排事件").font(.title3.weight(.semibold))
+                Text(startsFromOutline ? "從既有敘事大綱加入時間軸" : "新增預排事件").font(.title3.weight(.semibold))
                 Spacer()
             }
             if startsFromOutline {
-                Picker("敘事大綱項目", selection: $selectedOutlineItemID) {
-                    Text("請選擇").tag(Optional<UUID>.none)
-                    ForEach(outlineItems, id: \.id) { item in
-                        Text(item.title.isEmpty ? "未命名項目" : item.title).tag(item.id as UUID?)
-                    }
+                if let selectedOutlineItem {
+                    LabeledContent("敘事大綱項目", value: selectedOutlineItem.title.isEmpty ? "未命名項目" : selectedOutlineItem.title)
+                    Text(sourceDescription(for: selectedOutlineItem))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Picker("紀元", selection: $selectedEraID) {
@@ -1612,14 +1668,18 @@ private struct TimelineEventCreationView: View {
             TextField("標題（最多 10 字，留白則使用月／日）", text: $title)
                 .onChange(of: title) { _, value in title = String(value.prefix(10)) }
             TextField("事件詳情（選填）", text: $detail, axis: .vertical).lineLimit(2...4)
-            Picker("節錄來源", selection: $excerptMode) {
-                ForEach(TimelineExcerptMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
-            }
-            .pickerStyle(.segmented)
-            if excerptMode == .manual {
-                TextField("手動節錄（最多 30 字）", text: $manualExcerpt, axis: .vertical)
-                    .lineLimit(2...2)
-                    .onChange(of: manualExcerpt) { _, value in manualExcerpt = String(value.prefix(30)) }
+            if startsFromOutline {
+                LabeledContent("節錄來源", value: TimelineExcerptMode.automatic.rawValue)
+            } else {
+                Picker("節錄來源", selection: $excerptMode) {
+                    ForEach(TimelineExcerptMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                }
+                .pickerStyle(.segmented)
+                if excerptMode == .manual {
+                    TextField("手動節錄（最多 30 字）", text: $manualExcerpt, axis: .vertical)
+                        .lineLimit(2...2)
+                        .onChange(of: manualExcerpt) { _, value in manualExcerpt = String(value.prefix(30)) }
+                }
             }
             if let saveError { Text(saveError).font(.caption).foregroundStyle(.red) }
             HStack {
@@ -1635,22 +1695,55 @@ private struct TimelineEventCreationView: View {
         .frame(width: 480)
         .onAppear {
             selectedEraID = book.currentEra?.id
-            if startsFromOutline { selectedOutlineItemID = outlineItems.first?.id }
+            if startsFromOutline {
+                applySelectedOutlineItem()
+            }
         }
+    }
+
+    private var selectedOutlineItem: OutlineItem? {
+        guard let outlineItemID else { return nil }
+        return outlineItems.first { $0.id == outlineItemID }
+    }
+
+    private func applySelectedOutlineItem() {
+        guard let item = selectedOutlineItem else { return }
+        title = TimelineOutlineSourceProjection.eventTitle(for: item)
+        detail = item.detail
+    }
+
+    private func sourceDescription(for item: OutlineItem) -> String {
+        guard let anchor = planningStore.anchor(outlineItemID: item.id),
+              let section = BookStructure.orderedSections(in: book).first(where: { $0.id == anchor.sectionID }) else {
+            return "手動大綱・尚無正文來源"
+        }
+        let volume = section.volume?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sectionTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "正文來源・\(volume.isEmpty ? "未命名卷次" : volume)／\(sectionTitle.isEmpty ? "未命名節次" : sectionTitle)"
     }
 
     private func commit() {
         guard let timeline, let year = parsedYear else { return }
+        let selectedEra = eras.first { $0.id == selectedEraID } ?? book.currentEra
         let node = Node(year: year, month: parsedMonth, day: parsedDay)
         node.timeline = timeline
-        node.era = eras.first { $0.id == selectedEraID } ?? book.currentEra
+        node.era = selectedEra
         let fallbackTitle: String
         if let month = parsedMonth, let day = parsedDay { fallbackTitle = "\(month)/\(day)" }
         else if let month = parsedMonth { fallbackTitle = "\(month)月" }
         else { fallbackTitle = "\(year)年" }
         let event = Event(title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallbackTitle : String(title.prefix(10)), detail: detail)
         event.node = node
-        if let itemID = selectedOutlineItemID,
+        let sameDateEvents = allEvents.filter { existing in
+            guard let existingNode = existing.node else { return false }
+            return existingNode.timeline?.id == timeline.id
+                && existingNode.era?.id == selectedEra?.id
+                && existingNode.year == year
+                && existingNode.month == parsedMonth
+                && existingNode.day == parsedDay
+        }
+        event.sortOrder = (sameDateEvents.map(\.sortOrder).max() ?? -1) + 1
+        if let itemID = outlineItemID,
            let anchor = planningStore.anchor(outlineItemID: itemID) {
             event.section = BookStructure.orderedSections(in: book).first { $0.id == anchor.sectionID }
         }
@@ -1661,10 +1754,11 @@ private struct TimelineEventCreationView: View {
             try planningStore.ensureTimelineMetadata(
                 eventID: event.id,
                 bookID: book.id,
-                outlineItemID: selectedOutlineItemID,
+                outlineItemID: outlineItemID,
                 excerptMode: excerptMode,
                 manualExcerpt: manualExcerpt
             )
+            onCreated?()
             dismiss()
         } catch {
             saveError = error.localizedDescription
@@ -2116,9 +2210,19 @@ private struct EraChangePopover: View {
     @State private var selectedHex = eraPalette[0]
     @State private var saveError: String?
 
+    private var continuationText: String? {
+        guard let era = try? TimelineEngine.Query.lastEra(for: book, in: modelContext) else { return nil }
+        let year = try? TimelineEngine.Query.maxYear(of: era, for: book, in: modelContext)
+        let name = era.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "接續於：〈\(name.isEmpty ? "未命名年號" : name)〉第 \(year ?? 1) 年之後"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("改元（踰年）").font(.system(.headline, design: .serif))
+            if let continuationText {
+                Text(continuationText).font(.caption).foregroundStyle(.secondary)
+            }
             if let saveError { Text(saveError).font(.caption).foregroundStyle(.red) }
             TextField("新年號名", text: $name)
             Text("年號色").font(.caption).foregroundStyle(.secondary)

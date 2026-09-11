@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// 大綱操作共用點擊範圍；保留系統的焦點與停用語意。
 struct PlanningActionStyle: ButtonStyle {
@@ -202,6 +203,18 @@ private struct NarrativeOutlineTimelineView: View {
     let book: Book
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @State private var showingOutlineManager = false
+    @State private var showingCreateTimelineEvent = false
+    @State private var showCreationSuccess = false
+    @State private var timelineError: String?
+    @State private var selectedOutlineItemID: UUID?
+    @Query private var allEras: [Era]
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(\.modelContext) private var modelContext
+
+    private var primaryTimeline: Timeline? { book.timelines.first(where: \.isPrimary) }
+    private var outlineItemsAvailable: Bool {
+        !planningStore.items(bookID: book.id).isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -209,9 +222,15 @@ private struct NarrativeOutlineTimelineView: View {
                 Label("正文順序與敘事節奏", systemImage: "rectangle.3.group")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("依故事線與階段閱讀標題順序")
+                Text("依卷次、節次與幕標題比較故事線")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("從敘事大綱加入時間軸", systemImage: "text.badge.plus") {
+                    showingCreateTimelineEvent = true
+                }
+                .buttonStyle(PlanningActionStyle(prominent: true))
+                .disabled(selectedOutlineItemID == nil || primaryTimeline == nil)
+                .help(outlineItemsAvailable ? "先選取大綱項目，再指定世界日期" : "尚無可加入時間軸的敘事大綱項目")
                 Button("管理故事線與階段", systemImage: "slider.horizontal.3") {
                     showingOutlineManager = true
                 }
@@ -220,8 +239,10 @@ private struct NarrativeOutlineTimelineView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
             Divider()
-            NarrativeOutlineListView(
+            OutlineStructureBoardView(
                 book: book,
+                mode: .narrative,
+                selectedItemID: $selectedOutlineItemID,
                 onOpenOutlineItem: onOpenOutlineItem
             )
         }
@@ -247,6 +268,41 @@ private struct NarrativeOutlineTimelineView: View {
                 )
             }
             .frame(minWidth: 520, idealWidth: 620, minHeight: 560)
+        }
+        .sheet(isPresented: $showingCreateTimelineEvent) {
+            TimelineEventCreationView(
+                book: book,
+                timeline: primaryTimeline,
+                eras: allEras,
+                startsFromOutline: true,
+                outlineItemID: selectedOutlineItemID,
+                onCreated: { showCreationSuccess = true }
+            )
+        }
+        .overlay(alignment: .top) {
+            if showCreationSuccess {
+                Label("已加入時間軸", systemImage: "checkmark.circle.fill")
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .task {
+                        try? await Task.sleep(for: .seconds(2))
+                        showCreationSuccess = false
+                    }
+            }
+        }
+        .task {
+            do { try TimelineEngine.Bootstrap.ensure(for: book, in: modelContext) }
+            catch { timelineError = error.localizedDescription }
+        }
+        .alert("時間軸無法準備", isPresented: Binding(
+            get: { timelineError != nil },
+            set: { if !$0 { timelineError = nil } }
+        )) {
+            Button("好") { timelineError = nil }
+        } message: {
+            Text(timelineError ?? "未知錯誤")
         }
     }
 }
@@ -499,6 +555,7 @@ private struct BookStructureTimelineView: View {
         OutlineStructureBoardView(
             book: book,
             mode: .timeline,
+            selectedItemID: .constant(nil),
             onOpenOutlineItem: onOpenOutlineItem
         )
     }
@@ -508,23 +565,55 @@ private struct BookStructureTimelineView: View {
 private struct OutlineStructureBoardView: View {
     let book: Book
     let mode: OutlineStructureBoardMode
+    @Binding var selectedItemID: UUID?
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
-    @State private var selectedItemID: UUID?
     @State private var errorMessage: String?
     @State private var narrativeRowHeights: [String: CGFloat] = [:]
+    @State private var cachedNarrativeLayout: OutlineTimelineLayout?
 
     private let laneWidth: CGFloat = 160
     private let columnWidth: CGFloat = 220
 
     var body: some View {
-        let layout = mode == .narrative
-            ? planningStore.narrativeTimelineLayout(book: book)
-            : planningStore.timelineLayout(book: book)
         let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
-        let validSectionIDs = Set(layout.columns.map(\.sectionID))
+        let revision = mode == .narrative ? planningStore.narrativeLayoutRevision(book: book) : 0
 
-        GeometryReader { proxy in
+        Group {
+            if mode == .narrative {
+                if let cachedNarrativeLayout {
+                    layoutContent(cachedNarrativeLayout, itemsByID: itemsByID)
+                } else {
+                    ProgressView("整理大綱…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                layoutContent(planningStore.timelineLayout(book: book), itemsByID: itemsByID)
+            }
+        }
+        .task(id: revision) {
+            guard mode == .narrative else { return }
+            await Task.yield()
+            cachedNarrativeLayout = planningStore.narrativeTimelineLayout(book: book)
+        }
+        .onChange(of: itemsByID.keys.sorted(by: { $0.uuidString < $1.uuidString })) { _, itemIDs in
+            if let selectedItemID, !itemIDs.contains(selectedItemID) {
+                self.selectedItemID = nil
+            }
+        }
+        .alert("大綱無法儲存", isPresented: errorPresented) {
+            Button("好") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "未知錯誤")
+        }
+    }
+
+    private func layoutContent(
+        _ layout: OutlineTimelineLayout,
+        itemsByID: [UUID: OutlineItem]
+    ) -> some View {
+        let validSectionIDs = Set(layout.columns.map(\.sectionID))
+        return GeometryReader { proxy in
             if layout.lanes.isEmpty {
                 ContentUnavailableView {
                     Label("尚未建立故事線", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
@@ -550,16 +639,6 @@ private struct OutlineStructureBoardView: View {
             } else {
                 board(layout: layout, itemsByID: itemsByID, validSectionIDs: validSectionIDs)
             }
-        }
-        .onChange(of: itemsByID.keys.sorted(by: { $0.uuidString < $1.uuidString })) { _, itemIDs in
-            if let selectedItemID, !itemIDs.contains(selectedItemID) {
-                self.selectedItemID = nil
-            }
-        }
-        .alert("大綱無法儲存", isPresented: errorPresented) {
-            Button("好") { errorMessage = nil }
-        } message: {
-            Text(errorMessage ?? "未知錯誤")
         }
     }
 

@@ -227,6 +227,79 @@ final class StoryPlanningStore {
             .sorted(by: Self.stableOrder)
     }
 
+    func narrativeLayoutRevision(book: Book) -> Int {
+        var hasher = Hasher()
+        let sections = BookStructure.orderedSections(in: book)
+        for volume in book.volumes.sorted(by: { $0.sortOrder < $1.sortOrder }) {
+            hasher.combine(volume.id)
+            hasher.combine(volume.title)
+            hasher.combine(volume.sortOrder)
+        }
+        for section in sections {
+            hasher.combine(section.id)
+            hasher.combine(section.title)
+            hasher.combine(section.sortOrder)
+            hasher.combine(section.updatedAt)
+        }
+        let lines = storyLines(bookID: book.id)
+        let lineIDs = Set(lines.map(\.id))
+        for line in lines {
+            hasher.combine(line.id)
+            hasher.combine(line.title)
+            hasher.combine(line.kindRawValue)
+            hasher.combine(line.sortOrder)
+            hasher.combine(line.updatedAt)
+        }
+        let bookStages = stages.filter { lineIDs.contains($0.storyLineID) }.sorted(by: Self.stableOrder)
+        let stageIDs = Set(bookStages.map(\.id))
+        for stage in bookStages {
+            hasher.combine(stage.id)
+            hasher.combine(stage.storyLineID)
+            hasher.combine(stage.title)
+            hasher.combine(stage.sortOrder)
+            hasher.combine(stage.updatedAt)
+        }
+        let bookItems = items(bookID: book.id)
+        let itemIDs = Set(bookItems.map(\.id))
+        for item in bookItems {
+            hasher.combine(item.id)
+            hasher.combine(item.storyLineID)
+            hasher.combine(item.stageID)
+            hasher.combine(item.title)
+            hasher.combine(item.detail)
+            hasher.combine(item.statusRawValue)
+            hasher.combine(item.sortOrder)
+            hasher.combine(item.updatedAt)
+        }
+        for anchor in outlineAnchors.filter({ itemIDs.contains($0.outlineItemID) }).sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            hasher.combine(anchor.id)
+            hasher.combine(anchor.sectionID)
+            hasher.combine(anchor.anchorText)
+            hasher.combine(anchor.anchorOffset)
+            hasher.combine(anchor.updatedAt)
+        }
+        for anchor in stageStartAnchors.filter({ stageIDs.contains($0.stageID) }).sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            hasher.combine(anchor.id)
+            hasher.combine(anchor.volumeID)
+            hasher.combine(anchor.sectionID)
+            hasher.combine(anchor.updatedAt)
+        }
+        for detail in stageStartDetails.filter({ stageIDs.contains($0.stageID) }).sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            hasher.combine(detail.id)
+            hasher.combine(detail.granularityRawValue)
+            hasher.combine(detail.headingOffset)
+            hasher.combine(detail.updatedAt)
+        }
+        for placement in itemPlacements.filter({ itemIDs.contains($0.outlineItemID) }).sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            hasher.combine(placement.id)
+            hasher.combine(placement.kindRawValue)
+            hasher.combine(placement.relativeItemID)
+            hasher.combine(placement.localOrder)
+            hasher.combine(placement.updatedAt)
+        }
+        return hasher.finalize()
+    }
+
     /// 正文來源依位置排序；手動項目則遵從其語意化安置位置。
     func orderedItems(storyLineID: UUID, stageID: UUID?, sections: [Section]) -> [OutlineItem] {
         let items = outlineItems.filter { $0.storyLineID == storyLineID && $0.stageID == stageID }

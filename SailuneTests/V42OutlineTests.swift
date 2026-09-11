@@ -132,6 +132,72 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertEqual(store.outlineItems.first?.id, created.id)
     }
 
+    func testTimelineOutlineSourcesIncludeManualItemsAndPrepareEventFields() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "既有大綱來源", author: "作者")
+        let volume = Volume(title: "第一卷")
+        let section = Section(title: "第一節", content: AttributedString("王城陷落"))
+        book.volumes.append(volume)
+        volume.sections.append(section)
+        let line = try store.createStoryLine(bookID: book.id, kind: .main)
+        let prose = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "超過十個字的既有正文大綱標題",
+            anchorText: "王城陷落",
+            anchorOffset: 0,
+            bookID: book.id,
+            sectionID: section.id,
+            sections: [section]
+        )
+        let manual = try store.createOutlineItem(storyLine: line, title: "手動伏擊", status: .planned)
+        manual.detail = "在山道安排伏兵"
+        try store.saveChanges()
+
+        let sources = TimelineOutlineSourceProjection.orderedItems(book: book, planningStore: store)
+
+        XCTAssertEqual(Set(sources.map(\.id)), Set([prose.id, manual.id]))
+        XCTAssertEqual(TimelineOutlineSourceProjection.eventTitle(for: prose).count, 10)
+        XCTAssertEqual(TimelineOutlineSourceProjection.eventTitle(for: manual), "手動伏擊")
+        XCTAssertEqual(manual.detail, "在山道安排伏兵")
+
+        let event = Event(title: "手動伏擊")
+        let metadata = try store.ensureTimelineMetadata(
+            eventID: event.id,
+            bookID: book.id,
+            outlineItemID: manual.id
+        )
+        let presentation = TimelineCardProjection.presentation(
+            event: event,
+            book: book,
+            metadata: metadata,
+            planningStore: store
+        )
+        XCTAssertFalse(presentation.isWritten)
+        XCTAssertEqual(presentation.locationText, "尚無正文來源")
+    }
+
+    func testNarrativeLayoutRevisionChangesOnlyWhenProjectionInputsChange() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "投影版本", author: "作者")
+        let volume = Volume(title: "第一卷")
+        let section = Section(title: "第一節", content: AttributedString("正文"))
+        book.volumes.append(volume)
+        volume.sections.append(section)
+        let line = try store.createStoryLine(bookID: book.id, kind: .main)
+        let item = try store.createOutlineItem(storyLine: line, title: "事件")
+        let original = store.narrativeLayoutRevision(book: book)
+
+        XCTAssertEqual(store.narrativeLayoutRevision(book: book), original)
+
+        item.title = "事件改名"
+        item.updatedAt = item.updatedAt.addingTimeInterval(1)
+        XCTAssertNotEqual(store.narrativeLayoutRevision(book: book), original)
+        let afterOutlineChange = store.narrativeLayoutRevision(book: book)
+
+        section.updatedAt = section.updatedAt.addingTimeInterval(1)
+        XCTAssertNotEqual(store.narrativeLayoutRevision(book: book), afterOutlineChange)
+    }
+
     func testOutlineDoesNotRequireSectionStoryTagOrLegacyTimelineData() throws {
         let container = try makePlanningContainer()
         let store = try StoryPlanningStore(container: container)
