@@ -33,7 +33,13 @@
 
 ## 未完成的測試覆蓋
 
-- 多 store 同步失敗與重試。
+- 跨主 store／StoryPlanning store 的刪除順序、延後清理與重試已有 V4.4.8 單元測試；其他獨立 store 的全面同步失敗仍未覆蓋。
 - 刪除後的復原策略。
 - 固定 Downloads 匯出路徑在不同使用者環境的行為。
 - 大型正文、重複角色名稱與故事標籤錨點漂移。
+
+## V4.4.8 自動驗收
+
+- `V42OutlineTests` 覆蓋 Book 規劃資料完整清除、兩書隔離、缺 Book／Event 修復、重複修復，以及缺 OutlineItem 來源的保留語意。
+- `ItemV3Tests` 覆蓋 Event 主資料與 metadata 協調刪除、Book 跨 store 清理，以及 primary failure 與 deferred cleanup 的結果分流。
+- 2026-09-12 執行完整 macOS 測試共 77 項，全數通過；測試均使用隔離／in-memory store，未操作正式使用者資料。

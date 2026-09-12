@@ -11,6 +11,8 @@ V4.4.6 的 StoryPlanning schema V6 以新增 `TimelineEventCardMetadata` 的輕�
 5. 開啟物品副本、能力進度與故事規劃的獨立 store；故事規劃 store 依 `StoryPlanningMigrationPlan` lightweight migration 至 V6，再轉換舊結構標籤。
 6. 完成各 store 的資料修復後才顯示主畫面。
 
+V4.4.8 在主 container 與 StoryPlanning store 都成功開啟後，會以現存 Book／Event UUID 執行跨 store 一致性修復；進入世界時間軸時再做一次相同的冪等檢查。它不新增 schema 或 migration，也不會因 OutlineItem 來源缺失而刪除 Event metadata。
+
 ## 目前資料檔
 
 - 主資料：`Sailune-v5.store`
@@ -41,7 +43,7 @@ V4.4.6 的 StoryPlanning schema V6 以新增 `TimelineEventCardMetadata` 的輕�
 ## 已知缺口
 
 - 目前介面尚未提供完整的使用者備份／復原流程。
-- 未建立自動化的多 store 一致性檢查與備份封裝格式。
+- 已建立 Book／Event 與 StoryPlanning store 的刪除一致性檢查；其他獨立 store 的全面一致性檢查與多 store 備份封裝格式仍未建立。
 
 ## V4.2 故事規劃遷移
 

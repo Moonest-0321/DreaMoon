@@ -172,6 +172,10 @@ struct SailuneApp: App {
             )
             planningStore = try StoryPlanningStore(container: planningContainer)
         } catch { throw StartupStageError(stage: "故事規劃資料庫載入失敗", underlying: error) }
+        CrossStoreDeletionCoordinator.reconcileBestEffort(
+            in: container.mainContext,
+            planningStore: planningStore
+        )
         return (container, copyStore, abilityStore, planningStore)
     }
 

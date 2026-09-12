@@ -435,6 +435,11 @@ struct TimelinePanelView: View {
         Binding(get: { pendingDeleteEvent != nil }, set: { if !$0 { pendingDeleteEvent = nil } })
     }
 
+    private var deleteEventTitle: String {
+        let title = pendingDeleteEvent?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return "刪除事件「\(title.isEmpty ? "未命名事件" : title)」？"
+    }
+
     private var deleteTimelineBinding: Binding<Bool> {
         Binding(get: { pendingDeleteTimeline != nil }, set: { if !$0 { pendingDeleteTimeline = nil } })
     }
@@ -458,7 +463,10 @@ struct TimelinePanelView: View {
         .task {
             do {
                 try TimelineEngine.Bootstrap.ensure(for: book, in: modelContext)
-                try cleanTimelineMetadataOrphans()
+                CrossStoreDeletionCoordinator.reconcileBestEffort(
+                    in: modelContext,
+                    planningStore: planningStore
+                )
             }
             catch { operationError = error.localizedDescription }
         }
@@ -476,18 +484,18 @@ struct TimelinePanelView: View {
         } message: {
             let n = pendingDeleteNodes.count
             if n <= 1 {
-                Text("確定刪除此時間釘子？其下事件將一併刪除，且無法復原。")
+                Text("確定刪除此時間釘子？其下世界時間事件將一併刪除；敘事大綱與正文會保留，且無法復原。")
             } else {
-                Text("確定刪除這 \(n) 個時間釘子？其下事件將一併刪除，且無法復原。")
+                Text("確定刪除這 \(n) 個時間釘子？其下世界時間事件將一併刪除；敘事大綱與正文會保留，且無法復原。")
             }
         }
-        .alert("刪除事件卡片",
+        .alert(deleteEventTitle,
                isPresented: deleteEventBinding,
                presenting: pendingDeleteEvent) { event in
             Button("取消", role: .cancel) { pendingDeleteEvent = nil }
             Button("刪除", role: .destructive) { performDeleteEvent(event) }
         } message: { _ in
-            Text("只會刪除此事件卡片；日期節點、敘事大綱與正文都會保留。")
+            Text("只會刪除此世界時間事件；日期節點、敘事大綱與正文都會保留。")
         }
         .alert("新增副軸", isPresented: $showingAddSecondary) {
             TextField("副軸名稱", text: $newSecondaryName)
@@ -516,7 +524,7 @@ struct TimelinePanelView: View {
             Button("取消", role: .cancel) { pendingDeleteTimeline = nil }
             Button("刪除", role: .destructive) { performDeleteTimeline(t) }
         } message: { t in
-            Text("確定刪除副軸「\(t.name.isEmpty ? "副軸" : t.name)」？其下所有時間釘子與事件將一併刪除，且無法復原。")
+            Text("確定刪除副軸「\(t.name.isEmpty ? "副軸" : t.name)」？其下所有時間釘子與世界時間事件將一併刪除；敘事大綱與正文會保留，且無法復原。")
         }
         .popover(isPresented: $showingAddNode) {
             AddNodePopover(
@@ -553,7 +561,10 @@ struct TimelinePanelView: View {
                 }
                 Divider()
                 TimelineEventBindingControls(event: event, book: book)
-                EventRow(event: event, allCharacters: sortedCharacters)
+                EventRow(event: event, allCharacters: sortedCharacters) {
+                    selectedEvent = nil
+                    pendingDeleteEvent = event
+                }
             }
             .padding(16)
             .frame(minWidth: 420, idealWidth: 520, minHeight: 260)
@@ -767,15 +778,17 @@ struct TimelinePanelView: View {
     }
 
     private func performDeleteEvent(_ event: Event) {
-        let eventID = event.id
-        modelContext.delete(event)
         do {
-            try modelContext.save()
-            try planningStore.deleteTimelineMetadata(eventID: eventID)
+            try CrossStoreDeletionCoordinator.deleteEvent(
+                event,
+                in: modelContext,
+                planningStore: planningStore
+            )
             pendingDeleteEvent = nil
         } catch {
             modelContext.rollback()
-            operationError = error.localizedDescription
+            let title = event.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            operationError = "無法刪除事件「\(title.isEmpty ? "未命名事件" : title)」，內容仍完整保留。\n\n\(error.localizedDescription)"
         }
     }
 
@@ -1023,7 +1036,9 @@ struct TimelinePanelView: View {
                         if !collapsed {
                             VStack(alignment: .leading, spacing: 0) {
                                 ForEach(g.events, id: \.id) { e in
-                                    EventRow(event: e, allCharacters: sortedCharacters)
+                                    EventRow(event: e, allCharacters: sortedCharacters) {
+                                        pendingDeleteEvent = e
+                                    }
                                 }
                             }
                             .padding(.leading, 16)
@@ -1180,8 +1195,11 @@ struct TimelinePanelView: View {
 
     private func performDeleteNodes() {
         do {
-            try PersistentModelDeletion.deleteNodes(pendingDeleteNodes, in: modelContext)
-            try cleanTimelineMetadataOrphans()
+            try CrossStoreDeletionCoordinator.deleteNodes(
+                pendingDeleteNodes,
+                in: modelContext,
+                planningStore: planningStore
+            )
         } catch {
             operationError = error.localizedDescription
         }
@@ -1208,17 +1226,15 @@ struct TimelinePanelView: View {
             selectedTimelineID = bookTimelines.first(where: \.isPrimary)?.id
         }
         do {
-            try PersistentModelDeletion.deleteTimeline(t, in: modelContext)
-            try cleanTimelineMetadataOrphans()
+            try CrossStoreDeletionCoordinator.deleteTimeline(
+                t,
+                in: modelContext,
+                planningStore: planningStore
+            )
         } catch {
             operationError = error.localizedDescription
         }
         pendingDeleteTimeline = nil
-    }
-
-    private func cleanTimelineMetadataOrphans() throws {
-        let validEventIDs = Set(try modelContext.fetch(FetchDescriptor<Event>()).map(\.id))
-        try planningStore.removeOrphanedTimelineMetadata(validEventIDs: validEventIDs)
     }
 
     private func openAddNode() {
@@ -1848,6 +1864,7 @@ private struct TimelineEventBindingControls: View {
 private struct EventRow: View {
     @Bindable var event: Event
     let allCharacters: [Character]
+    let onDelete: () -> Void
     @Environment(\.modelContext) private var modelContext
     @State private var hovering = false
     @State private var editing = false
@@ -1942,11 +1959,7 @@ private struct EventRow: View {
                         }
                         .buttonStyle(PlanningActionStyle())
                         .help("編輯事件")
-                        Button {
-                            modelContext.delete(event)
-                            do { try modelContext.save() }
-                            catch { saveError = error.localizedDescription }
-                        } label: {
+                        Button(action: onDelete) {
                             Label("刪除事件", systemImage: "trash").foregroundStyle(.red)
                         }
                         .buttonStyle(PlanningActionStyle())

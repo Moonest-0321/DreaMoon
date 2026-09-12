@@ -4,7 +4,7 @@
 >
 > 階段：實作中
 >
-> 更新時間：2026-09-11（Asia/Taipei）
+> 更新時間：2026-09-12（Asia/Taipei）
 >
 > 工作名稱：V4.4.9 文本右鍵創作工具選單
 
@@ -108,11 +108,191 @@
 
 - 開啟 `/tmp/DreaMoonV449Debug/Build/Products/Debug/Sailune.app`，以測試用書反白文字後驗收右鍵選單與書寫工具；完成前工作單維持 active。
 
+### Apple 寫作工具面板語言修正
+
+- 使用者實測確認：帆夢自訂的右鍵選單已中文化，但點擊「顯示寫作工具」後，Apple 系統面板仍為英文。
+- 已查證並非使用者的 macOS 語言設定；修正前建置產物的 `CFBundleDevelopmentRegion` 為 `en`，專案 `developmentRegion` 也是 `en`，且 `knownRegions` 未登記繁體中文。系統因此把帆夢判定為英文 App。
+- 修正為以 `zh-Hant` 作為 App 開發語言並加入專案已知語言；Apple 原生 writing-tools action 與功能不變。新增測試確認 App bundle 不會再宣告為英文。
+- 驗證：完整 74 項 macOS 測試通過；Debug 與無簽章 Release 建置產物的 `CFBundleDevelopmentRegion` 均為 `zh-Hant`，`git diff --check` 通過。新 Debug 驗收版位於 `/tmp/DreaMoonV449Language/Build/Products/Debug/Sailune.app`。
+
 ### 批准狀態
 
 - R：approved。使用者於 2026-09-11 確認前三項為「敘事大綱、修改、草稿」，其餘名稱正確，並要求行為沿用目前設定。
 - U：approved。使用者於 2026-09-11 回覆「UI 確認，請提出實作與測試計畫」。
 - I：approved。使用者於 2026-09-11 回覆「計畫確認，開始實作與測試」。
+
+## 新工作單元：V4.4.8 跨資料庫刪除與修復可靠性
+
+> 狀態：實作與自動驗證完成（R／U／I 已批准）
+>
+> 本節保留 V4.4.9 尚待實機驗收的紀錄；本工作單元尚未修改功能程式。
+
+### 已查證現況
+
+- 世界時間 Event 位於主資料庫；其卡片來源 metadata 位於獨立 StoryPlanning store，以 `eventID` 與 `bookID` 連結。兩個 store 沒有共同交易。
+- 寬版時間軸刪 Event 會接續清理 metadata；舊式 Event 列的刪除路徑目前只刪主資料庫 Event，改由後續 orphan cleanup 才會收斂。
+- 刪除 Node 或 Timeline 後已有 orphan cleanup；刪除 Book 目前清理主資料與物品副本，但未將同書 StoryPlanning 資料納入同一協調流程。
+- 目前的 metadata orphan cleanup 已具冪等性；缺失的 OutlineItem 來源依既有行為只顯示來源失效，不自動刪除 Event 或 metadata。
+
+### 需求理解（R，已確認）
+
+1. V4.4.8 的目標是讓主資料庫與 StoryPlanning store 的跨資料庫刪除，在儲存失敗、app 中斷或不同 UI 入口下，最終都收斂到安全且可預期的資料狀態。
+2. 範圍包含所有 Event 刪除入口、Node／Timeline cascade、Book 刪除，以及 app 啟動或開啟書籍時的冪等修復。
+3. 只有主資料庫已明確不存在的 Book 或 Event，才可被清除其 StoryPlanning 附屬資料；OutlineItem 來源不存在時保留 Event 與 metadata，並維持「來源失效」語意。
+4. 本版不建立跨 store 的假原子交易；主資料先成功保存，後續 StoryPlanning 清理失敗時保留可安全重試的孤立資料，由修復程序完成清理。
+5. 本版不做垃圾桶、Undo、使用者備份／還原、舊 Timeline 遷移或 UI 重整。完整復原需另行決定保留期限、跨 store 快照與使用者流程。
+
+### 驗收條件（草案）
+
+- 無論從寬版卡片或既有 Event 列刪除 Event，metadata 都會立即清除，或在重新開啟後確定清除。
+- 刪除 Node／Timeline 後，不留下已不存在 Event 的 metadata。
+- 刪除 Book 後，不留下該書的背景、故事線、階段、大綱項目、anchors、標籤、註記或 timeline metadata；其他書的規劃資料必須保持不變。
+- 模擬主資料已刪除但 StoryPlanning 清理失敗後，修復可重複執行且不誤刪仍存在的 Book／Event。
+- OutlineItem 遭刪除時，相關 Event 仍保留並顯示來源失效，沒有資料被系統猜測或連帶刪除。
+
+### R 批准狀態
+
+- R：approved。使用者於 2026-09-12 回覆「需求確認，進入 UI 提案」。
+
+### 已檢視 UI 現況
+
+- 已以目前 Debug app 唯讀檢視作品庫、書籍右鍵刪除確認、大綱工作區與世界時間軸空白狀態；只開啟並取消刪除確認，沒有修改或刪除使用者資料。
+- 書籍目前顯示通用「確認刪除」與「此操作無法復原」，沒有明示會刪除正文、設定、大綱與世界時間資料。
+- 寬版事件卡已有確認：「只會刪除此事件卡片；日期節點、敘事大綱與正文都會保留。」這個內容正確且應保留。
+- 時間釘子與副軸已有明示下層事件會連帶刪除；既有 Event 列則直接刪除，缺少確認與一致的失敗呈現。
+
+### UI 提案（U，待確認）
+
+#### 設計原則
+
+- 只有會刪除作者可見內容的操作才要求確認；背景 metadata 清理與成功的冪等修復保持安靜。
+- 確認文字說明「會刪什麼、會保留什麼」，不暴露 store、UUID 或孤立資料等技術名詞。
+- 主資料刪除失敗時明確告知內容未刪除；主資料已成功、只有不可見附屬資料待整理時，不把已完成的刪除誤報為失敗。
+
+#### 1. 刪除單一事件
+
+寬版事件卡與既有 Event 列統一使用同一份確認：
+
+```text
+┌────────────────────────────────────┐
+│ 刪除事件「事件標題」？               │
+│                                    │
+│ 只會刪除此世界時間事件；日期節點、    │
+│ 敘事大綱與正文都會保留。             │
+│                                    │
+│             [取消]  [刪除]           │
+└────────────────────────────────────┘
+```
+
+- 空標題以「未命名事件」代替；刪除按鈕維持 destructive 樣式。
+- 刪除成功後卡片／事件列立即消失，不另顯示成功提示。
+- 主資料儲存失敗時顯示：「無法刪除事件，內容仍完整保留。」並附系統錯誤原因及「好」按鈕。
+
+#### 2. 刪除時間釘子與副軸
+
+- 保留目前確認入口、按鈕與結構，只統一措辭：明示時間釘子／副軸及其下事件會刪除；敘事大綱與正文保留。
+- 不顯示 metadata 數量，不要求作者理解內部關聯。
+
+#### 3. 刪除書籍
+
+沿用作品卡右鍵「刪除」入口，將確認內容改為完整範圍：
+
+```text
+┌────────────────────────────────────┐
+│ 刪除《雨港的提燈人》？               │
+│                                    │
+│ 這會刪除本書的正文、角色與設定、      │
+│ 敘事大綱、世界時間資料及封面，        │
+│ 而且無法復原。                       │
+│                                    │
+│             [取消]  [刪除書籍]       │
+└────────────────────────────────────┘
+```
+
+- 主資料刪除失敗時，作品卡留在原位並顯示：「無法刪除《書名》，內容仍完整保留。」附系統錯誤原因。
+- 主資料成功後作品卡立即消失；若只有背景附屬資料尚待清理，系統稍後自動修復，不顯示會讓作者誤以為書籍仍存在的錯誤。
+
+#### 4. 自動修復狀態
+
+- 正常完成：不顯示 banner、toast 或進度畫面。
+- 可於下次啟動重試的附屬資料清理失敗：不阻擋寫作、不要求使用者操作；保留內部診斷紀錄。
+- 只有當修復失敗會阻止目前書籍正常開啟時，才沿用既有啟動失敗畫面；V4.4.8 不新增獨立維護中心或修復按鈕。
+
+### U 批准狀態
+
+- U：approved。使用者於 2026-09-12 回覆「UI 確認，請提出實作與測試計畫」。
+
+### 實作與測試計畫（I，待確認）
+
+#### 1. 先建立可驗證的跨 store 清理 API
+
+- 在 `StoryPlanningStore` 新增以 `bookID` 為範圍的刪除操作，集中清除該書的 `BookPlanningProfile`、`StoryTag`、`ChapterAnnotation`、故事線、階段、大綱項目、anchors、階段定位、手動安置及 timeline metadata。
+- 先取得該書的 story line／stage／outline item ID 集合，再清除沒有直接 `bookID` 的附屬模型；所有刪除在 StoryPlanning store 的單一 save 完成，失敗時 rollback 並 reload，不能留下記憶體陣列與 store 不一致。
+- 將既有 event metadata orphan cleanup 擴充為一致性修復入口，接收主資料庫現存的 `Book ID` 與 `Event ID`。它只清除不存在書籍的規劃資料與不存在事件的 metadata；缺少 OutlineItem 的 metadata 保留，維持「來源失效」。
+- 修復操作必須可重複執行，第二次執行不得再改變有效資料。
+
+#### 2. 建立單一刪除協調服務
+
+- 在服務／修復層新增 `CrossStoreDeletionCoordinator`（實際命名依現有命名規範確認），由它依序處理主資料庫刪除與 StoryPlanning 清理；SwiftUI View 只提出刪除意圖與顯示結果。
+- Event：先刪主 Event 並保存，再刪對應 metadata。主 save 失敗時 throw，Event 保留；metadata 清理失敗時回傳「主刪除完成、清理延後」，不得對已保存的主刪除呼叫 rollback 或向使用者宣稱 Event 仍在。
+- Node／Timeline：沿用 `PersistentModelDeletion.deleteNodes`／`deleteTimeline` 的 cascade，再以有效 Event ID 集合修復 metadata。
+- Book：沿用 `PersistentModelDeletion.deleteBook` 清理主資料與物品副本；主 save 成功後，以 `bookID` 清除 StoryPlanning 資料並移除封面。StoryPlanning 清理失敗不復活或假裝保留已刪除的 Book，交由啟動修復收斂。
+- 對附屬清理失敗使用明確結果型別並保留技術診斷；不以 `try?` 靜默吞掉資料完整性錯誤。使用者可見訊息仍只處理主刪除失敗。
+- 為失敗測試抽出最小清理協定或可注入操作，讓測試能模擬第二個 store save 失敗，而不在正式程式加入測試旗標。
+
+#### 3. 將修復接入啟動流程
+
+- `SailuneApp` 在主 container 與 StoryPlanning store 都成功開啟後，取得有效 `Book ID`／`Event ID`，執行一次跨 store 一致性修復。
+- 修復成功保持無 UI；附屬清理失敗要被明確捕捉並留下診斷，現有有效資料仍可使用時不阻擋 app 啟動。
+- 若讀取主資料或 StoryPlanning store 本身失敗，仍沿用既有 `DatabaseStartupFailureView`；V4.4.8 不建立新的修復畫面。
+- 時間軸進入時保留冪等修復作為第二道防線，但改由同一服務／store API 執行，避免各畫面各自定義有效集合與清理規則。
+
+#### 4. 接回已批准 UI
+
+- `TimelinePanelView` 的寬版卡片與兩處 `EventRow` 都把刪除請求送到同一個 pending event／確認流程；移除 `EventRow` 內直接 `modelContext.delete(event)` 的路徑。
+- 事件確認顯示實際標題或「未命名事件」，文案統一為只刪世界時間事件、保留日期節點／敘事大綱／正文。
+- 時間釘子與副軸保留現有 UI，補上敘事大綱與正文保留說明，實作改走協調服務。
+- `ContentView` 注入 `StoryPlanningStore`，書籍確認改用已批准的完整影響文案與「刪除書籍」按鈕；新增可見錯誤 state，主刪除失敗時保留作品卡並顯示內容仍完整保留及原始錯誤原因。
+- 成功刪除與可延後的附屬清理不顯示成功或技術提示；不新增 toast、進度畫面或維護入口。
+
+#### 5. 自動測試
+
+1. **書籍範圍清理**：建立兩本書的完整 StoryPlanning 資料；刪除其中一本後，確認其 profile、tags、annotations、lines、stages、items、anchors、start details、placements 與 metadata 全數移除，另一書 UUID／數量／內容不變；重開 store 後結果一致。
+2. **事件與 cascade**：分別由單一 Event、Node 與 Timeline 刪除，確認主 Event 與 metadata 收斂；Section、正文及未被刪除的 OutlineItem 保留。
+3. **冪等修復**：混合有效資料、缺 Book 資料、缺 Event metadata 及缺 OutlineItem 來源；連續執行兩次後，只有前兩類孤立資料被清理，來源失效 Event／metadata 保留。
+4. **失敗順序**：模擬主 save 失敗，確認不執行 StoryPlanning 清理且 UI 可判定內容仍保留；模擬主 save 成功、附屬清理失敗，確認結果標為 deferred cleanup，下一次 reconcile 能完成。
+5. **UI 狀態／文案**：以可測試的刪除請求與結果映射覆蓋事件標題後備、Book 標題、確認範圍及主失敗訊息；不為 alert 的像素或原生排列建立脆弱測試。
+6. **既有回歸**：保留 Timeline metadata 建立／更新、30 字節錄、來源失效、時間排序、書籍主資料 cascade、物品副本清理與 V1→V6 遷移測試。
+
+#### 6. 人工驗收與完整驗證
+
+- 使用隔離資料而非正式書籍，驗證事件卡片與既有事件列的確認／取消／刪除、時間釘子與副軸連帶刪除，以及書籍確認／取消。
+- 建立至少兩本隔離書，刪除其中一本並重新開啟 app，確認另一書及其大綱／時間資料完整。
+- 人工驗收主失敗訊息若無法安全製造，改由注入式自動測試覆蓋並在交付時標為未人工觸發。
+- 執行完整 macOS 測試、Debug、無簽章 Release、`git diff --check`，並記錄測試數、產物、限制與工作樹邊界。
+
+#### 7. 文件與相容性
+
+- 更新 `docs/spec-timeline.md`、`docs/data-model.md`、`docs/backup-and-migration.md`、`docs/consistency-audit.md`、`docs/testing.md`、專案狀態、工作單與交接。
+- 本版不新增 SwiftData model、schema 或 migration；既有 store 檔與 UUID 保持不變。
+- 明確記錄刪除順序、deferred cleanup、啟動修復、Book 清理範圍，以及 OutlineItem 失效不連帶刪 Event 的不變條件。
+
+### 風險與控制
+
+- **主資料已刪但 UI 誤報失敗**：協調結果區分 primary failure 與 deferred cleanup；只有前者顯示失敗。
+- **Book 清理漏掉間接附屬模型**：先以 ID 集合展開完整刪除圖，再以重開 store 的 fetchCount／UUID 集合驗證。
+- **啟動修復誤刪有效資料**：只以主 store 的 Book／Event 是否存在為刪除依據；不因 OutlineItem 缺失刪 Event metadata。
+- **各畫面再次分叉**：View 不直接刪 Event；所有入口共用協調服務與確認模型。
+- **範圍膨脹成復原系統**：垃圾桶、Undo、備份還原、舊 Timeline 轉換與其他獨立 store 的全面交易協調維持非目標。
+
+### I 批准與實作結果
+
+- I：approved。使用者於 2026-09-12 回覆「計畫確認，開始實作與測試」。
+- 已建立統一的跨 store 刪除協調服務、書籍範圍清理與冪等一致性修復，並接回 Event／Node／Timeline／Book 的所有已知刪除入口。
+- 主資料刪除失敗會 rollback 並保留作者內容；主資料已保存而附屬清理失敗時回傳 deferred cleanup，由啟動或時間軸載入時重試，不誤報主刪除失敗。
+- 事件與書籍確認文案已依 U 提案統一；Node／Timeline 補上敘事大綱與正文保留說明。
+- 2026-09-12 完整 macOS 測試 77 項全數通過，無簽章 Release 建置與 `git diff --check` 通過；測試包含兩書隔離、Book 全範圍清理、Event 協調刪除、修復冪等、失效 OutlineItem 保留，以及 primary failure／deferred cleanup 分流。
+- 本版沒有 schema 或 migration 變更。實際刪除未對使用者正式資料執行；破壞性流程由隔離的 in-memory 自動測試驗證。
 
 ## 新工作單元：既有大綱加入時間軸與切換效能
 

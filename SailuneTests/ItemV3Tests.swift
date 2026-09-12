@@ -4,6 +4,10 @@ import SwiftData
 
 @MainActor
 final class ItemV3Tests: XCTestCase {
+    func testAppDeclaresTraditionalChineseAsDevelopmentLanguage() {
+        XCTAssertEqual(Bundle.main.developmentLocalization, "zh-Hant")
+    }
+
     func testEditorContextMenuKeepsApprovedToolOrderAndTagKinds() {
         let textView = contextTextView(text: "反白文字", selectedLength: 4)
 
@@ -18,6 +22,16 @@ final class ItemV3Tests: XCTestCase {
         XCTAssertTrue(menu?.items[2].isEnabled == true)
         XCTAssertTrue(menu?.items[3].isEnabled == true)
         XCTAssertTrue(menu?.items[4].isEnabled == true)
+
+        let writingToolsItem = menu?.items.first(where: { $0.title == "寫作工具" })
+        let writingToolsTitles = writingToolsItem?.submenu?.items.map(\.title) ?? []
+        // Availability and submenu population are controlled by macOS.
+        if !writingToolsTitles.isEmpty {
+            XCTAssertTrue(writingToolsTitles.contains("校對"))
+            XCTAssertTrue(writingToolsTitles.contains("改寫"))
+            XCTAssertTrue(writingToolsTitles.contains("摘要"))
+            XCTAssertTrue(writingToolsTitles.contains("撰寫…"))
+        }
     }
 
     func testEditorContextMenuDisablesTextTagsWithoutSelection() {
@@ -558,6 +572,79 @@ final class ItemV3Tests: XCTestCase {
 
         XCTAssertFalse(store.copies.contains { $0.id == copy.id })
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<ItemCopy>()), 0)
+    }
+
+    func testCrossStoreCoordinatorDeletesEventAndTimelineMetadata() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let planningStore = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "時間書", author: "作者")
+        context.insert(book)
+        try TimelineEngine.Bootstrap.ensure(for: book, in: context)
+        let timeline = try XCTUnwrap(TimelineEngine.Query.primaryTimeline(for: book))
+        let node = Node(year: 1)
+        node.timeline = timeline
+        context.insert(node)
+        let event = Event(title: "待刪事件", detail: "")
+        event.node = node
+        context.insert(event)
+        try context.save()
+        let eventID = event.id
+        try planningStore.ensureTimelineMetadata(eventID: eventID, bookID: book.id)
+
+        try CrossStoreDeletionCoordinator.deleteEvent(
+            event,
+            in: context,
+            planningStore: planningStore
+        )
+
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Event>()).isEmpty)
+        XCTAssertNil(planningStore.timelineMetadata(eventID: eventID))
+    }
+
+    func testCrossStoreCoordinatorDeletingBookRemovesPlanningData() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let planningStore = try StoryPlanningStore(container: makePlanningContainer())
+        let book = Book(title: "整書刪除", author: "作者")
+        context.insert(book)
+        try context.save()
+        _ = try planningStore.ensureProfile(bookID: book.id)
+        _ = try planningStore.createStoryLine(bookID: book.id, kind: .main)
+        let bookID = book.id
+
+        try CrossStoreDeletionCoordinator.deleteBook(
+            book,
+            in: context,
+            copyStore: nil,
+            planningStore: planningStore
+        )
+
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Book>()).isEmpty)
+        XCTAssertNil(planningStore.profile(bookID: bookID))
+        XCTAssertTrue(planningStore.storyLines(bookID: bookID).isEmpty)
+    }
+
+    func testCrossStoreCoordinatorDistinguishesPrimaryFailureFromDeferredCleanup() throws {
+        enum SimulatedFailure: Error { case primary, cleanup }
+        var cleanupRan = false
+
+        XCTAssertThrowsError(
+            try CrossStoreDeletionCoordinator.coordinate(
+                primary: { throw SimulatedFailure.primary },
+                cleanupDescription: "測試清理",
+                cleanup: { cleanupRan = true }
+            )
+        )
+        XCTAssertFalse(cleanupRan)
+
+        let outcome = try CrossStoreDeletionCoordinator.coordinate(
+            primary: { },
+            cleanupDescription: "測試清理",
+            cleanup: { throw SimulatedFailure.cleanup }
+        )
+        XCTAssertTrue(outcome.requiresRepair)
+        XCTAssertEqual(outcome.deferredCleanupErrors.count, 1)
     }
 
     func testCopiesCanMoveWithoutChangingTheirParentItem() throws {

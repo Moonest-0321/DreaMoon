@@ -328,10 +328,7 @@ final class SailuneTextView: CompositionAwareTextView {
         menu.addItem(settingsMenuItem(title: "能力", destination: .ability))
         menu.addItem(settingsMenuItem(title: "組織", destination: .organization))
         menu.addItem(NSMenuItem.separator())
-        for item in NSMenuItem.writingToolsItems {
-            item.title = "寫作工具"
-            menu.addItem(item)
-        }
+        localizedWritingToolsItems().forEach(menu.addItem)
         return menu
     }
 
@@ -413,6 +410,34 @@ final class SailuneTextView: CompositionAwareTextView {
         item.target = self
         item.representedObject = destination.rawValue
         return item
+    }
+
+    private func localizedWritingToolsItems() -> [NSMenuItem] {
+        NSMenuItem.writingToolsItems.map { item in
+            localizeWritingToolsItem(item)
+            return item
+        }
+    }
+
+    private func localizeWritingToolsItem(_ item: NSMenuItem) {
+        let translations = [
+            "Writing Tools": "寫作工具",
+            "Show Writing Tools": "顯示寫作工具",
+            "Proofread": "校對",
+            "Rewrite": "改寫",
+            "Make Friendly": "變得更親切",
+            "Make Professional": "變得更專業",
+            "Make Concise": "更精簡",
+            "Summarize": "摘要",
+            "Create Key Points": "建立重點",
+            "Make List": "製作列表",
+            "Make Table": "製作表格",
+            "Compose…": "撰寫…"
+        ]
+        if let localizedTitle = translations[item.title] {
+            item.title = localizedTitle
+        }
+        item.submenu?.items.forEach(localizeWritingToolsItem)
     }
 
     @objc func createCharacterFromSelection(_ sender: Any?) {

@@ -54,8 +54,10 @@
 - StoryPlanning schema V6 新增 `TimelineEventCardMetadata`，以唯一 `eventID` 連至主 store Event，並以可選 `outlineItemID` 連至敘事大綱；它保存 `bookID`、節錄模式、手動節錄與更新時間，不建立跨 store SwiftData relationship。
 - Event 的標題、詳情、Node、Section 與角色仍由主 store 擁有。metadata 與有效 OutlineItemAnchor 共同決定正文來源；anchor 的 sectionID 會回填 Event.section，供卷節顯示與跳轉。
 - 刪除 Event 後清理對應 metadata；刪除 OutlineItem 不跨 store 刪 Event，卡片改顯示來源失效。刪除 Node／Timeline 仍依主 store cascade 刪 Event，再以冪等清理移除孤立 metadata。
+- V4.4.8 的跨 store 刪除一律先保存主 store，再清理 StoryPlanning 附屬資料。Book 刪除會以 `bookID` 清除該書所有規劃模型及間接附屬模型；任何其他書籍不得受影響。
+- 一致性修復只依主 store 現存的 Book／Event UUID 清除缺失書籍的規劃資料與缺失事件的 metadata。缺失 OutlineItem 來源不構成刪除依據，Event 與 metadata 會保留並呈現來源失效。
 
 ## 待改善的模型風險
 
-- 多個獨立 store 沒有交易邊界；跨 store 寫入失敗時需有可重試或修復策略。
+- 多個獨立 store 沒有共同交易邊界；目前以「主資料先保存、附屬清理可延後、啟動時冪等修復」收斂刪除失敗，但仍不等同完整備份或復原能力。
 - 部分模型同時存在現行資料與舊版遷移資料，新增欄位時必須先更新 schema 快照與匯入測試。

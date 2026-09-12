@@ -965,6 +965,119 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertNil(store.timelineMetadata(eventID: removed))
     }
 
+    func testDeletingBookPlanningDataRemovesEveryOwnedRecordAndKeepsOtherBook() throws {
+        let container = try makePlanningContainer()
+        let store = try StoryPlanningStore(container: container)
+        let deletedBookID = UUID()
+        let keptBookID = UUID()
+        let sectionID = UUID()
+        let volumeID = UUID()
+
+        _ = try store.ensureProfile(bookID: deletedBookID)
+        _ = store.ensureAnnotation(sectionID: sectionID, bookID: deletedBookID)
+        _ = store.createTag(
+            title: "修改",
+            kind: .revision,
+            anchorText: "文字",
+            anchorOffset: 0,
+            bookID: deletedBookID,
+            sectionID: sectionID
+        )
+        let line = try store.createStoryLine(bookID: deletedBookID, kind: .main)
+        let stage = try store.createStage(
+            storyLine: line,
+            start: OutlineStageStartLocation(
+                volumeID: volumeID,
+                sectionID: sectionID,
+                volumeTitle: "第一卷",
+                sectionTitle: "第一節"
+            )
+        )
+        let manualItem = try store.createOutlineItem(storyLine: line, stage: stage, title: "手動事件")
+        let proseItem = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "正文事件",
+            anchorText: "文字",
+            anchorOffset: 0,
+            bookID: deletedBookID,
+            sectionID: sectionID
+        )
+        let deletedEventID = UUID()
+        try store.ensureTimelineMetadata(
+            eventID: deletedEventID,
+            bookID: deletedBookID,
+            outlineItemID: proseItem.id
+        )
+
+        let keptProfile = try store.ensureProfile(bookID: keptBookID)
+        let keptLine = try store.createStoryLine(bookID: keptBookID, kind: .branch)
+        let keptItem = try store.createOutlineItem(storyLine: keptLine, title: "保留事件")
+        let keptEventID = UUID()
+        try store.ensureTimelineMetadata(eventID: keptEventID, bookID: keptBookID, outlineItemID: keptItem.id)
+
+        XCTAssertNotNil(store.stageStart(stageID: stage.id))
+        XCTAssertNotNil(store.stageStartDetail(stageID: stage.id))
+        XCTAssertNotNil(store.placement(outlineItemID: manualItem.id))
+        XCTAssertNotNil(store.anchor(outlineItemID: proseItem.id))
+
+        try store.deletePlanningData(bookID: deletedBookID)
+
+        XCTAssertTrue(store.tags(bookID: deletedBookID).isEmpty)
+        XCTAssertFalse(store.annotations.contains { $0.bookID == deletedBookID })
+        XCTAssertNil(store.profile(bookID: deletedBookID))
+        XCTAssertTrue(store.storyLines(bookID: deletedBookID).isEmpty)
+        XCTAssertFalse(store.stages.contains { $0.bookID == deletedBookID })
+        XCTAssertTrue(store.items(bookID: deletedBookID).isEmpty)
+        XCTAssertFalse(store.outlineAnchors.contains { $0.bookID == deletedBookID })
+        XCTAssertNil(store.stageStart(stageID: stage.id))
+        XCTAssertNil(store.stageStartDetail(stageID: stage.id))
+        XCTAssertNil(store.placement(outlineItemID: manualItem.id))
+        XCTAssertNil(store.timelineMetadata(eventID: deletedEventID))
+
+        let reopened = try StoryPlanningStore(container: container)
+        XCTAssertEqual(reopened.profile(bookID: keptBookID)?.id, keptProfile.id)
+        XCTAssertEqual(reopened.storyLines(bookID: keptBookID).map(\.id), [keptLine.id])
+        XCTAssertEqual(reopened.items(bookID: keptBookID).map(\.id), [keptItem.id])
+        XCTAssertEqual(reopened.timelineMetadata(eventID: keptEventID)?.outlineItemID, keptItem.id)
+    }
+
+    func testCrossStoreReconcileIsIdempotentAndKeepsMissingOutlineSource() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let validBookID = UUID()
+        let removedBookID = UUID()
+        let validLine = try store.createStoryLine(bookID: validBookID, kind: .main)
+        let validItem = try store.createOutlineItem(storyLine: validLine, title: "有效來源")
+        _ = try store.ensureProfile(bookID: removedBookID)
+        _ = try store.createStoryLine(bookID: removedBookID, kind: .branch)
+
+        let validEventID = UUID()
+        let removedEventID = UUID()
+        let missingSourceEventID = UUID()
+        let missingOutlineID = UUID()
+        try store.ensureTimelineMetadata(
+            eventID: validEventID,
+            bookID: validBookID,
+            outlineItemID: validItem.id
+        )
+        try store.ensureTimelineMetadata(eventID: removedEventID, bookID: validBookID)
+        try store.ensureTimelineMetadata(
+            eventID: missingSourceEventID,
+            bookID: validBookID,
+            outlineItemID: missingOutlineID
+        )
+
+        let validBookIDs: Set<UUID> = [validBookID]
+        let validEventIDs: Set<UUID> = [validEventID, missingSourceEventID]
+        try store.reconcile(validBookIDs: validBookIDs, validEventIDs: validEventIDs)
+        try store.reconcile(validBookIDs: validBookIDs, validEventIDs: validEventIDs)
+
+        XCTAssertNil(store.profile(bookID: removedBookID))
+        XCTAssertTrue(store.storyLines(bookID: removedBookID).isEmpty)
+        XCTAssertNotNil(store.timelineMetadata(eventID: validEventID))
+        XCTAssertNil(store.timelineMetadata(eventID: removedEventID))
+        XCTAssertEqual(store.timelineMetadata(eventID: missingSourceEventID)?.outlineItemID, missingOutlineID)
+    }
+
     func testTimelineAutomaticExcerptUsesResolvedProseAndThirtyCharacters() throws {
         let store = try StoryPlanningStore(container: makePlanningContainer())
         let book = Book(title: "時間卡", author: "作者")

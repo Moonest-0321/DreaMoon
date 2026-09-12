@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import AppKit
+import OSLog
 
 private protocol StoreUUIDModel {
     var id: UUID { get }
@@ -476,5 +477,148 @@ enum PersistentModelDeletion {
     where Model: PersistentModel & StoreUUIDModel {
         var seen = Set<UUID>()
         return models.filter { seen.insert($0.id).inserted }
+    }
+}
+
+/// Coordinates destructive operations whose records span the main store and
+/// the independent story-planning store. A failed companion cleanup never
+/// changes the outcome of a main-store deletion that has already been saved.
+struct CrossStoreDeletionOutcome {
+    let deferredCleanupErrors: [String]
+
+    static let completed = CrossStoreDeletionOutcome(deferredCleanupErrors: [])
+    var requiresRepair: Bool { !deferredCleanupErrors.isEmpty }
+}
+
+@MainActor
+enum CrossStoreDeletionCoordinator {
+    private static let logger = Logger(subsystem: "com.MooNest.Sailune", category: "CrossStoreDeletion")
+
+    @discardableResult
+    static func deleteEvent(
+        _ event: Event,
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) throws -> CrossStoreDeletionOutcome {
+        let eventID = event.id
+        return try coordinate(primary: {
+            try performPrimary(in: context) {
+                context.delete(event)
+                try context.save()
+            }
+        }, cleanupDescription: "事件 \(eventID) metadata") {
+            try planningStore.deleteTimelineMetadata(eventID: eventID)
+        }
+    }
+
+    @discardableResult
+    static func deleteNodes(
+        _ nodes: [Node],
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) throws -> CrossStoreDeletionOutcome {
+        try performPrimary(in: context) {
+            try PersistentModelDeletion.deleteNodes(nodes, in: context)
+        }
+        return reconcileTimelineMetadata(in: context, planningStore: planningStore)
+    }
+
+    @discardableResult
+    static func deleteTimeline(
+        _ timeline: Timeline,
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) throws -> CrossStoreDeletionOutcome {
+        try performPrimary(in: context) {
+            try PersistentModelDeletion.deleteTimeline(timeline, in: context)
+        }
+        return reconcileTimelineMetadata(in: context, planningStore: planningStore)
+    }
+
+    @discardableResult
+    static func deleteBook(
+        _ book: Book,
+        in context: ModelContext,
+        copyStore: ItemCopyStore?,
+        planningStore: StoryPlanningStore
+    ) throws -> CrossStoreDeletionOutcome {
+        let bookID = book.id
+        try performPrimary(in: context) {
+            try PersistentModelDeletion.deleteBook(book, in: context, copyStore: copyStore)
+        }
+        var errors: [String] = []
+        if let error = performDeferredCleanup("書籍 \(bookID) 故事規劃資料", cleanup: {
+            try planningStore.deletePlanningData(bookID: bookID)
+        }) { errors.append(error) }
+        if let error = performDeferredCleanup("書籍 \(bookID) 封面", cleanup: {
+            try BookCoverStore.removeCover(forID: bookID)
+        }) { errors.append(error) }
+        return CrossStoreDeletionOutcome(deferredCleanupErrors: errors)
+    }
+
+    static func reconcile(
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) throws {
+        let validBookIDs = Set(try context.fetch(FetchDescriptor<Book>()).map(\.id))
+        let validEventIDs = Set(try context.fetch(FetchDescriptor<Event>()).map(\.id))
+        try planningStore.reconcile(validBookIDs: validBookIDs, validEventIDs: validEventIDs)
+    }
+
+    @discardableResult
+    static func reconcileBestEffort(
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) -> CrossStoreDeletionOutcome {
+        let error = performDeferredCleanup("跨資料庫一致性修復") {
+            try reconcile(in: context, planningStore: planningStore)
+        }
+        return CrossStoreDeletionOutcome(deferredCleanupErrors: error.map { [$0] } ?? [])
+    }
+
+    private static func reconcileTimelineMetadata(
+        in context: ModelContext,
+        planningStore: StoryPlanningStore
+    ) -> CrossStoreDeletionOutcome {
+        let error = performDeferredCleanup("世界時間附屬資料") {
+            let validEventIDs = Set(try context.fetch(FetchDescriptor<Event>()).map(\.id))
+            try planningStore.removeOrphanedTimelineMetadata(validEventIDs: validEventIDs)
+        }
+        return CrossStoreDeletionOutcome(deferredCleanupErrors: error.map { [$0] } ?? [])
+    }
+
+    static func coordinate(
+        primary: () throws -> Void,
+        cleanupDescription: String,
+        cleanup: () throws -> Void
+    ) throws -> CrossStoreDeletionOutcome {
+        try primary()
+        let error = performDeferredCleanup(cleanupDescription, cleanup: cleanup)
+        return CrossStoreDeletionOutcome(deferredCleanupErrors: error.map { [$0] } ?? [])
+    }
+
+    private static func performPrimary(
+        in context: ModelContext,
+        operation: () throws -> Void
+    ) throws {
+        do {
+            try operation()
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    private static func performDeferredCleanup(
+        _ operation: String,
+        cleanup: () throws -> Void
+    ) -> String? {
+        do {
+            try cleanup()
+            return nil
+        } catch {
+            logger.error("\(operation, privacy: .public)待下次啟動修復：\(error.localizedDescription, privacy: .public)")
+            return "\(operation)：\(error.localizedDescription)"
+        }
     }
 }

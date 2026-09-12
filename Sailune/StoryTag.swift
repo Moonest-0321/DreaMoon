@@ -645,6 +645,55 @@ final class StoryPlanningStore {
         timelineEventCardMetadata.removeAll { !validEventIDs.contains($0.eventID) }
     }
 
+    /// Removes every planning record owned by a main-store Book. Descendant
+    /// models without a direct bookID are resolved through their stable UUIDs.
+    func deletePlanningData(bookID: UUID) throws {
+        let lineIDs = Set(storyLines.filter { $0.bookID == bookID }.map(\.id))
+        let stageIDs = Set(stages.filter { $0.bookID == bookID || lineIDs.contains($0.storyLineID) }.map(\.id))
+        let itemIDs = Set(outlineItems.filter {
+            $0.bookID == bookID || lineIDs.contains($0.storyLineID)
+        }.map(\.id))
+
+        do {
+            tags.filter { $0.bookID == bookID }.forEach(context.delete)
+            annotations.filter { $0.bookID == bookID }.forEach(context.delete)
+            bookProfiles.filter { $0.bookID == bookID }.forEach(context.delete)
+            stageStartAnchors.filter { $0.bookID == bookID || stageIDs.contains($0.stageID) }.forEach(context.delete)
+            stageStartDetails.filter { stageIDs.contains($0.stageID) }.forEach(context.delete)
+            outlineAnchors.filter { $0.bookID == bookID || itemIDs.contains($0.outlineItemID) }.forEach(context.delete)
+            itemPlacements.filter { itemIDs.contains($0.outlineItemID) }.forEach(context.delete)
+            timelineEventCardMetadata.filter { $0.bookID == bookID }.forEach(context.delete)
+            outlineItems.filter { itemIDs.contains($0.id) }.forEach(context.delete)
+            stages.filter { stageIDs.contains($0.id) }.forEach(context.delete)
+            storyLines.filter { lineIDs.contains($0.id) }.forEach(context.delete)
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    /// Reconciles cross-store companions only when their main-store Book or
+    /// Event is definitively absent. Missing outline sources remain visible as
+    /// invalid sources and are never inferred or deleted here.
+    func reconcile(validBookIDs: Set<UUID>, validEventIDs: Set<UUID>) throws {
+        let referencedBookIDs = Set(tags.map(\.bookID))
+            .union(annotations.map(\.bookID))
+            .union(bookProfiles.map(\.bookID))
+            .union(storyLines.map(\.bookID))
+            .union(stages.map(\.bookID))
+            .union(outlineItems.map(\.bookID))
+            .union(outlineAnchors.map(\.bookID))
+            .union(stageStartAnchors.map(\.bookID))
+            .union(timelineEventCardMetadata.map(\.bookID))
+
+        for bookID in referencedBookIDs.subtracting(validBookIDs) {
+            try deletePlanningData(bookID: bookID)
+        }
+        try removeOrphanedTimelineMetadata(validEventIDs: validEventIDs)
+    }
+
     func stageStart(stageID: UUID) -> OutlineStageStartAnchor? {
         stageStartAnchors.first { $0.stageID == stageID }
     }

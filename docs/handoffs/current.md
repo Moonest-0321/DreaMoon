@@ -2,7 +2,7 @@
 
 > 狀態：active
 >
-> 更新時間：2026-09-11（Asia/Taipei）
+> 更新時間：2026-09-12（Asia/Taipei）
 >
 > 工作單元：V4.4.9 文本右鍵創作工具選單
 >
@@ -29,6 +29,29 @@
 - 驗證：完整 73 項 macOS 測試、Debug、無簽章 Release 與 `git diff --check` 均通過。初次受限沙箱測試因既有 SwiftData macro plugin 問題失敗；允許完整 Xcode 環境後通過。新增兩項測試涵蓋工具順序、kind 與未反白停用。
 - 未完成：實機 UI 冒煙。嘗試用桌面 UI 自動化連線 Sailune 時逾時，因此不能宣稱已目視確認圖示列、選單寬度、設定集跳轉或 Apple 書寫工具；沒有對正式使用者資料操作。
 - 唯一下一步：開啟 `/tmp/DreaMoonV449Debug/Build/Products/Debug/Sailune.app`，以測試資料驗收反白／未反白的右鍵選單、三種 tag、角色子選單、設定集入口及書寫工具可用與不可用狀態。
+- 後續語言診斷：使用者的整體 macOS 已是中文，但 Apple 寫作工具面板仍顯示英文。建置產物實際為 `CFBundleDevelopmentRegion = en`，專案也只登記 `en`／`Base`；已將 App 開發語言改為 `zh-Hant` 並加入 bundle 語言回歸測試。下一步須重建後確認 Info.plist 與實際系統面板。
+- 語言修正驗證：完整 74 項測試、Debug、無簽章 Release 與 diff 檢查通過；兩種建置產物皆為 `CFBundleDevelopmentRegion = zh-Hant`。新 Debug 驗收版為 `/tmp/DreaMoonV449Language/Build/Products/Debug/Sailune.app`；仍待使用者確認 Apple 寫作工具面板已改為繁體中文。
+
+## V4.4.8 設計起點：跨資料庫刪除與修復可靠性
+
+- 使用者要求先規劃先前盤點的第三項：大綱／世界時間軸跨主資料庫與 StoryPlanning store 的刪除、失敗收斂與修復。
+- 已唯讀核對程式：寬版 Event 卡會在主資料刪除後清理 metadata；既有 Event 列缺少此直接清理；Node／Timeline cascade 已有 orphan cleanup；Book 刪除尚未清理該書 StoryPlanning 資料。
+- 已用現有 Sailune app 唯讀檢視作品庫與既有書籍刪除入口所在畫面，未觸發刪除或修改任何使用者資料。
+- 初步 R 將範圍限於所有 Event 刪除入口、Node／Timeline cascade、Book 刪除，以及 app 啟動／開啟書籍時的冪等修復。只清除主資料已明確不存在的 Book／Event 附屬資料；失效 OutlineItem 來源保留 Event 並顯示既有來源失效狀態。
+- 不承諾跨 store 原子交易，也不將垃圾桶／Undo、備份還原或舊時間軸遷移併入本版。主資料成功後的 StoryPlanning 清理若失敗，交由可重複的修復程序收斂。
+- 工作單已加入 R 草案，尚未獲需求批准；下一步是由使用者確認 R，再檢視並提出刪除確認、修復提示與錯誤狀態的 UI 提案。
+- 使用者已於 2026-09-12 批准 R。已用目前 Debug app 唯讀檢視作品庫、書籍刪除確認、大綱工作區與世界時間軸；只開啟後取消確認，未修改任何使用者資料。
+- U 提案保留現有入口與原生確認樣式：寬版卡片與既有 Event 列統一事件刪除確認；時間釘子／副軸補齊保留範圍；書籍刪除明示正文、設定、大綱、世界時間與封面都會移除。
+- 刪除成功與可自動重試的不可見附屬資料清理保持安靜；只有主資料刪除失敗時才提示「內容仍完整保留」。不新增 toast、進度畫面、維護中心或修復按鈕。
+- 目前 U 待使用者確認；尚未修改功能程式。下一步是 U approved 後提出實作與測試計畫。
+- 使用者已於 2026-09-12 批准 U。I 提案已完成：新增 book-scoped StoryPlanning 清理與跨 store reconcile；建立單一刪除協調服務；接入啟動及時間軸第二道修復；統一 Event／Node／Timeline／Book 刪除入口與已批准文案。
+- I 計畫明確區分主刪除失敗與附屬清理延後：前者保留內容並向使用者顯示錯誤，後者不對已保存的刪除 rollback 或誤報失敗，交由冪等修復收斂並保留技術診斷。
+- 預期不新增 schema／migration；自動測試覆蓋兩書隔離、完整 Book 規劃清理、Event／Node／Timeline cascade、缺 Book／Event／OutlineItem 的修復矩陣、重複執行及兩段式失敗。
+- 使用者已於 2026-09-12 批准 I。已完成 `StoryPlanningStore` 書籍範圍清理與跨 store reconcile、統一刪除協調服務、啟動／時間軸修復，以及 Event／Node／Timeline／Book 的確認與錯誤呈現。
+- 主資料失敗與附屬清理延後已有不同結果：前者 rollback 並向作者顯示內容仍完整；後者保留診斷並由冪等修復重試，不把已完成刪除誤報為失敗。
+- 2026-09-12 以 `/tmp/DreaMoonV448` 執行完整 macOS 測試，77 項全數通過；以 `/tmp/DreaMoonV448ReleaseFull` 完成無簽章 Release 建置，`git diff --check` 通過。本版沒有 schema／migration 變更，也未對正式使用者資料執行實際刪除。
+- 本工作修改範圍：`ContentView.swift`、`PersistentStoreRepair.swift`、`SailuneApp.swift`、`StoryTag.swift`、`TimelineViews.swift`、兩份測試與 V4.4.8 正式文件。工作樹原有 V4.4.9 的專案設定、`RichEditorView.swift`、編輯器規格與相關測試修改均保留。
+- 唯一下一步：以隔離測試資料做 Event／Node／Timeline／Book 刪除確認文案與失敗畫面的人工 UI 冒煙；不得以正式使用者書籍測試破壞性操作。
 
 ## 新工作單元檢查點
 

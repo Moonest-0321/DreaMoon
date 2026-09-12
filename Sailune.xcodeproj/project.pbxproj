@@ -138,9 +138,10 @@
 				};
 			};
 			buildConfigurationList = 85C96CB0300E6FDF0089544C /* Build configuration list for PBXProject "Sailune" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hant";
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				"zh-Hant",
 				en,
 				Base,
 			);

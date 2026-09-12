@@ -6,6 +6,7 @@ import AppKit
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(ItemCopyStore.self) private var copyStore
+    @Environment(StoryPlanningStore.self) private var planningStore
     @Query(sort: \Book.updatedAt, order: .reverse) private var books: [Book]
     @Query private var profiles: [AuthorProfile]
     @State private var navigationPath = NavigationPath()
@@ -13,6 +14,7 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var showingAuthorSettings = false
     @State private var deletionRequest: BookDeletionRequest?
+    @State private var bookDeletionError: String?
 
     var filteredBooks: [Book] {
         if searchText.isEmpty {
@@ -45,6 +47,7 @@ struct ContentView: View {
 
     var body: some View {
         let metrics = libraryMetrics
+        let deletionTitle = deletionRequest.map { "刪除《\($0.title)》？" } ?? "刪除書籍？"
         NavigationStack(path: $navigationPath) {
             Group {
                 if searchText.isEmpty {
@@ -141,7 +144,7 @@ struct ContentView: View {
                 }
             }
             .alert(
-                "確認刪除",
+                deletionTitle,
                 isPresented: Binding(
                     get: { deletionRequest != nil },
                     set: { if !$0 { deletionRequest = nil } }
@@ -149,11 +152,16 @@ struct ContentView: View {
                 presenting: deletionRequest
             ) { request in
                 Button("取消", role: .cancel) { }
-                Button("刪除", role: .destructive) {
+                Button("刪除書籍", role: .destructive) {
                     deleteBook(request)
                 }
             } message: { request in
-                Text("確定要刪除《\(request.title)》嗎？此操作無法復原。")
+                Text("這會刪除本書的正文、角色與設定、敘事大綱、世界時間資料及封面，而且無法復原。")
+            }
+            .alert("無法刪除書籍", isPresented: bookDeletionErrorBinding) {
+                Button("好") { bookDeletionError = nil }
+            } message: {
+                Text(bookDeletionError ?? "內容仍完整保留。")
             }
         }
     }
@@ -164,12 +172,22 @@ struct ContentView: View {
         guard let book = books.first(where: { $0.id == request.id }) else { return }
 
         do {
-            let bookID = request.id
-            try PersistentModelDeletion.deleteBook(book, in: modelContext, copyStore: copyStore)
-            try? BookCoverStore.removeCover(forID: bookID)
+            try CrossStoreDeletionCoordinator.deleteBook(
+                book,
+                in: modelContext,
+                copyStore: copyStore,
+                planningStore: planningStore
+            )
         } catch {
-            print("❌ 書籍刪除失敗：\(error.localizedDescription)")
+            bookDeletionError = "無法刪除《\(request.title)》，內容仍完整保留。\n\n\(error.localizedDescription)"
         }
+    }
+
+    private var bookDeletionErrorBinding: Binding<Bool> {
+        Binding(
+            get: { bookDeletionError != nil },
+            set: { if !$0 { bookDeletionError = nil } }
+        )
     }
 }
 
