@@ -1,9 +1,49 @@
 import XCTest
 import SwiftData
+import AppKit
 @testable import Sailune
+
+private final class UndoGroupingProbe: NSObject, NSTextViewDelegate {
+    var auxiliaryValue = 1
+
+    func textDidChange(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView,
+              let undoManager = textView.undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { probe in
+            probe.auxiliaryValue = 1
+        }
+        auxiliaryValue = 0
+    }
+}
 
 @MainActor
 final class ItemV3Tests: XCTestCase {
+    func testTextViewDelegateUndoRegistrationJoinsTheSameEditingStep() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let textView = NSTextView(frame: window.contentView?.bounds ?? .zero)
+        let probe = UndoGroupingProbe()
+        textView.delegate = probe
+        textView.allowsUndo = true
+        window.contentView = textView
+        textView.string = "原文"
+        textView.undoManager?.removeAllActions()
+        textView.setSelectedRange(NSRange(location: 2, length: 0))
+
+        textView.insertText("刪", replacementRange: textView.selectedRange())
+        XCTAssertEqual(textView.string, "原文刪")
+        XCTAssertEqual(probe.auxiliaryValue, 0)
+
+        textView.undoManager?.undo()
+
+        XCTAssertEqual(textView.string, "原文")
+        XCTAssertEqual(probe.auxiliaryValue, 1)
+    }
+
     func testAppDeclaresTraditionalChineseAsDevelopmentLanguage() {
         XCTAssertEqual(Bundle.main.developmentLocalization, "zh-Hant")
     }

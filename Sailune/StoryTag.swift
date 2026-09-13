@@ -42,10 +42,10 @@ enum StoryTagKind: String, CaseIterable, Identifiable, Hashable {
 }
 
 enum ProseAnchorResolver {
-    static func resolvedOffset(anchorText: String, anchorOffset: Int, in text: String) -> Int {
-        let length = (text as NSString).length
-        guard !anchorText.isEmpty else { return min(max(0, anchorOffset), length) }
+    static func matchingOffset(anchorText: String, anchorOffset: Int, in text: String) -> Int? {
+        guard !anchorText.isEmpty else { return 0 }
         let nsText = text as NSString
+        let length = nsText.length
         var candidates: [Int] = []
         var searchRange = NSRange(location: 0, length: length)
         while searchRange.length > 0 {
@@ -56,7 +56,46 @@ enum ProseAnchorResolver {
             searchRange = NSRange(location: next, length: max(0, length - next))
         }
         return candidates.min(by: { abs($0 - anchorOffset) < abs($1 - anchorOffset) })
+    }
+
+    static func resolvedOffset(anchorText: String, anchorOffset: Int, in text: String) -> Int {
+        let length = (text as NSString).length
+        return matchingOffset(anchorText: anchorText, anchorOffset: anchorOffset, in: text)
             ?? min(max(0, anchorOffset), length)
+    }
+}
+
+struct PlanningUndoDelta {
+    struct TagSnapshot {
+        let id: UUID
+        let title: String
+        let kind: StoryTagKind
+        let anchorText: String
+        let anchorOffset: Int
+        let createdAt: Date
+        let updatedAt: Date
+        let bookID: UUID
+        let sectionID: UUID
+    }
+
+    struct OutlineSnapshot {
+        let anchorID: UUID
+        let outlineItemID: UUID
+        let bookID: UUID
+        let sectionID: UUID
+        let anchorText: String
+        let anchorOffset: Int
+        let anchorCreatedAt: Date
+        let anchorUpdatedAt: Date
+        let itemStatus: OutlineItemStatus
+    }
+
+    let sectionID: UUID
+    let tags: [TagSnapshot]
+    let outlines: [OutlineSnapshot]
+    var hasChanges: Bool { !tags.isEmpty || !outlines.isEmpty }
+    var affectedIDs: Set<UUID> {
+        Set(tags.map(\.id)).union(outlines.map(\.outlineItemID))
     }
 }
 
@@ -712,6 +751,131 @@ final class StoryPlanningStore {
                   let item = outlineItems.first(where: { $0.id == anchor.outlineItemID }) else { return nil }
             return (item, anchor)
         }
+    }
+
+    func pendingPlanningUndoDelta(sectionID: UUID, prose: String) -> PlanningUndoDelta {
+        let tagSnapshots = tags.compactMap { tag -> PlanningUndoDelta.TagSnapshot? in
+            guard tag.sectionID == sectionID,
+                  tag.kind == .foreshadowing || tag.kind == .revision,
+                  ProseAnchorResolver.matchingOffset(
+                    anchorText: tag.anchorText,
+                    anchorOffset: tag.anchorOffset,
+                    in: prose
+                  ) == nil else { return nil }
+            return .init(
+                id: tag.id,
+                title: tag.title,
+                kind: tag.kind,
+                anchorText: tag.anchorText,
+                anchorOffset: tag.anchorOffset,
+                createdAt: tag.createdAt,
+                updatedAt: tag.updatedAt,
+                bookID: tag.bookID,
+                sectionID: tag.sectionID
+            )
+        }
+        let outlineSnapshots = outlineAnchors.compactMap { anchor -> PlanningUndoDelta.OutlineSnapshot? in
+            guard anchor.sectionID == sectionID,
+                  !anchor.anchorText.isEmpty,
+                  ProseAnchorResolver.matchingOffset(
+                    anchorText: anchor.anchorText,
+                    anchorOffset: anchor.anchorOffset,
+                    in: prose
+                  ) == nil,
+                  let item = outlineItems.first(where: { $0.id == anchor.outlineItemID }) else { return nil }
+            return .init(
+                anchorID: anchor.id,
+                outlineItemID: anchor.outlineItemID,
+                bookID: anchor.bookID,
+                sectionID: anchor.sectionID,
+                anchorText: anchor.anchorText,
+                anchorOffset: anchor.anchorOffset,
+                anchorCreatedAt: anchor.createdAt,
+                anchorUpdatedAt: anchor.updatedAt,
+                itemStatus: item.status
+            )
+        }
+        return PlanningUndoDelta(sectionID: sectionID, tags: tagSnapshots, outlines: outlineSnapshots)
+    }
+
+    /// Reconciles planning companions after prose is saved. Missing lightweight
+    /// tags are removed, while outline items retain their Section and degrade to
+    /// a draft anchored at its start. Both changes share one store transaction.
+    @discardableResult
+    func reconcileSavedProse(sectionID: UUID, prose: String) throws -> Bool {
+        let delta = pendingPlanningUndoDelta(sectionID: sectionID, prose: prose)
+        guard delta.hasChanges else { return false }
+        try applyPlanningUndoDelta(delta, restoring: false)
+        return true
+    }
+
+    func applyPlanningUndoDelta(_ delta: PlanningUndoDelta, restoring: Bool) throws {
+        do {
+            if restoring {
+                for snapshot in delta.tags where !tags.contains(where: { $0.id == snapshot.id }) {
+                    let tag = StoryTag(
+                        id: snapshot.id,
+                        title: snapshot.title,
+                        kind: snapshot.kind,
+                        anchorText: snapshot.anchorText,
+                        anchorOffset: snapshot.anchorOffset,
+                        bookID: snapshot.bookID,
+                        sectionID: snapshot.sectionID
+                    )
+                    tag.createdAt = snapshot.createdAt
+                    tag.updatedAt = snapshot.updatedAt
+                    context.insert(tag)
+                }
+                for snapshot in delta.outlines {
+                    let anchor: OutlineItemAnchor
+                    if let existing = outlineAnchors.first(where: { $0.id == snapshot.anchorID }) {
+                        anchor = existing
+                    } else {
+                        anchor = OutlineItemAnchor(
+                            id: snapshot.anchorID,
+                            outlineItemID: snapshot.outlineItemID,
+                            bookID: snapshot.bookID,
+                            sectionID: snapshot.sectionID,
+                            anchorText: snapshot.anchorText,
+                            anchorOffset: snapshot.anchorOffset,
+                            createdAt: snapshot.anchorCreatedAt,
+                            updatedAt: snapshot.anchorUpdatedAt
+                        )
+                        context.insert(anchor)
+                    }
+                    anchor.anchorText = snapshot.anchorText
+                    anchor.anchorOffset = snapshot.anchorOffset
+                    anchor.updatedAt = snapshot.anchorUpdatedAt
+                    outlineItems.first(where: { $0.id == snapshot.outlineItemID })?.status = snapshot.itemStatus
+                }
+            } else {
+                for snapshot in delta.tags {
+                    if let tag = tags.first(where: { $0.id == snapshot.id }) { context.delete(tag) }
+                }
+                let now = Date()
+                for snapshot in delta.outlines {
+                    if let anchor = outlineAnchors.first(where: { $0.id == snapshot.anchorID }) {
+                        anchor.anchorText = ""
+                        anchor.anchorOffset = 0
+                        anchor.updatedAt = now
+                    }
+                    outlineItems.first(where: { $0.id == snapshot.outlineItemID })?.status = .draft
+                }
+            }
+            try context.save()
+            try reload()
+        } catch {
+            context.rollback()
+            try reload()
+            throw error
+        }
+    }
+
+    /// Compatibility entry point for callers that only care about outline
+    /// degradation. Reconciliation now also removes missing lightweight tags.
+    @discardableResult
+    func degradeMissingOutlineAnchors(sectionID: UUID, prose: String) throws -> Bool {
+        try reconcileSavedProse(sectionID: sectionID, prose: prose)
     }
 
     @discardableResult

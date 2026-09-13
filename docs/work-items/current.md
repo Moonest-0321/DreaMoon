@@ -121,6 +121,327 @@
 - U：approved。使用者於 2026-09-11 回覆「UI 確認，請提出實作與測試計畫」。
 - I：approved。使用者於 2026-09-11 回覆「計畫確認，開始實作與測試」。
 
+## 新工作單元：V4.4.81 伏筆／修改標記失效清理
+
+> 狀態：共同 Undo／Redo 已實作並通過自動驗證（R／U／I 已批准）
+
+### 工作單元
+
+- 目標：避免伏筆與修改標記的原文字消失後，resolver 退回舊 offset 而將附近無關文字誤顯示為標記。
+- 完成條件：格式或同節位置改變時標記仍跟隨原文字；原文字完全不存在時刪除對應 `StoryTag`，且不影響正文、大綱、每節註記或其他標記。
+- 相關範圍：`ProseAnchorResolver`、`StoryPlanningStore` 的 StoryTag 清理、正文成功保存後的附屬資料同步、標記刷新、測試與正式文件。
+- 非目標：不把伏筆／修改轉為草稿，不跨節搜尋、不加入不確定狀態、重新定位、Undo／垃圾桶、schema／migration 或大綱項目規則變更。
+
+### 需求理解（R，已確認）
+
+1. `StoryTagKind.foreshadowing`（伏筆）與 `.revision`（修改）都使用相同規則。
+2. 只要原 `anchorText` 在原節次正文中仍有候選，就依現有規則選擇最接近舊 offset 的位置；字型、顏色、粗體等格式不影響判斷。
+3. 原 `anchorText` 在該節次完全找不到時，直接刪除該筆 `StoryTag`，不保留草稿或失效提示。
+4. 若同一節有多筆標記，只刪除各自原文字已消失者；仍有效的伏筆、修改及大綱錨點保持不變。
+5. 清理只在正文主 store 成功保存、且不在輸入法組字時執行。StoryPlanning store 刪除失敗時，不把已保存的正文誤報為失敗；保留舊標記並於下次正文保存重試。
+6. 清理成功後立即刷新目前編輯器標記，避免舊背景色殘留；重新開啟書籍後刪除結果保持一致。
+
+### 驗收條件
+
+- 在標記文字前插入或刪除其他文字，伏筆／修改仍定位原文字，資料筆數不變。
+- 只改格式不會刪除標記。
+- 完全刪除標記文字並完成自動儲存後，對應 StoryTag 記錄及畫面標記消失。
+- 同節其他有效標記、OutlineItemAnchor、正文內容與每節註記保持不變。
+- 重複執行清理不會誤刪或產生資料；失敗可安全重試。
+
+### R 批准狀態
+
+- R：approved。使用者於 2026-09-13 回覆「R」。
+
+### UI／互動提案（U，待確認）
+
+- 不新增按鈕、警告、toast、刪除動畫、歷史列表或重新定位入口。
+- 作者刪除完整錨定文字時，編輯期間維持一般文字編輯體驗；正文成功自動儲存後，該伏筆／修改的背景標記自然消失。
+- 編輯器保存狀態只代表正文保存：主 store 保存成功即顯示「已儲存」。StoryPlanning 清理失敗不顯示「儲存失敗」，也不打斷寫作；下次保存自動重試。
+- 清理成功後，同一節其他伏筆、修改、大綱與角色連結標記立即重繪，不整頁閃爍、不改游標位置。
+- 右鍵選單不變：作者仍可重新反白文字建立新的伏筆或修改標記；被清除的標記不提供復原入口。
+- 空白節次、一次刪除多個標記或整節全選刪除時，使用同一安靜行為，不逐筆確認。
+
+#### 狀態示意
+
+```text
+刪除前：  他握緊了[銀色戒指]，沒有回答。   （伏筆標記）
+編輯中：  他握緊了，沒有回答。             儲存中…
+儲存後：  他握緊了，沒有回答。             已儲存
+           ↑ 不留下標記、警告或草稿
+```
+
+### U 批准狀態
+
+- U：approved。使用者於 2026-09-13 回覆「U」。
+
+### 實作與測試計畫（I，待確認）
+
+#### 受影響範圍與資料相容性
+
+- 擴充既有正文保存後的 StoryPlanning reconcile，不新增另一個 View 狀態或背景工作。
+- 不新增 schema／migration。失效伏筆與修改直接刪除既有 `StoryTag`；大綱錨點仍沿用已完成的節首降級規則。
+- 不修改 `StoryTagKind`、正文 attributed content、ChapterAnnotation、OutlineItem 或時間軸 metadata。
+
+#### 工作拆解
+
+1. 將目前 `degradeMissingOutlineAnchors(sectionID:prose:)` 收斂為節次保存後的統一 reconcile：先以 `ProseAnchorResolver.matchingOffset` 判斷該節伏筆／修改與非空大綱 anchor 是否仍有候選。
+2. 同一次 StoryPlanning transaction 中刪除所有失效 `StoryTag`，並完成失效大綱 anchor 的節首／草稿降級；成功後只 reload 一次。任何操作失敗都 rollback／reload，不留下部分刪除。
+3. 回傳是否有資料變更。`RichEditorView` 仍只在正文主 store 保存成功且沒有輸入法組字時呼叫；有變更才重繪標記並送出既有 planning marker 通知。
+4. StoryPlanning reconcile 失敗只記錄診斷，下次正文保存重試；正文保存狀態仍顯示「已儲存」。不新增 UI。
+5. 更新故事規劃規格、資料模型、測試、專案狀態與交接；明確區分「StoryTag 消失即刪除」與「OutlineItem 保留並降級草稿」。
+
+#### 自動測試
+
+- 伏筆與修改原文字仍存在但 offset 改變：兩筆都保留，resolver 指向新位置。
+- 僅修改格式：plain prose 值仍相同，標記保留。
+- 刪除伏筆、刪除修改、同時刪除多筆：只移除失效 StoryTag。
+- 混合資料：同節有效 StoryTag、失效 StoryTag、有效大綱 anchor、失效大綱 anchor 與 ChapterAnnotation；驗證各自採正確規則且互不影響。
+- 冪等性：第二次 reconcile 回傳無變更，資料數與內容不再改動。
+- rollback：以可控制的保存失敗驗證失效 tag 與大綱降級不會只完成一半；若測試容器無法可靠注入 SwiftData save error，至少以 store 操作邊界測試及現有實作結構保證單一 save。
+- 完整 macOS 測試、Debug／無簽章 Release 建置與 `git diff --check`。
+
+#### 人工 UI 驗收
+
+1. 使用隔離書籍各建立一筆伏筆與修改，在前方插入文字，確認兩種標記跟隨。
+2. 只改粗體／字型，確認標記不消失。
+3. 刪除完整標記文字，等待「已儲存」，確認標記消失、游標不跳動、同節其他標記仍在。
+4. 重開 app，確認被刪除標記沒有復活；右鍵仍可建立新標記。
+
+#### 風險與控制
+
+- **舊 offset fallback 誤當有效候選**：刪除判斷只使用可回傳 nil 的 `matchingOffset`，不使用永遠有 fallback 的 `resolvedOffset`。
+- **一次刪多筆造成陣列／store 不一致**：所有刪除與大綱降級共用一次 save，成功後 reload，失敗 rollback 後 reload。
+- **誤刪大綱或每節註記**：查詢只限同 section 的 `StoryTag`，混合資料測試驗證 OutlineItem／ChapterAnnotation 保留。
+- **輸入中的短暫缺字被刪除**：只在 debounce 正文保存成功且 `hasMarkedText == false` 時 reconcile，沿用目前 0.5 秒保存邊界。
+
+### I 批准與實作結果
+
+- I：approved。使用者於 2026-09-13 回覆「Ｉ」。
+- 既有節次保存後 reconcile 已擴充：同節失效伏筆／修改會刪除，失效大綱仍降級為原節首草稿；兩者共用一次 StoryPlanning save／reload。
+- `RichEditorView` 不新增 callback 或 UI；仍在正文成功保存且無輸入法組字時呼叫統一 reconcile，有變更才刷新標記。
+- 新增兩項測試，覆蓋有效／失效／跨節 StoryTag 隔離，以及 StoryTag、大綱、ChapterAnnotation 的混合資料規則與冪等性。
+- 2026-09-13 目標測試 46 項、完整 macOS 測試 84 項全數通過；無簽章 Release 建置及 `git diff --check` 通過。
+- 尚待以隔離書籍進行文字位移、格式修改與完整刪除的人工 UI 驗收；未操作正式使用者資料。
+
+### 新增需求：正文復原須同步恢復規劃資料（R 待確認）
+
+- 使用者於 2026-09-13 補充：若執行「復原上一步」，由該次正文變更造成的所有附屬變化也必須復原，包含大綱與標籤。
+- 已查證目前正文使用 `NSTextView`／`NSUndoManager`；StoryTag 刪除與 OutlineItemAnchor／status 更新發生在獨立 StoryPlanning store。兩者目前不是同一 undo transaction，既有實作無法僅靠文字重新比對可靠還原已刪除 tag 的 UUID、種類與原錨點。
+
+#### 建議需求範圍
+
+1. 同一個正文 Undo 必須同時恢復該次編輯造成的 StoryTag 刪除、OutlineItemAnchor 節首降級及 OutlineItem 草稿化；Redo 再次套用正文與相同附屬變化。
+2. 恢復必須保留原 UUID、標記種類、標題、anchorText／offset，以及大綱原狀態；不能重新建立語意近似但識別碼不同的資料。
+3. 範圍限於目前書籍視窗、目前編輯器 undo stack 尚存在期間。關閉書籍視窗或 app 後，不承諾跨啟動復原。
+4. 只涵蓋由正文自動 reconcile 造成的附屬變化；使用者在大綱管理、標籤管理或其他刪除確認中主動執行的刪除，仍沿用各功能現有復原規則。
+5. Undo／Redo 任一 store 保存失敗時，不能呈現正文已復原但規劃資料未復原的假成功；需保留可重試快照並顯示一致性錯誤，具體互動於 U 階段提案。
+
+#### 需要重新走批准點的原因
+
+- 先前 R／U／I 明確把標記清理定義為不提供復原；新增要求改變資料生命週期、失敗處理與編輯器 Undo 行為，不是原計畫內的小型修正。
+- 新 R 批准前保留目前已通過 84 項測試的清理實作，不繼續修改 Undo 功能程式。
+
+### 新增 R 批准狀態
+
+- R：approved。使用者於 2026-09-13 回覆「去吧」，確認採同一書籍視窗內的正文與附屬規劃共同 Undo／Redo 範圍。
+
+### Undo／Redo UI 提案（U，待確認）
+
+#### 正常操作
+
+- 不新增工具列按鈕。作者沿用 macOS 標準 `⌘Z`／`⇧⌘Z` 與「編輯 > 復原／重做」。
+- 一次 Undo 是一個完整作者動作：正文恢復，同一次編輯造成的 StoryTag 刪除、OutlineItemAnchor 節首降級與 OutlineItem 草稿化同步恢復。
+- Redo 重新套用相同正文編輯與相同附屬變化；側欄、大綱工作區與正文標記在完成後一起刷新。
+- 成功保持安靜，不顯示 toast 或逐筆清單；保存狀態短暫顯示既有「儲存中…」，完成後回到「已儲存」。游標與選取沿用 NSTextView 的標準 Undo 結果。
+- 多次 Undo 依原編輯順序逐步恢復；Undo 後開始新編輯時，依 macOS 慣例清除 Redo 分支與對應規劃快照。
+
+#### 失敗狀態
+
+- 若共同 Undo 在任一 store 保存失敗，整次 Undo 視為未完成：正文與規劃資料回到 Undo 前狀態，不留下半套結果。
+- 顯示單一 alert：
+
+```text
+無法復原這次編輯
+
+正文、大綱與標籤未變更，請再試一次。
+[系統錯誤原因]
+
+                         [好]
+```
+
+- Redo 失敗使用「無法重做這次編輯」，同樣回到 Redo 前狀態。失敗不消耗該筆 Undo／Redo，作者可重試。
+
+#### 視窗與生命週期
+
+- 關閉書籍視窗時沿用 macOS 行為清除 Undo／Redo 歷史，不另顯示提醒。
+- 切換節次或大綱工作區不清除同一書籍視窗的歷史；跨節 Undo 時自動切回受影響節次並恢復游標。
+- 不提供歷史面板、跨啟動復原、垃圾桶或可瀏覽的版本紀錄。
+
+### 新增 U 批准狀態
+
+- U：approved。使用者於 2026-09-13 回覆「U」。
+
+### 共同 Undo／Redo 實作與測試計畫（I，待確認）
+
+#### 核心設計
+
+- 新增只存在於目前書籍視窗記憶體的 `PlanningUndoSnapshot`：完整保存受影響 StoryTag，以及 OutlineItemAnchor 與 OutlineItem 的變更前／後值；快照保存原 UUID，不寫入 schema。
+- 在 `textDidChange` 當下以尚未清理的 planning 資料與目前正文判斷「這次編輯首次使哪些來源失效」。於同一個 `NSUndoManager` 編輯群組註冊規劃 inverse action，而不是等 0.5 秒自動儲存後另建一筆 Undo。
+- 同一批失效 ID 在 debounce 保存完成前只登記一次，避免連續輸入重複加入 undo action。正文保存成功後仍由 `reconcileSavedProse` 正式寫入 StoryPlanning store。
+- Undo 的 planning action 以快照恢復原 StoryTag／anchor／status；執行時向同一 undo manager 登記對稱的 redo action。Redo 以快照重新刪除 tag 並降級大綱。
+- 規劃套用成功後 reload store、重繪目前 editor 標記並發出既有 planning marker 通知；跨節 Undo 透過 EditorBridge 切換到 snapshot 的 section，再恢復 NSTextView 選取。
+
+#### 失敗與原子性
+
+- 每個共同動作保存正文 attributed content、section 字數／更新時間、游標選取，以及 planning 前後快照。
+- Undo／Redo 開始前保留操作前快照。若 planning store 保存失敗，先 rollback／reload，再以停用 undo registration 的方式還原正文、Section 與選取，重新保存主 store，最後把原 undo／redo action 放回堆疊並顯示已批准錯誤。
+- 若連主 store 回復也失敗，顯示啟動級資料一致性錯誤並停止繼續消耗 undo 歷史；不得無提示地留下半套狀態。
+- 快照只含由正文 reconcile 影響的規劃記錄，不把其他同時由使用者在大綱畫面完成的獨立修改一起覆寫。
+
+#### 工作拆解
+
+1. 定義可測試、可複製的 StoryTag／Outline anchor／item status 快照與 before／after delta；`reconcileSavedProse` 回傳 delta，不再只回傳 Bool。
+2. 在 StoryPlanningStore 實作 `applyUndoSnapshot`／`applyRedoSnapshot`，以 UUID 更新、插入或刪除精確記錄，單次 save，失敗 rollback／reload。
+3. 在 RichEditor coordinator 於文字變更事件群組登記 planning undo，管理 debounce 前去重、undo／redo 執行狀態及標記刷新，避免程式套用快照再次產生新一般編輯紀錄。
+4. 將失敗訊息傳回 SwiftUI editor，顯示「無法復原／重做這次編輯」alert；成功仍沿用既有保存狀態，不新增常駐 UI。
+5. 更新規格、資料安全說明、測試、狀態與交接。沒有 schema／migration。
+
+#### 自動測試
+
+- Delta：單一／多筆 StoryTag 刪除、大綱降級、混合變化及無變化，before／after UUID 與欄位完整。
+- Store Undo：恢復被刪除 tag 的原 UUID／種類／標題／錨點；恢復 OutlineItemAnchor 與 item 原狀態；其他資料不變。
+- Store Redo：再次精確刪除／降級；多次 Undo↔Redo 冪等且不產生副本。
+- 編輯群組：刪除最後一個匹配字元只建立一個共同 Undo；連續輸入不重複登記；Cmd-Z 一次同時恢復正文與規劃資料。
+- 分支：Undo 後新編輯清除 Redo 與對應快照；一般不影響 planning 的文字編輯維持 NSTextView 既有 undo。
+- 跨節與生命週期：切節後可復原並回到原節；關閉 editor 後不保留快照。
+- 失敗注入：planning undo／redo 保存失敗時正文回到操作前、歷史可重試；主 store 回復失敗時進入明確錯誤狀態。
+- 完整 macOS 測試、Debug／無簽章 Release 建置、`git diff --check`，以及隔離 app 的 Cmd-Z／Shift-Cmd-Z 實際操作。
+
+#### 風險與控制
+
+- **破壞 NSTextView 原生輸入合併**：規劃 action 必須加入既有 editing group，不自行在 autosave 時建立 undo group；先以小型整合測試驗證連續中文輸入與刪除的 grouping。
+- **Undo closure 不能 throw**：錯誤由 coordinator 捕捉，使用操作前快照補償，並重新登記未完成 action。
+- **SwiftData 刪除後物件失效**：快照只保存 value 與 UUID，不持有已刪除 model reference；復原時依 UUID fetch 或重建。
+- **範圍擴張成版本系統**：只保留 NSUndoManager 仍持有的記憶體快照，不寫磁碟歷史、不跨 app 啟動。
+
+### 共同 Undo／Redo I 批准與實作結果
+
+- I：approved。使用者於 2026-09-13 回覆「Ｉ」。
+- 最小 AppKit 測試證明在 `textDidChange` 登記的附屬 action 與該次 NSTextView 編輯由一次 Undo 同時執行；正式程式沿用原生 undo manager，不在 autosave 後建立第二個步驟。
+- `PlanningUndoDelta` 以 value snapshot 保存 StoryTag 完整欄位與原 UUID，以及 OutlineItemAnchor／item 原狀態；store 可精確 restore／redo，成功後單次 save／reload。
+- Editor coordinator 在原文字首次失效的編輯群組登記 planning action，debounce 完成前依 UUID 去重；成功後刷新標記與 planning 通知。
+- planning Undo／Redo 失敗時 rollback store，並在下一 runloop 反向執行文字 redo／undo，使編輯器回到操作前，再顯示錯誤；補償期間不登記新的 planning action。
+- 新增兩項測試：AppKit 單步 grouping，以及 planning snapshot 保留 UUID／欄位的 Undo→Redo 往返。2026-09-13 完整 macOS 測試 86 項全數通過，無簽章 Release 建置與 `git diff --check` 通過。
+- 尚未完成隔離 app 的實際 Cmd-Z／Shift-Cmd-Z、跨節游標與失敗注入 UI 驗收；完成前不將 V4.4.81 標記為人工驗收完成。
+
+## 新工作單元：正文錨點消失後轉為草稿
+
+> 狀態：實作與自動驗證完成（R／U／I 已批准）
+
+### 已決定
+
+- 不新增「位置可能不準確」狀態：錨定文字仍存在時，沿用目前以原文字及最接近舊 offset 解析位置的規則。
+- 格式改變、同節內前後增刪文字或卷節重新排序，只要仍能找到錨定文字，就保持正文來源與目前狀態。
+- 錨定文字完全找不到時，不刪除作者的大綱內容，也不移入待安置；保留原 `sectionID`，將錨點改為該節次開頭，並將 `OutlineItem.status` 改為 `.draft`。
+- 退回節次開頭後仍屬正文來源，可由「回到正文」跳至該節開頭；系統不跨節搜尋或猜測其他位置。
+
+### 暫定範圍
+
+- 第一版只處理 `OutlineItemAnchor` 的節次內降級定位與大綱項目狀態，不建立可信度、上下文比對、跨節全文搜尋、批次修復或獨立重新定位入口。
+- StoryTag 的伏筆／修改標記是否採相同失效清理規則，尚未納入本工作單元。
+
+### 驗收方向
+
+- 原文字仍存在時，項目維持正文來源並可正常跳轉。
+- 原文字消失後，原範圍正文標記移除；大綱項目內容、故事線、階段與原節次歸屬保留，錨點降級至該節開頭，狀態變成草稿。
+- 重複執行檢查不會重複建立資料或再次改動已轉為草稿的項目。
+
+### R 批准狀態
+
+- R：approved。使用者於 2026-09-13 回覆「繼續」，確認採用上述簡化規則並進入 UI 提案。
+
+### UI 提案（U，待確認）
+
+- 觸發時機：正文完成一次正常自動儲存後檢查該節錨點；編輯中的輸入法組字或尚未保存內容不觸發轉換。
+- 找得到錨定文字時完全沒有額外 UI，維持目前正文標記、回正文操作與狀態。
+- 找不到時不顯示 alert、toast 或「不確定」警告；原範圍正文標記在下一次刷新時消失，項目以「草稿」樣式排列在原節次欄位的開頭。
+- 卡片顯示既有三層資訊：標題／草稿／原卷與節次，不新增「原文已刪除」或「待安置」標籤。
+- 展開詳情後保留「來源：回到正文」，操作時跳到該節次開頭；不新增「重新定位」或手動安置入口。
+- 若轉換保存失敗，正文與原錨點維持原狀，沿用大綱操作錯誤呈現；不得只改畫面但未保存資料。
+
+#### 文字線框
+
+```text
+原節次欄位開頭
+┌──────────────────────┐
+│ 王城陷落              │
+│ 草稿                  │
+│ 第一卷 · 第三節        │
+└──────────────────────┘
+
+展開後
+┌──────────────────────────────┐
+│ 大綱標題：王城陷落             │
+│ 內容：……                       │
+│ 來源：[回到正文]（第三節開頭）   │
+│ 狀態：草稿                     │
+│ 階段：[第一幕 ▾]               │
+│                    [儲存]      │
+└──────────────────────────────┘
+```
+
+### U 批准狀態
+
+- U：approved。使用者於 2026-09-13 回覆「U」，並以前一則更正確認失效項目應定位至原節次開頭、改為草稿，而非進入待安置。
+
+### 實作與測試計畫（I，待確認）
+
+#### 資料表示與相容性
+
+- 不新增 schema 或 migration。失效降級沿用同一筆 `OutlineItemAnchor`：保留 `sectionID`，將 `anchorText` 清空、`anchorOffset` 設為 `0`；`OutlineItem.status` 設為 `.draft`。
+- 空 `anchorText` 在既有 resolver 中代表固定 offset，因此可穩定跳到節次開頭；項目仍是正文來源，不會套用手動安置規則。
+- 空白節次也保留 offset 0 與回正文能力；有文字時，既有草稿標記會落在第一個字元。
+
+#### 工作拆解
+
+1. 將 `ProseAnchorResolver` 擴充為能區分「找到原文字」與「沒有候選」的解析結果，同時保留既有 `resolvedOffset` 相容介面與最近舊 offset 的重複文字規則。
+2. 在 `StoryPlanningStore` 新增節次範圍的冪等降級操作：只檢查該 `sectionID` 的非空 anchor；找不到原文字時，同一次 StoryPlanning save 內更新 anchor 與 item 狀態，失敗則 rollback／reload。
+3. 在 `RichEditorView` 的正文主 store save 成功後呼叫降級操作；輸入 debounce 尚未完成、輸入法組字及主 store save 失敗時不執行。`flushPendingSave()` 沿用同一路徑。
+4. 降級成功後刷新正文標記與大綱 revision，使卡片移至原節次欄位開頭並呈現草稿。StoryPlanning save 失敗不把已成功的正文保存誤報為失敗；保留舊錨點、記錄診斷，等待下一次正文保存重試。
+5. 不修改 StoryTag 伏筆／修改標記、不新增警告、重新定位、跨節搜尋或批次維護 UI。
+
+#### 自動測試
+
+- Resolver：唯一文字位移、重複文字取最近候選、找不到候選、空錨點固定節首。
+- Store：原文字存在時資料完全不變；消失時保留 item／story line／stage／sectionID，anchor 變為空文字與 offset 0，status 變為草稿。
+- 冪等性：已降級 anchor 重跑不再更新時間或建立新資料。
+- 回歸：草稿項目仍被投影到原節次第一個位置，可回正文 offset 0；空節次不崩潰。
+- 保存邊界：模擬 StoryPlanning save 失敗時 rollback，item 與 anchor 保持原值；正文主 store save 失敗時不呼叫降級。
+- 完整 macOS 測試、Debug／無簽章 Release 建置與 `git diff --check`。
+
+#### 人工 UI 驗收
+
+1. 用隔離資料從正文建立已完成大綱，在錨定文字前增刪內容，確認仍跟隨原文字且狀態不變。
+2. 刪除整段錨定文字並等待自動儲存，確認原標記消失、卡片出現在原節次開頭且為草稿。
+3. 點擊「回到正文」，確認選取／游標落在該節開頭；重新開啟 app 後結果保持一致。
+
+#### 主要風險與控制
+
+- **正文已存、規劃 store 未存**：兩個 store 不假裝成共同交易；附屬降級失敗保留舊值並在下次保存重試，不能誤報正文保存失敗。
+- **空 anchor 被再次視為失效**：降級只處理非空 `anchorText`，確保第二次檢查沒有變化。
+- **卡片排序不在節首**：投影測試明確驗證 offset 0 在同節其他項目前。
+- **標記誤寫進正文**：保存快照仍先移除 Sailune 顯示屬性，資料中不保存背景色或標記 attribute。
+
+### I 批准與實作結果
+
+- I：approved。使用者於 2026-09-13 回覆「去吧」。
+- `ProseAnchorResolver` 已能分辨實際候選與舊 offset fallback；既有公開定位行為及重複文字最近候選規則保持不變。
+- `StoryPlanningStore.degradeMissingOutlineAnchors` 會在同一次 save 中把缺失原文的非空 anchor 降級為原節 offset 0，並將項目設為草稿；失敗時 rollback／reload，空 anchor 再次執行不變。
+- 編輯器只在正文主 store 保存成功且不在輸入法組字時執行降級；規劃 store 失敗只留下診斷並待下次保存重試，不誤報正文保存失敗。
+- 2026-09-13 目標測試 44 項與完整 macOS 測試 82 項全數通過；無簽章 Release 建置及 `git diff --check` 通過。
+- 尚未以 GUI 修改隔離測試資料；唯一剩餘驗收是實際刪除錨定文字後確認卡片、草稿樣式與回正文節首。
+
 ## 新工作單元：V4.4.8 跨資料庫刪除與修復可靠性
 
 > 狀態：實作與自動驗證完成（R／U／I 已批准）
@@ -293,6 +614,7 @@
 - 事件與書籍確認文案已依 U 提案統一；Node／Timeline 補上敘事大綱與正文保留說明。
 - 2026-09-12 完整 macOS 測試 77 項全數通過，無簽章 Release 建置與 `git diff --check` 通過；測試包含兩書隔離、Book 全範圍清理、Event 協調刪除、修復冪等、失效 OutlineItem 保留，以及 primary failure／deferred cleanup 分流。
 - 本版沒有 schema 或 migration 變更。實際刪除未對使用者正式資料執行；破壞性流程由隔離的 in-memory 自動測試驗證。
+- UI 驗收：approved。使用者於 2026-09-12 回覆「看起來沒問題」，V4.4.8 工作單元完成。
 
 ## 新工作單元：既有大綱加入時間軸與切換效能
 

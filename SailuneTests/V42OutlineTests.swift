@@ -14,6 +14,201 @@ final class V42OutlineTests: XCTestCase {
         )
     }
 
+    func testProseAnchorResolverReportsMatchesAndKeepsNearestRepeatedText() {
+        XCTAssertEqual(
+            ProseAnchorResolver.matchingOffset(anchorText: "王城", anchorOffset: 8, in: "王城陷落，稍後王城重建"),
+            7
+        )
+        XCTAssertEqual(
+            ProseAnchorResolver.matchingOffset(anchorText: "王城", anchorOffset: 0, in: "序幕之後王城陷落"),
+            4
+        )
+        XCTAssertNil(
+            ProseAnchorResolver.matchingOffset(anchorText: "王城", anchorOffset: 0, in: "港口陷落")
+        )
+        XCTAssertEqual(
+            ProseAnchorResolver.matchingOffset(anchorText: "", anchorOffset: 99, in: "任何正文"),
+            0
+        )
+    }
+
+    func testMissingProseAnchorFallsBackToSectionStartAndDraft() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let sectionID = UUID()
+        let line = try store.createStoryLine(bookID: bookID, kind: .main)
+        let stage = try store.createStage(storyLine: line, title: "第一幕")
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "王城陷落",
+            anchorText: "王城陷落",
+            anchorOffset: 6,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        try store.moveOutlineItem(item, to: stage)
+
+        XCTAssertTrue(try store.degradeMissingOutlineAnchors(sectionID: sectionID, prose: "港口恢復平靜"))
+
+        let retainedItem = try XCTUnwrap(store.items(bookID: bookID).first { $0.id == item.id })
+        let retainedAnchor = try XCTUnwrap(store.anchor(outlineItemID: item.id))
+        XCTAssertEqual(retainedItem.status, .draft)
+        XCTAssertEqual(retainedItem.storyLineID, line.id)
+        XCTAssertEqual(retainedItem.stageID, stage.id)
+        XCTAssertEqual(retainedAnchor.sectionID, sectionID)
+        XCTAssertEqual(retainedAnchor.anchorText, "")
+        XCTAssertEqual(retainedAnchor.anchorOffset, 0)
+        XCTAssertEqual(retainedAnchor.resolvedOffset(in: "新正文"), 0)
+        XCTAssertFalse(try store.degradeMissingOutlineAnchors(sectionID: sectionID, prose: "新正文"))
+    }
+
+    func testExistingProseAnchorRemainsUnchanged() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "王城陷落",
+            anchorText: "王城陷落",
+            anchorOffset: 0,
+            bookID: UUID(),
+            sectionID: UUID()
+        )
+        let anchor = try XCTUnwrap(store.anchor(outlineItemID: item.id))
+        let originalUpdatedAt = anchor.updatedAt
+
+        XCTAssertFalse(try store.degradeMissingOutlineAnchors(
+            sectionID: anchor.sectionID,
+            prose: "前言。王城陷落。"
+        ))
+        XCTAssertEqual(anchor.anchorText, "王城陷落")
+        XCTAssertEqual(anchor.anchorOffset, 0)
+        XCTAssertEqual(anchor.updatedAt, originalUpdatedAt)
+        XCTAssertEqual(item.status, .occurred)
+    }
+
+    func testSavedProseRemovesOnlyMissingForeshadowingAndRevisionTags() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let sectionID = UUID()
+        let retainedForeshadowing = store.createTag(
+            title: "保留伏筆",
+            kind: .foreshadowing,
+            anchorText: "銀色戒指",
+            anchorOffset: 20,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let removedForeshadowing = store.createTag(
+            title: "刪除伏筆",
+            kind: .foreshadowing,
+            anchorText: "黑色鑰匙",
+            anchorOffset: 4,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let removedRevision = store.createTag(
+            title: "刪除修改",
+            kind: .revision,
+            anchorText: "需要重寫",
+            anchorOffset: 8,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let otherSectionRevision = store.createTag(
+            title: "其他節修改",
+            kind: .revision,
+            anchorText: "不存在也保留",
+            anchorOffset: 0,
+            bookID: bookID,
+            sectionID: UUID()
+        )
+
+        XCTAssertTrue(try store.reconcileSavedProse(sectionID: sectionID, prose: "前文新增。銀色戒指仍在。"))
+
+        XCTAssertEqual(Set(store.tags.map(\.id)), Set([retainedForeshadowing.id, otherSectionRevision.id]))
+        XCTAssertFalse(store.tags.contains { $0.id == removedForeshadowing.id })
+        XCTAssertFalse(store.tags.contains { $0.id == removedRevision.id })
+        XCTAssertEqual(retainedForeshadowing.resolvedOffset(in: "前文新增。銀色戒指仍在。"), 5)
+        XCTAssertFalse(try store.reconcileSavedProse(sectionID: sectionID, prose: "前文新增。銀色戒指仍在。"))
+    }
+
+    func testSavedProseDeletesMissingTagAndDegradesOutlineInOneReconcile() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let sectionID = UUID()
+        let annotation = store.ensureAnnotation(sectionID: sectionID, bookID: bookID)
+        annotation.plannedOutline = "保留每節註記"
+        try store.saveChanges()
+        let tag = store.createTag(
+            title: "消失的修改",
+            kind: .revision,
+            anchorText: "舊段落",
+            anchorOffset: 0,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "保留的大綱",
+            anchorText: "舊事件",
+            anchorOffset: 4,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+
+        XCTAssertTrue(try store.reconcileSavedProse(sectionID: sectionID, prose: "全新正文"))
+
+        XCTAssertFalse(store.tags.contains { $0.id == tag.id })
+        XCTAssertEqual(store.items(bookID: bookID).first { $0.id == item.id }?.status, .draft)
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.sectionID, sectionID)
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorText, "")
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorOffset, 0)
+        XCTAssertEqual(store.annotation(sectionID: sectionID)?.plannedOutline, "保留每節註記")
+    }
+
+    func testPlanningUndoDeltaRestoresOriginalIDsAndSupportsRedo() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let sectionID = UUID()
+        let tag = store.createTag(
+            title: "伏筆",
+            kind: .foreshadowing,
+            anchorText: "銀色戒指",
+            anchorOffset: 3,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let item = try store.createOutlineItemFromProse(
+            kind: .main,
+            title: "王城陷落",
+            anchorText: "王城陷落",
+            anchorOffset: 9,
+            bookID: bookID,
+            sectionID: sectionID
+        )
+        let delta = store.pendingPlanningUndoDelta(sectionID: sectionID, prose: "全新正文")
+        XCTAssertEqual(delta.affectedIDs, Set([tag.id, item.id]))
+
+        try store.applyPlanningUndoDelta(delta, restoring: false)
+        XCTAssertNil(store.tags.first { $0.id == tag.id })
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorText, "")
+        XCTAssertEqual(store.items(bookID: bookID).first { $0.id == item.id }?.status, .draft)
+
+        try store.applyPlanningUndoDelta(delta, restoring: true)
+        let restoredTag = try XCTUnwrap(store.tags.first { $0.id == tag.id })
+        XCTAssertEqual(restoredTag.kind, .foreshadowing)
+        XCTAssertEqual(restoredTag.title, "伏筆")
+        XCTAssertEqual(restoredTag.anchorText, "銀色戒指")
+        XCTAssertEqual(restoredTag.anchorOffset, 3)
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorText, "王城陷落")
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorOffset, 9)
+        XCTAssertEqual(store.items(bookID: bookID).first { $0.id == item.id }?.status, .occurred)
+
+        try store.applyPlanningUndoDelta(delta, restoring: false)
+        XCTAssertNil(store.tags.first { $0.id == tag.id })
+        XCTAssertEqual(store.anchor(outlineItemID: item.id)?.anchorOffset, 0)
+        XCTAssertEqual(store.items(bookID: bookID).first { $0.id == item.id }?.status, .draft)
+    }
+
     func testBookBackgroundPersistsAndEnsureIsIdempotent() throws {
         let container = try makePlanningContainer()
         let store = try StoryPlanningStore(container: container)

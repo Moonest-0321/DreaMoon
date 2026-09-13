@@ -43,3 +43,14 @@
 - `V42OutlineTests` 覆蓋 Book 規劃資料完整清除、兩書隔離、缺 Book／Event 修復、重複修復，以及缺 OutlineItem 來源的保留語意。
 - `ItemV3Tests` 覆蓋 Event 主資料與 metadata 協調刪除、Book 跨 store 清理，以及 primary failure 與 deferred cleanup 的結果分流。
 - 2026-09-12 執行完整 macOS 測試共 77 項，全數通過；測試均使用隔離／in-memory store，未操作正式使用者資料。
+
+## 正文錨點降級自動驗收
+
+- `V42OutlineTests` 覆蓋唯一文字位移、重複文字最近候選、找不到候選、空錨點節首語意、原文字存在時不改資料，以及失效後保留項目／故事線／階段／節次並轉為草稿。
+- 2026-09-13 完整 macOS 測試共 82 項全數通過；無簽章 Release 建置及 `git diff --check` 通過。
+
+## V4.4.81 伏筆／修改失效清理
+
+- `V42OutlineTests` 新增同節有效／失效與跨節 StoryTag 隔離，以及 StoryTag 刪除、大綱節首草稿降級、ChapterAnnotation 保留的混合 reconcile 測試。
+- 2026-09-13 目標測試 46 項與完整 macOS 測試 84 項全數通過；無簽章 Release 建置及 `git diff --check` 通過。
+- 共同 Undo 新增 AppKit grouping 驗證，以及保留原 UUID／欄位的 planning snapshot Undo→Redo 往返測試；2026-09-13 完整 macOS 測試增至 86 項，全數通過，無簽章 Release 建置通過。

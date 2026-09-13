@@ -19,6 +19,7 @@ Pods/
 Icon
 ._*
 .tmp.driveupload/
+.tmp.drivedownload/
 
 # 隱私與敏感金鑰檔
 *.key

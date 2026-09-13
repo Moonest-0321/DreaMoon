@@ -32,6 +32,30 @@
 - 後續語言診斷：使用者的整體 macOS 已是中文，但 Apple 寫作工具面板仍顯示英文。建置產物實際為 `CFBundleDevelopmentRegion = en`，專案也只登記 `en`／`Base`；已將 App 開發語言改為 `zh-Hant` 並加入 bundle 語言回歸測試。下一步須重建後確認 Info.plist 與實際系統面板。
 - 語言修正驗證：完整 74 項測試、Debug、無簽章 Release 與 diff 檢查通過；兩種建置產物皆為 `CFBundleDevelopmentRegion = zh-Hant`。新 Debug 驗收版為 `/tmp/DreaMoonV449Language/Build/Products/Debug/Sailune.app`；仍待使用者確認 Apple 寫作工具面板已改為繁體中文。
 
+## V4.4.81 伏筆／修改標記失效清理
+
+- 使用者將下一工作命名為 V4.4.81。原文字仍存在時伏筆／修改沿用最近舊 offset 定位；完全消失時直接刪除 StoryTag，不建立草稿、不影響正文或其他規劃資料。
+- R／U／I 已於 2026-09-13 批准並完成實作。統一節次 reconcile 會在同一次 StoryPlanning save 中刪除失效伏筆／修改，並將失效大綱降級為原節首草稿；成功後只 reload／刷新一次。
+- 文字格式或同節位置改變仍保留標記；刪除只以 `matchingOffset == nil` 判斷，不使用舊 offset fallback。其他節 StoryTag、有效標記與 ChapterAnnotation 不受影響。
+- 2026-09-13 目標測試 47 項、完整 86 項 macOS 測試、無簽章 Release 建置與 `git diff --check` 通過；沒有 schema／migration 變更。
+- 使用者新增要求：正文「復原上一步」時，由該次編輯造成的 StoryTag 刪除與大綱錨點／狀態降級也必須一起復原；Redo 亦需一致。現有 NSTextView undo 與獨立 StoryPlanning store 並非共同 transaction，目前實作尚未滿足此要求。
+- 新增 R 已於 2026-09-13 批准。U 提案沿用標準 ⌘Z／⇧⌘Z：正文、StoryTag 與 OutlineItem anchor／status 作為單一作者動作共同復原／重做，成功保持安靜並同步刷新。
+- 若任一 store 失敗，整次 Undo／Redo 回到操作前狀態、顯示單一錯誤且不消耗歷史；關閉書籍清除歷史，切換節次不清除。U 已於 2026-09-13 批准。
+- I 已批准並完成：`PlanningUndoDelta` 使用純值與原 UUID，在造成失效的同一次 NSTextView editing group 登記 inverse action；store 可精確 restore／redo。AppKit 單步 grouping 與 planning Undo→Redo 測試均通過。
+- planning 套用失敗時 rollback，並在下一 runloop 反向執行文字 redo／undo 補償後顯示錯誤；此極端路徑尚缺可重現的 UI 失敗注入驗收。
+- 唯一下一步：以隔離書籍實測單次 ⌘Z／⇧⌘Z、跨節游標、連續中文輸入及失敗 alert；正式使用者資料不得用於破壞性測試。
+
+## 正文錨點失效：新工作單元起點
+
+- V4.4.8 已由使用者確認完成。下一項聚焦原先討論的「不確定錨點」，但使用者決定不建立不確定狀態或重新定位入口。
+- 已決定：能找到錨定文字就沿用現有最近 offset 定位；完全找不到時保留原 `sectionID`，將錨點降級至該節次開頭，保留 `OutlineItem` 並改為 `.draft`，不進待安置。
+- 暫不做可信度、上下文錨點、跨節搜尋、批次修復或自動猜測位置；StoryTag 伏筆／修改是否同步清理仍待後續決定。
+- R／U／I 已批准並完成實作。正文成功保存後，非空錨定文字若完全找不到，會保留同一 anchor 的 `sectionID`、將文字清空及 offset 設為 0，項目改為草稿；不進待安置，仍可回原節開頭。
+- 規劃 store 降級失敗不會把已保存的正文誤報為失敗，舊錨點保留並待下次保存重試。StoryTag 伏筆／修改不在本輪範圍，沒有 schema 或 migration 變更。
+- 2026-09-13 目標測試 44 項、完整 82 項 macOS 測試、無簽章 Release 建置與 `git diff --check` 全數通過。
+- 本輪修改範圍：`StoryTag.swift`、`RichEditorView.swift`、`EditorWorkspaceView.swift`、`V42OutlineTests.swift` 及對應規格／狀態文件；原有 V4.4.8／V4.4.9 修改均保留。
+- 唯一下一步：以隔離資料刪除正文錨定文字，驗收卡片位於原節開頭、草稿狀態與回正文 offset 0；正式使用者資料不得用於破壞性測試。
+
 ## V4.4.8 設計起點：跨資料庫刪除與修復可靠性
 
 - 使用者要求先規劃先前盤點的第三項：大綱／世界時間軸跨主資料庫與 StoryPlanning store 的刪除、失敗收斂與修復。
@@ -51,7 +75,8 @@
 - 主資料失敗與附屬清理延後已有不同結果：前者 rollback 並向作者顯示內容仍完整；後者保留診斷並由冪等修復重試，不把已完成刪除誤報為失敗。
 - 2026-09-12 以 `/tmp/DreaMoonV448` 執行完整 macOS 測試，77 項全數通過；以 `/tmp/DreaMoonV448ReleaseFull` 完成無簽章 Release 建置，`git diff --check` 通過。本版沒有 schema／migration 變更，也未對正式使用者資料執行實際刪除。
 - 本工作修改範圍：`ContentView.swift`、`PersistentStoreRepair.swift`、`SailuneApp.swift`、`StoryTag.swift`、`TimelineViews.swift`、兩份測試與 V4.4.8 正式文件。工作樹原有 V4.4.9 的專案設定、`RichEditorView.swift`、編輯器規格與相關測試修改均保留。
-- 唯一下一步：以隔離測試資料做 Event／Node／Timeline／Book 刪除確認文案與失敗畫面的人工 UI 冒煙；不得以正式使用者書籍測試破壞性操作。
+- 使用者於 2026-09-12 回覆「看起來沒問題」，V4.4.8 視為 UI 驗收通過，工作完成。
+- 唯一下一步：將「不確定錨點」狀態與重新定位入口收斂為小型互動原型；先驗證作者能否理解與完成修正，不預先擴充資料模型或自動修復演算法。
 
 ## 新工作單元檢查點
 

@@ -35,6 +35,8 @@
 - `sortOrder` 只負責同一父層內的顯示排序，不應被當作永久識別碼。
 - ItemLevel 目前以 `itemID` 連結，不新增脆弱的 SwiftData inverse relationship。
 - `StoryTag`（僅伏筆／修改）及 `OutlineItemAnchor` 都以「原文字＋UTF-16 offset」保存來源，正文變更後以相同規則重新解析。
+- V4.4.81 在正文成功保存後，以實際文字候選檢查同節 `StoryTag`：伏筆／修改的 `anchorText` 完全找不到時刪除該 tag。此規則不同於 `OutlineItemAnchor` 的節首草稿降級，因 StoryTag 沒有需要獨立保留的大綱內容。
+- `OutlineItemAnchor.anchorText == ""` 且 `anchorOffset == 0` 表示原錨定文字已消失、來源降級至原節次開頭；此時 anchor 與 `sectionID` 保留，對應項目改為草稿。它不是手動項目或待安置資料，後續檢查也不得重複降級。
 - 副本目前等級選擇不自動改寫父物品設定。
 - V4.2 全書規劃以 `bookID` 連回主 store；`storyLineID` 與可選 `stageID` 維持故事線、階段和項目的穩定連結。
 - V4.2 至 V4.4.2a 敘事大綱與時間軸共用 `OutlineItem`；V4.4.3 時間軸接回主 store 的 Timeline／Era／Node／Event。敘事大綱仍讀寫原 OutlineItem，不自動轉換或複製資料，也不新增 schema。

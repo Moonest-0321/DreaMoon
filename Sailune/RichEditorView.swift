@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import SwiftData
+import OSLog
 
 // MARK: - 字數計算
 fileprivate func countWords(_ string: String) -> Int {
@@ -512,6 +513,10 @@ struct RichEditorView: NSViewRepresentable {
     var characterSuggestions: (() -> [CharacterMentionSuggestion])? = nil
     var onOpenSettings: ((EditorSettingsDestination) -> Void)? = nil
     var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)? = nil
+    var onContentSaved: ((UUID, String) throws -> Bool)? = nil
+    var planningUndoDelta: ((UUID, String) -> PlanningUndoDelta)? = nil
+    var applyPlanningUndoDelta: ((PlanningUndoDelta, Bool) throws -> Void)? = nil
+    var onPlanningUndoError: ((Bool, Error) -> Void)? = nil
     var storyTags: () -> [StoryTag] = { [] }
     var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -536,6 +541,10 @@ struct RichEditorView: NSViewRepresentable {
         context.coordinator.characterSuggestions = characterSuggestions
         context.coordinator.onOpenSettings = onOpenSettings
         context.coordinator.onCreateStoryTag = onCreateStoryTag
+        context.coordinator.onContentSaved = onContentSaved
+        context.coordinator.planningUndoDelta = planningUndoDelta
+        context.coordinator.applyPlanningUndoDelta = applyPlanningUndoDelta
+        context.coordinator.onPlanningUndoError = onPlanningUndoError
         context.coordinator.storyTags = storyTags
         context.coordinator.outlineMarkers = outlineMarkers
         bridge.coordinator = context.coordinator
@@ -606,6 +615,10 @@ struct RichEditorView: NSViewRepresentable {
         coord.characterSuggestions = characterSuggestions
         coord.onOpenSettings = onOpenSettings
         coord.onCreateStoryTag = onCreateStoryTag
+        coord.onContentSaved = onContentSaved
+        coord.planningUndoDelta = planningUndoDelta
+        coord.applyPlanningUndoDelta = applyPlanningUndoDelta
+        coord.onPlanningUndoError = onPlanningUndoError
         coord.storyTags = storyTags
         coord.outlineMarkers = outlineMarkers
         coord.bridge = bridge
@@ -687,12 +700,19 @@ struct RichEditorView: NSViewRepresentable {
         var characterSuggestions: (() -> [CharacterMentionSuggestion])?
         var onOpenSettings: ((EditorSettingsDestination) -> Void)?
         var onCreateStoryTag: ((StoryTagKind, String, NSRange) -> Void)?
+        var onContentSaved: ((UUID, String) throws -> Bool)?
+        var planningUndoDelta: ((UUID, String) -> PlanningUndoDelta)?
+        var applyPlanningUndoDelta: ((PlanningUndoDelta, Bool) throws -> Void)?
+        var onPlanningUndoError: ((Bool, Error) -> Void)?
         var storyTags: () -> [StoryTag] = { [] }
         var outlineMarkers: () -> [(item: OutlineItem, anchor: OutlineItemAnchor)] = { [] }
         private var lastReportedHeadingState: Bool?
         private var debounceWork: DispatchWorkItem?
         private var contentLoadWork: DispatchWorkItem?
         private var isReportingContentLoad = false
+        private var pendingPlanningUndoIDs: Set<UUID> = []
+        private var isCompensatingPlanningUndo = false
+        private let logger = Logger(subsystem: "com.MooNest.Sailune", category: "EditorAnchorRepair")
 
         func scheduleContentLoad(
             after delay: TimeInterval,
@@ -798,6 +818,7 @@ struct RichEditorView: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
+            registerPlanningUndoIfNeeded(for: tv)
             let wc = countWords(tv.string)
             onWordCountChange?(wc)
             onSaveStateChange?(.saving)
@@ -812,14 +833,72 @@ struct RichEditorView: NSViewRepresentable {
                 sec.volume?.book?.updatedAt = Date()
                 do {
                     if let context = sec.modelContext { try context.save() }
-                    self.lastCommitted = snapshot
-                    self.onSaveStateChange?(.saved)
                 } catch {
                     self.onSaveStateChange?(.failed)
+                    return
                 }
+                do {
+                    if !tv.hasMarkedText(),
+                       try self.onContentSaved?(sec.id, tv.string) == true {
+                        self.pendingPlanningUndoIDs.removeAll()
+                        self.applyStoryTagMarkers(to: tv)
+                        NotificationCenter.default.post(name: .sailunePlanningMarkersChanged, object: sec.id)
+                    }
+                } catch {
+                    self.logger.error("正文已儲存，但大綱錨點降級待下次重試：\(error.localizedDescription, privacy: .public)")
+                }
+                self.lastCommitted = snapshot
+                self.onSaveStateChange?(.saved)
             }
             debounceWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        }
+
+        private func registerPlanningUndoIfNeeded(for textView: NSTextView) {
+            guard !isCompensatingPlanningUndo,
+                  !textView.hasMarkedText(),
+                  let sectionID = section?.id,
+                  let delta = planningUndoDelta?(sectionID, textView.string),
+                  delta.hasChanges,
+                  delta.affectedIDs.isDisjoint(with: pendingPlanningUndoIDs),
+                  let undoManager = textView.undoManager else { return }
+            pendingPlanningUndoIDs.formUnion(delta.affectedIDs)
+            undoManager.registerUndo(withTarget: self) { coordinator in
+                coordinator.performPlanningUndo(delta, restoring: true)
+            }
+            undoManager.setActionName("編輯正文")
+        }
+
+        private func performPlanningUndo(_ delta: PlanningUndoDelta, restoring: Bool) {
+            do {
+                try applyPlanningUndoDelta?(delta, restoring)
+                pendingPlanningUndoIDs.removeAll()
+                if let undoManager = textView?.undoManager {
+                    undoManager.registerUndo(withTarget: self) { coordinator in
+                        coordinator.performPlanningUndo(delta, restoring: !restoring)
+                    }
+                    undoManager.setActionName(restoring ? "編輯正文" : "復原編輯正文")
+                }
+                if let textView { applyStoryTagMarkers(to: textView) }
+                NotificationCenter.default.post(name: .sailunePlanningMarkersChanged, object: delta.sectionID)
+            } catch {
+                logger.error("規劃資料\(restoring ? "復原" : "重做")失敗：\(error.localizedDescription, privacy: .public)")
+                guard let undoManager = textView?.undoManager else {
+                    onPlanningUndoError?(restoring, error)
+                    return
+                }
+                isCompensatingPlanningUndo = true
+                DispatchQueue.main.async { [weak self, weak undoManager] in
+                    guard let self, let undoManager else { return }
+                    if restoring, undoManager.canRedo {
+                        undoManager.redo()
+                    } else if !restoring, undoManager.canUndo {
+                        undoManager.undo()
+                    }
+                    self.isCompensatingPlanningUndo = false
+                    self.onPlanningUndoError?(restoring, error)
+                }
+            }
         }
         func flushPendingSave() {
             debounceWork?.perform()

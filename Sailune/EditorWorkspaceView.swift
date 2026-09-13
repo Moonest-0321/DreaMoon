@@ -812,6 +812,7 @@ struct EditorCenterView: View {
     @AppStorage("sailune.showCharacterSelectionInfo") private var showCharacterSelectionInfo = true
     @State private var showingInlineAutosaveHint = false
     @State private var activeAnnotation: ChapterAnnotation?
+    @State private var planningUndoError: String?
     @FocusState private var titleFieldFocused: Bool
     @Query(sort: \Character.sortOrder) private var allCharacters: [Character]
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
@@ -1045,6 +1046,21 @@ struct EditorCenterView: View {
                             }
                             bridge.reloadVisibleContent()
                         },
+                        onContentSaved: { sectionID, prose in
+                            try planningStore.reconcileSavedProse(
+                                sectionID: sectionID,
+                                prose: prose
+                            )
+                        },
+                        planningUndoDelta: { sectionID, prose in
+                            planningStore.pendingPlanningUndoDelta(sectionID: sectionID, prose: prose)
+                        },
+                        applyPlanningUndoDelta: { delta, restoring in
+                            try planningStore.applyPlanningUndoDelta(delta, restoring: restoring)
+                        },
+                        onPlanningUndoError: { restoring, error in
+                            planningUndoError = "\(restoring ? "正文、大綱與標籤未能完整復原" : "正文、大綱與標籤未能完整重做")。\n\n\(error.localizedDescription)"
+                        },
                         storyTags: { planningStore.tags(sectionID: section.id) },
                         outlineMarkers: { planningStore.outlineMarkers(sectionID: section.id) }
                     )
@@ -1087,6 +1103,14 @@ struct EditorCenterView: View {
             }
         }
         .background(Color.appBackground)
+        .alert("無法完成這次編輯", isPresented: Binding(
+            get: { planningUndoError != nil },
+            set: { if !$0 { planningUndoError = nil } }
+        )) {
+            Button("好") { planningUndoError = nil }
+        } message: {
+            Text(planningUndoError ?? "請再試一次。")
+        }
         .onAppear {
             liveWordCount = section?.wordCount ?? 0
             if !hasShownInlineAutosaveHint {
