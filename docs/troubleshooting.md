@@ -93,7 +93,7 @@ External macro implementation type 'SwiftDataMacros.PersistentModelMacro' could 
 
 ### 目前限制
 
-TXT 匯出目前寫入使用者 Downloads；這是現行實作，不是跨環境保證。
+TXT／EPUB 匯出目前寫死 `/Users/hsuchengyu/Downloads`；這只適用開發者帳號，不是跨環境保證。其他帳號失敗時不要把它誤判為書籍內容損壞。
 
 ### 排查方式
 
@@ -126,4 +126,3 @@ TXT 匯出目前寫入使用者 Downloads；這是現行實作，不是跨環境
 - 完整錯誤訊息或畫面文字。
 - 是否能在備份資料或全新資料庫重現。
 - 是否涉及多 store、遷移、刪除或匯出。
-

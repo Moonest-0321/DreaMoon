@@ -6,6 +6,7 @@ import AppKit
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(ItemCopyStore.self) private var copyStore
+    @Environment(V5SettingsStore.self) private var settingsStore
     @Environment(StoryPlanningStore.self) private var planningStore
     @Query(sort: \Book.updatedAt, order: .reverse) private var books: [Book]
     @Query private var profiles: [AuthorProfile]
@@ -176,7 +177,8 @@ struct ContentView: View {
                 book,
                 in: modelContext,
                 copyStore: copyStore,
-                planningStore: planningStore
+                planningStore: planningStore,
+                settingsStore: settingsStore
             )
         } catch {
             bookDeletionError = "無法刪除《\(request.title)》，內容仍完整保留。\n\n\(error.localizedDescription)"

@@ -339,7 +339,6 @@ enum PersistentModelDeletion {
             .forEach(context.delete)
         try context.fetch(FetchDescriptor<Organization>(predicate: #Predicate { $0.book?.id == bookID }))
             .forEach(context.delete)
-
         context.delete(book)
         try context.save()
         for itemID in itemIDs { copyStore?.deleteCopies(itemID: itemID) }
@@ -540,7 +539,8 @@ enum CrossStoreDeletionCoordinator {
         _ book: Book,
         in context: ModelContext,
         copyStore: ItemCopyStore?,
-        planningStore: StoryPlanningStore
+        planningStore: StoryPlanningStore,
+        settingsStore: V5SettingsStore? = nil
     ) throws -> CrossStoreDeletionOutcome {
         let bookID = book.id
         try performPrimary(in: context) {
@@ -550,6 +550,10 @@ enum CrossStoreDeletionCoordinator {
         if let error = performDeferredCleanup("書籍 \(bookID) 故事規劃資料", cleanup: {
             try planningStore.deletePlanningData(bookID: bookID)
         }) { errors.append(error) }
+        if let settingsStore,
+           let error = performDeferredCleanup("書籍 \(bookID) V5 設定集資料", cleanup: {
+               try settingsStore.deleteBookData(bookID: bookID)
+           }) { errors.append(error) }
         if let error = performDeferredCleanup("書籍 \(bookID) 封面", cleanup: {
             try BookCoverStore.removeCover(forID: bookID)
         }) { errors.append(error) }

@@ -192,6 +192,7 @@ final class StoryPlanningStore {
     private(set) var stageStartDetails: [OutlineStageStartDetail] = []
     private(set) var itemPlacements: [OutlineItemPlacement] = []
     private(set) var timelineEventCardMetadata: [TimelineEventCardMetadata] = []
+    private(set) var planningRecordMetadata: [PlanningRecordMetadata] = []
 
     init(container: ModelContainer) throws {
         self.container = container
@@ -213,6 +214,7 @@ final class StoryPlanningStore {
         stageStartDetails = try context.fetch(FetchDescriptor<OutlineStageStartDetail>())
         itemPlacements = try context.fetch(FetchDescriptor<OutlineItemPlacement>())
         timelineEventCardMetadata = try context.fetch(FetchDescriptor<TimelineEventCardMetadata>())
+        planningRecordMetadata = try context.fetch(FetchDescriptor<PlanningRecordMetadata>())
     }
 
     func tags(bookID: UUID) -> [StoryTag] { tags.filter { $0.bookID == bookID } }
@@ -640,6 +642,81 @@ final class StoryPlanningStore {
         timelineEventCardMetadata.first { $0.eventID == eventID }
     }
 
+    func recordMetadata(sourceKind: PlanningRecordSourceKind, sourceID: UUID) -> PlanningRecordMetadata? {
+        let key = sourceKind.sourceKey(id: sourceID)
+        return planningRecordMetadata.first { $0.sourceKey == key }
+    }
+
+    @discardableResult
+    func setRecordPlacement(
+        sourceKind: PlanningRecordSourceKind,
+        sourceID: UUID,
+        bookID: UUID,
+        storyLineID: UUID?,
+        stageID: UUID?
+    ) throws -> PlanningRecordMetadata {
+        let validLine = storyLineID.flatMap { id in storyLines.first { $0.id == id && $0.bookID == bookID } }
+        let validStage = stageID.flatMap { id in
+            stages.first { $0.id == id && $0.bookID == bookID && $0.storyLineID == validLine?.id }
+        }
+        if let existing = recordMetadata(sourceKind: sourceKind, sourceID: sourceID) {
+            existing.bookID = bookID
+            existing.storyLineID = validLine?.id
+            existing.stageID = validStage?.id
+            existing.updatedAt = Date()
+            try context.save()
+            return existing
+        }
+        let metadata = PlanningRecordMetadata(
+            sourceKind: sourceKind,
+            sourceID: sourceID,
+            bookID: bookID,
+            storyLineID: validLine?.id,
+            stageID: validStage?.id
+        )
+        context.insert(metadata)
+        planningRecordMetadata.append(metadata)
+        try context.save()
+        return metadata
+    }
+
+    func removeOrphanedRecordMetadata(validSourceKeys: Set<String>) throws {
+        let orphans = planningRecordMetadata.filter { !validSourceKeys.contains($0.sourceKey) }
+        let validLineIDs = Set(storyLines.map(\.id))
+        let validStageIDs = Set(stages.map(\.id))
+        var changed = !orphans.isEmpty
+        for metadata in orphans { context.delete(metadata) }
+        for metadata in planningRecordMetadata where validSourceKeys.contains(metadata.sourceKey) {
+            if let lineID = metadata.storyLineID, !validLineIDs.contains(lineID) {
+                metadata.storyLineID = nil
+                metadata.stageID = nil
+                metadata.updatedAt = Date()
+                changed = true
+            } else if let stageID = metadata.stageID, !validStageIDs.contains(stageID) {
+                metadata.stageID = nil
+                metadata.updatedAt = Date()
+                changed = true
+            }
+        }
+        guard changed else { return }
+        try context.save()
+        try reload()
+    }
+
+    /// Organization membership and identity history were removed from product
+    /// V5 instead of being migrated into the power graph.
+    func removeLegacyOrganizationMetadata() throws {
+        let legacyKinds: Set<String> = [
+            PlanningRecordSourceKind.organizationJoin.rawValue,
+            PlanningRecordSourceKind.organizationIdentity.rawValue
+        ]
+        let removed = planningRecordMetadata.filter { legacyKinds.contains($0.sourceKindRawValue) }
+        guard !removed.isEmpty else { return }
+        for metadata in removed { context.delete(metadata) }
+        try context.save()
+        try reload()
+    }
+
     @discardableResult
     func ensureTimelineMetadata(
         eventID: UUID,
@@ -702,6 +779,7 @@ final class StoryPlanningStore {
             outlineAnchors.filter { $0.bookID == bookID || itemIDs.contains($0.outlineItemID) }.forEach(context.delete)
             itemPlacements.filter { itemIDs.contains($0.outlineItemID) }.forEach(context.delete)
             timelineEventCardMetadata.filter { $0.bookID == bookID }.forEach(context.delete)
+            planningRecordMetadata.filter { $0.bookID == bookID }.forEach(context.delete)
             outlineItems.filter { itemIDs.contains($0.id) }.forEach(context.delete)
             stages.filter { stageIDs.contains($0.id) }.forEach(context.delete)
             storyLines.filter { lineIDs.contains($0.id) }.forEach(context.delete)
@@ -726,6 +804,7 @@ final class StoryPlanningStore {
             .union(outlineAnchors.map(\.bookID))
             .union(stageStartAnchors.map(\.bookID))
             .union(timelineEventCardMetadata.map(\.bookID))
+            .union(planningRecordMetadata.map(\.bookID))
 
         for bookID in referencedBookIDs.subtracting(validBookIDs) {
             try deletePlanningData(bookID: bookID)

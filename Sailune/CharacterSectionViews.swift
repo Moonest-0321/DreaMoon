@@ -24,24 +24,16 @@ struct CharacterSummarySectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allSummaries: [CharacterSummary]
     @Query(sort: \CharacterAlias.createdAt) private var allAliases: [CharacterAlias]
-    @Query private var allMemberships: [CharacterOrganization]
-    @Query private var allIdentities: [OrganizationIdentityHistory]
     @Query(sort: \CharacterAbility.createdAt) private var allAbilities: [CharacterAbility]
     @Query(sort: \CharacterPsychology.createdAt) private var allPsychologies: [CharacterPsychology]
     @Query(sort: \CharacterRelationship.createdAt) private var allRelationships: [CharacterRelationship]
 
     private var summary: CharacterSummary? { allSummaries.first { $0.character?.id == character.id } }
     private var aliases: [CharacterAlias] { allAliases.filter { $0.character?.id == character.id } }
-    private var memberships: [CharacterOrganization] { allMemberships.filter { $0.character?.id == character.id } }
-    private var identities: [OrganizationIdentityHistory] {
-        let membershipIDs = Set(memberships.map(\.id))
-        return allIdentities.filter { identity in identity.membership.map { membershipIDs.contains($0.id) } ?? false }
-    }
     private var abilities: [CharacterAbility] { allAbilities.filter { $0.character?.id == character.id } }
     private var psychologies: [CharacterPsychology] { allPsychologies.filter { $0.character?.id == character.id } }
     private var relationships: [CharacterRelationship] { allRelationships.filter { $0.sourceCharacter?.id == character.id } }
     private var latestAlias: CharacterAlias? { aliases.max { $0.updatedAt < $1.updatedAt } }
-    private var latestIdentity: OrganizationIdentityHistory? { identities.max { $0.updatedAt < $1.updatedAt } }
     private var latestAbility: CharacterAbility? { abilities.max { $0.updatedAt < $1.updatedAt } }
     private var latestPsychology: CharacterPsychology? { psychologies.max { $0.updatedAt < $1.updatedAt } }
     private var latestRelationship: CharacterRelationship? { relationships.max { $0.updatedAt < $1.updatedAt } }
@@ -50,11 +42,6 @@ struct CharacterSummarySectionView: View {
         VStack(alignment: .leading, spacing: 9) {
             summaryPicker("別名", automaticTitle: automaticTitle(latestAlias?.name), selection: aliasBinding) {
                 ForEach(aliases) { Text($0.name).tag(Optional($0.id)) }
-            }
-            summaryPicker("組織身分", automaticTitle: automaticTitle(latestIdentity.map { "\($0.membership?.organization?.name ?? "組織")・\($0.identity)" }), selection: identityBinding) {
-                ForEach(identities) { identity in
-                    Text("\(identity.membership?.organization?.name ?? "組織")・\(identity.identity)").tag(Optional(identity.id))
-                }
             }
             summaryPicker("能力", automaticTitle: automaticTitle(latestAbility?.name), selection: abilityBinding) {
                 ForEach(abilities) { Text($0.name).tag(Optional($0.id)) }
@@ -97,9 +84,6 @@ struct CharacterSummarySectionView: View {
     private var aliasBinding: Binding<UUID?> { Binding(get: { summary?.alias?.id }, set: { id in
         updateSummary(createIfNeeded: id != nil) { $0.alias = id.flatMap { selected in aliases.first { $0.id == selected } } }
     }) }
-    private var identityBinding: Binding<UUID?> { Binding(get: { summary?.organizationIdentity?.id }, set: { id in
-        updateSummary(createIfNeeded: id != nil) { $0.organizationIdentity = id.flatMap { selected in identities.first { $0.id == selected } } }
-    }) }
     private var abilityBinding: Binding<UUID?> { Binding(get: { summary?.ability?.id }, set: { id in
         updateSummary(createIfNeeded: id != nil) { $0.ability = id.flatMap { selected in abilities.first { $0.id == selected } } }
     }) }
@@ -121,7 +105,6 @@ struct CharacterSummarySectionView: View {
 
     private func deleteIfEmpty(_ summary: CharacterSummary) {
         if summary.alias == nil,
-           summary.organizationIdentity == nil,
            summary.ability == nil,
            summary.psychology == nil,
            summary.relationship == nil {
@@ -258,92 +241,6 @@ private struct AliasRow: View {
     }
 }
 
-struct CharacterOrganizationSectionView: View {
-    let character: Character
-    let book: Book
-    @Environment(\.modelContext) private var modelContext
-    @Query private var allMemberships: [CharacterOrganization]
-    @Query(sort: \Organization.name) private var allOrganizations: [Organization]
-
-    private var memberships: [CharacterOrganization] { allMemberships.filter { $0.character?.id == character.id } }
-    private var availableOrganizations: [Organization] {
-        let assignedIDs = Set(memberships.compactMap { $0.organization?.id })
-        return allOrganizations.filter { $0.book?.id == book.id && !assignedIDs.contains($0.id) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if memberships.isEmpty {
-                CharacterSectionEmptyState(title: "尚無組織資料", detail: "可記錄所屬組織、加入原因與備註。")
-            } else {
-                ForEach(memberships) { membership in
-                    OrganizationMembershipRow(membership: membership, book: book, onDelete: { modelContext.delete(membership) })
-                }
-            }
-            HStack(spacing: 12) {
-                Button("新增組織", systemImage: "plus", action: addNewMembership)
-                    .buttonStyle(.borderless)
-
-                if !availableOrganizations.isEmpty {
-                    Menu {
-                        ForEach(availableOrganizations) { organization in
-                            Button(organization.name.isEmpty ? "未命名組織" : organization.name) {
-                                addMembership(for: organization)
-                            }
-                        }
-                    } label: {
-                        Label("加入既有組織", systemImage: "link.badge.plus")
-                    }
-                    .menuStyle(.borderlessButton)
-                }
-            }
-        }
-    }
-
-    private func addNewMembership() {
-        let organization = Organization(name: "新組織", book: book)
-        modelContext.insert(organization)
-        addMembership(for: organization)
-    }
-
-    private func addMembership(for organization: Organization) {
-        modelContext.insert(CharacterOrganization(character: character, organization: organization))
-    }
-}
-
-private struct OrganizationMembershipRow: View {
-    @Bindable var membership: CharacterOrganization
-    let book: Book
-    let onDelete: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                if let organization = membership.organization {
-                    @Bindable var organization = organization
-                    TextField("組織名稱", text: $organization.name).textFieldStyle(.roundedBorder)
-                }
-                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
-            }
-            HStack {
-                TextField("加入原因", text: $membership.reason).textFieldStyle(.roundedBorder)
-                TextField("備註", text: $membership.note).textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                Text("加入時間").font(.caption).foregroundStyle(.secondary)
-                CharacterNodePicker(book: book, node: $membership.joinNode)
-            }
-            if let current = membership.identityHistory.sorted(by: { $0.sortOrder < $1.sortOrder }).last {
-                Text("目前身分：\(current.identity)").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("尚無身分歷史").font(.caption).foregroundStyle(.tertiary)
-            }
-            OrganizationIdentityHistoryEditor(membership: membership, book: book)
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 struct CharacterAbilitySectionView: View {
     let character: Character
     let book: Book
@@ -438,7 +335,7 @@ private struct CharacterAbilityTimelineEditor: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(changeLabel(at: index) == "上升" ? .green : changeLabel(at: index) == "下降" ? .orange : .secondary)
                         .frame(width: 34, alignment: .leading)
-                    CharacterNodePicker(book: book, node: Binding(get: { entry.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { entry.nodeID = $0?.id; abilityStore.save() }))
+                    CharacterNodePicker(book: book, node: Binding(get: { entry.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { entry.nodeID = $0?.id; abilityStore.save() }), sourceReference: .init(kind: .abilityHistory, id: entry.id))
                     Button(role: .destructive) { abilityStore.deleteHistory(entry) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
                 }
             }
@@ -514,7 +411,7 @@ private struct AppearanceRow: View {
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Text("時間定位").font(.caption).foregroundStyle(.secondary)
-                CharacterNodePicker(book: book, node: $appearance.node)
+                CharacterNodePicker(book: book, node: $appearance.node, sourceReference: .init(kind: .appearance, id: appearance.id))
             }
         }
     }
@@ -579,7 +476,7 @@ private struct PsychologyRow: View {
                 Text("時間定位")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                CharacterNodePicker(book: book, node: $psychology.node)
+                CharacterNodePicker(book: book, node: $psychology.node, sourceReference: .init(kind: .psychology, id: psychology.id))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

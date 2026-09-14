@@ -1,50 +1,63 @@
 # 技術架構
 
-> 基準：目前工作樹（2026-09-05）。歷史版本差異不回寫至舊提交。
+> 基準：2026-09-13 目前工作樹。
 
 ## 技術組成
 
-- 平台：Apple 平台桌面應用程式（目前以 macOS API 為主）。
-- UI：SwiftUI。
-- 持久化：SwiftData／ModelContext。
-- 原生編輯器：AppKit `NSTextView`，透過 `NSViewRepresentable` 接入 SwiftUI。
-- 文件內容：`AttributedString`，以字體屬性區分內文與幕標題。
-- 匯出：原生 Swift 組裝 TXT 與 EPUB，不依賴外部壓縮套件。
+- macOS 原生應用；SwiftUI 負責主要畫面，AppKit `NSTextView` 負責正文編輯。
+- SwiftData／`ModelContext` 持久化；正文使用 `AttributedString`。
+- TXT 與 EPUB 由專案內原生程式產生，不依賴外部壓縮套件。
+- `SailuneTests` 使用 XCTest，測試模型、投影、遷移、錨點、刪除與編輯器橋接。
 
-## 分層責任
+## 執行結構
 
-### 應用啟動層
+```text
+SailuneApp
+├─ 主 store（書籍、正文、設定、世界時間）
+├─ 物品副本 store
+├─ 副本等級選擇 store
+├─ 能力進度 store
+└─ 故事規劃 store（標籤、背景、敘事大綱、事件卡 metadata）
 
-`SailuneApp.swift` 負責建立主資料庫、獨立功能資料庫、舊資料匯入、回填與啟動錯誤畫面。
+ContentView（書櫃）
+└─ BookOverviewView（書籍總覽、卷節、背景）
+   └─ EditorWorkspaceView
+      ├─ 正文工作區 + 設定集／右側大綱
+      └─ BookPlanningWorkspaceView
+         ├─ 敘事大綱畫布
+         └─ 世界時間軸
+```
 
-### 資料模型層
+## 主要責任
 
-根模型位於 `Book`、`Volume`、`Section`、`Character`、`Item`、`Timeline` 等檔案；V4.2 全書規劃模型位於 `BookOutline.swift`，透過穩定 `bookID` 連接獨立故事規劃 store。模型以關聯與 UUID 連接，並使用 SwiftData 儲存。
+- `SailuneApp.swift`：建立六個 store、匯入舊 V2／V3 資料、執行回填與啟動修復、呈現啟動錯誤。
+- 主資料模型：`Book`、`Volume`、`Section`、`Character`、`Item`、`Timeline`、`Node`、`Event` 等。
+- `BookOutline.swift`／`StoryTag.swift`：故事規劃 schema V1–V6、文字錨點、故事線與階段、排序投影和 store 操作。
+- `EditorWorkspaceView`：讓正文與寬版大綱在同一書籍視窗中保留各自生命週期；切換前提交待存正文。
+- `RichEditorView`／`EditorBridge`：文字輸入、CJK composition、選取與跨節跳轉、格式、右鍵工具、角色連結及規劃錨點協調。
+- `InspectorViews`、`CharacterSectionViews`、`RelationshipWorkspace`：設定集與角色／物品／能力／勢力／關係管理；V5 勢力不與角色或正文連結。
+- `OutlineViews`：故事背景、敘事畫布、故事線／階段／大綱項目管理，以及「由大綱加入世界時間軸」。
+- `TimelineViews`／`TimelineEngine`：紀元、日期投影、主副軸、節點與事件管理、卡片及正文跳轉。
+- `PersistentStoreRepair`／`CrossStoreDeletionCoordinator`：主 store 修復與 Book／Event／Node／Timeline 的跨 store 收斂。
+- `MigrationPlan` 與各 Backfill：歷史 schema 匯入及獨立 store 回填。
 
-### 工作區與功能 UI 層
+## 兩種「連動」
 
-`ContentView` 負責書櫃，`BookOverviewView` 負責書籍與卷節結構及故事背景入口，`EditorWorkspaceView` 負責寫作與寬版大綱兩種同視窗呈現。寫作面使用 `NavigationSplitView`，寬版大綱則是獨立的中央 surface，不包含正文 sidebar，因此系統側邊欄控制也不會出現在大綱模式。進入前先提交待存文字；書籍、目前節次與 editor bridge 狀態由外層保留，返回正文或來源時重新建立文字 surface 並定位。
+1. 主 store 內使用 SwiftData relationship，例如書籍—卷—節、時間軸—節點—事件、角色—設定。
+2. 獨立 store 之間只用 UUID 連結。`TimelineEventCardMetadata.eventID` 指向主 store Event，可再以 `outlineItemID` 指向故事規劃中的大綱項目；這不是跨 store relationship。
 
-`InspectorViews` 及各功能 View 負責右側設定集；`WorkspaceInspectorView` 保留「設定集／大綱」頂層切換，右欄大綱仍提供敘事大綱與時間軸。`OutlineViews` 提供右欄項目管理、寬版 `BookPlanningWorkspaceView` 與敘事橫向結構畫布。V4.4.3 的寬版及右欄時間軸均接入 `TimelinePanelView`：寬版日期／事件分欄，窄版日期展開；`TimelineDateProjection` 提供可測試的日期分組，排序與改元沿用 TimelineEngine。敘事模式保留主線階段帶與項目詳情，沒有 OutlineItem→Event 轉換。故事背景在 `BookOverviewView` 以摘要卡及完整寬度編輯器呈現。
+敘事大綱和世界時間軸不是同一套資料。作者可由 `OutlineItem` 建立主 store `Event`，metadata 保存兩者的關聯與節錄設定；刪除大綱來源不會刪除世界事件。
 
-### 編輯器橋接層
+## 文字位置策略
 
-`RichEditorView` 封裝 AppKit 文字元件。`EditorBridge` 提供 SwiftUI 與編輯器之間的選取、焦點、標題切換、載入與儲存同步。
+- 角色引用寫入自訂 `sailune://character/<UUID>` URL，名稱變更時可同步已連結文字；未連結同名文字只列為候選。
+- 故事標籤與大綱來源保存選取文字及 UTF-16 offset，重新解析時取最接近舊位置的候選。
+- 伏筆／修改錨定文字消失時刪除輕量標籤；大綱來源消失時保留項目，降級到原節開頭並轉草稿。
 
-### 服務與修復層
+## 已知技術風險
 
-匯出由 `ExportManager`／`EpubExporter` 負責；舊時間定位排序由 `TimelineEngine` 負責；V4.2 之後的大綱排序、資料操作與 V4.4 `OutlineTimelineLayout` 投影集中在 `StoryPlanningStore`。投影只把可解析位置放入幕／節次欄位，無法解析者交給 UI 的待安置區；資料清理與刪除由 `PersistentStoreRepair`、`MigrationPlan` 及相關 Backfill 負責。
-
-## 可持續性原則
-
-- 歷史 schema 只保留快照，不直接指向會持續變動的現行模型。
-- 新增資料域時，優先使用獨立 store 或穩定 UUID 連結，降低舊資料庫遷移風險。
-- 跨 UI 與模型的同步需有明確責任者，不在 SwiftUI view 更新期間同步回寫狀態。
-- 破壞性資料操作要有明確刪除規則、錯誤處理與驗收案例。
-- 技術重構不得默默改變已記錄的產品行為；若行為改變，先更新對應規格。
-
-## 技術風險
-
-- 多個獨立 store 的一致性需在刪除、匯入與備份時一併處理。
-- `AttributedString`、UTF-16 offset、角色連結與故事標籤錨點需避免互相失步。
-- 匯出目前含有平台特定儲存路徑，尚不具跨環境可攜性。
+- 六個 store 沒有共同交易；目前只有部分資料域具完整協調刪除與冪等修復。
+- 書籍總覽與編輯器 sidebar 的 Volume／Section 刪除、角色事件刪除仍直接呼叫 `modelContext.delete`，沒有使用既有集中清理服務。
+- `AttributedString`、UTF-16 offset、角色 URL 連結與規劃錨點需持續做跨模組回歸。
+- TXT／EPUB 匯出寫死 `/Users/hsuchengyu/Downloads`，不具其他帳號與環境的可攜性。
+- 多 store 尚無單一備份／還原封裝；正式發布前需補齊。

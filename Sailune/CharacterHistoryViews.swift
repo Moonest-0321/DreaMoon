@@ -4,6 +4,7 @@ import SwiftData
 struct CharacterNodePicker: View {
     let book: Book
     @Binding var node: Node?
+    var sourceReference: PlanningRecordSourceReference? = nil
     @Query(sort: \Node.sortOrder) private var allNodes: [Node]
     @State private var showingTimestampEditor = false
 
@@ -34,7 +35,7 @@ struct CharacterNodePicker: View {
             .help(node == nil ? "建立時間戳記" : "修改此筆資料的時間戳記")
         }
         .sheet(isPresented: $showingTimestampEditor) {
-            CharacterTimestampEditorSheet(book: book, existingNode: node) { savedNode in
+            CharacterTimestampEditorSheet(book: book, existingNode: node, sourceReference: sourceReference) { savedNode in
                 node = savedNode
             }
         }
@@ -57,8 +58,10 @@ struct CharacterNodePicker: View {
 private struct CharacterTimestampEditorSheet: View {
     let book: Book
     let existingNode: Node?
+    let sourceReference: PlanningRecordSourceReference?
     let onSave: (Node) -> Void
     @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Timeline.sortOrder) private var allTimelines: [Timeline]
     @Query(sort: \Era.startOrdinal) private var allEras: [Era]
@@ -70,11 +73,20 @@ private struct CharacterTimestampEditorSheet: View {
     @State private var monthText = ""
     @State private var dayText = ""
     @State private var selectedSectionID: UUID?
+    @State private var selectedStoryLineID: UUID?
+    @State private var selectedStageID: UUID?
     @State private var isVisible = true
+    @State private var saveErrorMessage: String?
 
-    init(book: Book, existingNode: Node?, onSave: @escaping (Node) -> Void) {
+    init(
+        book: Book,
+        existingNode: Node?,
+        sourceReference: PlanningRecordSourceReference?,
+        onSave: @escaping (Node) -> Void
+    ) {
         self.book = book
         self.existingNode = existingNode
+        self.sourceReference = sourceReference
         self.onSave = onSave
         let existingYear = existingNode?.year ?? 0
         _selectedTimelineID = State(initialValue: existingNode?.timeline?.id)
@@ -99,15 +111,30 @@ private struct CharacterTimestampEditorSheet: View {
     private var parsedYear: Int? { Int(yearText) }
     private var parsedMonth: Int? { monthText.isEmpty ? nil : Int(monthText) }
     private var parsedDay: Int? { dayText.isEmpty ? nil : Int(dayText) }
+    private var storyLines: [OutlineStoryLine] {
+        planningStore.storyLines
+            .filter { $0.bookID == book.id }
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+    private var stages: [OutlineStage] {
+        guard let selectedStoryLineID else { return [] }
+        return planningStore.stages
+            .filter { $0.bookID == book.id && $0.storyLineID == selectedStoryLineID }
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+    private var needsNarrativePlacement: Bool {
+        sourceReference != nil && isVisible && selectedSectionID != nil
+    }
     private var canCreate: Bool {
         (parsedYear == nil || parsedYear! > 0) &&
         (parsedMonth == nil || (1...12).contains(parsedMonth!)) &&
-        (parsedDay == nil || (1...31).contains(parsedDay!))
+        (parsedDay == nil || (1...31).contains(parsedDay!)) &&
+        (!needsNarrativePlacement || selectedStoryLineID != nil)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(existingNode == nil ? "新增時間戳記" : "修改時間戳記").font(.headline)
+            Text("時間與敘事定位").font(.headline)
             Form {
                 Picker("時間軸", selection: $selectedTimelineID) {
                     ForEach(timelines) { Text($0.name).tag(Optional($0.id)) }
@@ -128,7 +155,34 @@ private struct CharacterTimestampEditorSheet: View {
                     Text("無節定位").tag(Optional<UUID>.none)
                     ForEach(sections) { Text($0.title.isEmpty ? "未命名節" : $0.title).tag(Optional($0.id)) }
                 }
-                Toggle("顯示於時間軸", isOn: $isVisible)
+                Toggle("顯示於規劃視圖", isOn: $isVisible)
+                if needsNarrativePlacement {
+                    SwiftUI.Section("敘事歸屬") {
+                        Picker("故事線", selection: $selectedStoryLineID) {
+                            Text("請選擇故事線").tag(Optional<UUID>.none)
+                            ForEach(storyLines) { line in
+                                Text(line.title.isEmpty ? "未命名故事線" : line.title).tag(Optional(line.id))
+                            }
+                        }
+                        Picker("階段", selection: $selectedStageID) {
+                            Text("未分階段").tag(Optional<UUID>.none)
+                            ForEach(stages) { stage in
+                                Text(stage.title.isEmpty ? "未命名階段" : stage.title).tag(Optional(stage.id))
+                            }
+                        }
+                        .disabled(selectedStoryLineID == nil || stages.isEmpty)
+                        if storyLines.isEmpty {
+                            Label("請先在敘事大綱建立故事線。", systemImage: "exclamationmark.circle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                SwiftUI.Section("投影結果") {
+                    Text(projectionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
 
@@ -141,7 +195,7 @@ private struct CharacterTimestampEditorSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 450, height: 420)
+        .frame(width: 470, height: needsNarrativePlacement ? 590 : 480)
         .onAppear {
             if selectedTimelineID == nil {
                 selectedTimelineID = timelines.first(where: \.isPrimary)?.id ?? timelines.first?.id
@@ -149,6 +203,20 @@ private struct CharacterTimestampEditorSheet: View {
             if selectedEraID == nil {
                 selectedEraID = book.currentEra?.id
             }
+            loadRecordPlacement()
+        }
+        .onChange(of: selectedStoryLineID) {
+            if !stages.contains(where: { $0.id == selectedStageID }) {
+                selectedStageID = nil
+            }
+        }
+        .alert("無法儲存定位", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("好", role: .cancel) { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "請稍後再試。")
         }
     }
 
@@ -182,56 +250,46 @@ private struct CharacterTimestampEditorSheet: View {
         timestamp.timeline = selectedTimelineID.flatMap { id in timelines.first { $0.id == id } }
         timestamp.era = selectedEraID.flatMap { id in allEras.first { $0.id == id } }
         timestamp.section = selectedSectionID.flatMap { id in sections.first { $0.id == id } }
-        // A node without a year is a reference-only timestamp by default, so it
-        // does not create a misleading "0 年" entry on the world timeline.
-        timestamp.isVisible = isVisible && parsedYear != nil
+        // 此開關同時控制世界時間軸與敘事大綱；沒有世界年份的節次定位
+        // 仍需保留開啟狀態，時間軸本身會忽略沒有年份的 Node。
+        timestamp.isVisible = isVisible
         if existingNode == nil {
             timestamp.sortOrder = (timestamp.timeline?.nodes.map(\.sortOrder).max() ?? -1) + 1
             modelContext.insert(timestamp)
         }
-        onSave(timestamp)
-        try? modelContext.save()
-        dismiss()
-    }
-}
-
-struct OrganizationIdentityHistoryEditor: View {
-    @Bindable var membership: CharacterOrganization
-    let book: Book
-    @Environment(\.modelContext) private var modelContext
-
-    private var histories: [OrganizationIdentityHistory] { membership.identityHistory.sorted { $0.sortOrder < $1.sortOrder } }
-
-    var body: some View {
-        historyContainer(title: "身分歷史", addTitle: "新增身分", add: addHistory) {
-            ForEach(histories) { history in
-                OrganizationIdentityHistoryRow(history: history, book: book, onDelete: { modelContext.delete(history) })
+        do {
+            try modelContext.save()
+            if let sourceReference, needsNarrativePlacement {
+                try planningStore.setRecordPlacement(
+                    sourceKind: sourceReference.kind,
+                    sourceID: sourceReference.id,
+                    bookID: book.id,
+                    storyLineID: selectedStoryLineID,
+                    stageID: selectedStageID
+                )
             }
+            onSave(timestamp)
+            dismiss()
+        } catch {
+            saveErrorMessage = error.localizedDescription
         }
     }
 
-    private func addHistory() {
-        let history = OrganizationIdentityHistory(identity: "新身分", sortOrder: (histories.map(\.sortOrder).max() ?? -1) + 1)
-        membership.identityHistory.append(history)
-        modelContext.insert(history)
-    }
-}
-
-private struct OrganizationIdentityHistoryRow: View {
-    @Bindable var history: OrganizationIdentityHistory
-    let book: Book
-    let onDelete: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                TextField("身分", text: $history.identity).textFieldStyle(.roundedBorder)
-                CharacterNodePicker(book: book, node: $history.node)
-                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
-            }
-            TextField("備註", text: $history.note).textFieldStyle(.roundedBorder)
+    private var projectionSummary: String {
+        guard isVisible else { return "目前不會顯示於世界時間軸或敘事大綱。" }
+        var destinations: [String] = []
+        if parsedYear != nil { destinations.append("世界時間軸") }
+        if selectedSectionID != nil {
+            destinations.append(selectedStoryLineID == nil ? "敘事大綱（尚未選擇故事線）" : "敘事大綱")
         }
-        .onChange(of: history.identity) { history.updatedAt = Date() }
-        .onChange(of: history.note) { history.updatedAt = Date() }
+        return destinations.isEmpty ? "尚未設定可投影的位置。" : "將顯示於：\(destinations.joined(separator: "、"))。"
+    }
+
+    private func loadRecordPlacement() {
+        guard let sourceReference,
+              let metadata = planningStore.recordMetadata(sourceKind: sourceReference.kind, sourceID: sourceReference.id) else { return }
+        selectedStoryLineID = metadata.storyLineID
+        selectedStageID = metadata.stageID
     }
 }
 
@@ -331,7 +389,7 @@ private struct ItemUnifiedHistoryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                CharacterNodePicker(book: book, node: $history.node)
+                CharacterNodePicker(book: book, node: $history.node, sourceReference: .init(kind: .itemHistory, id: history.id))
                 Menu {
                     ForEach(characters) { character in
                         Toggle(character.realName.isEmpty ? "未命名角色" : character.realName, isOn: selected(character))
@@ -374,7 +432,7 @@ private struct ItemHistoryRow: View {
     var body: some View {
         HStack {
             TextField("自由文字紀錄", text: $history.content).textFieldStyle(.roundedBorder)
-            CharacterNodePicker(book: book, node: $history.node)
+            CharacterNodePicker(book: book, node: $history.node, sourceReference: .init(kind: .characterItemHistory, id: history.id))
             Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
         }
         .onChange(of: history.content) { history.updatedAt = Date() }
@@ -410,7 +468,7 @@ private struct RelationshipHistoryRow: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 TextField("關係", text: $history.type).textFieldStyle(.roundedBorder)
-                CharacterNodePicker(book: book, node: $history.node)
+                CharacterNodePicker(book: book, node: $history.node, sourceReference: .init(kind: .relationshipHistory, id: history.id))
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
             TextField("備註", text: $history.note).textFieldStyle(.roundedBorder)

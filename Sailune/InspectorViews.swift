@@ -436,6 +436,7 @@ enum InspectorRoute: Hashable {
     case itemDetail(Item, Character?)
     case itemCopyDetail(Item, ItemCopy, Character?)
     case abilityDetail(CharacterAbility)
+    case powerDetail(PowerUnit)
 
     func hash(into hasher: inout Hasher) {
         switch self {
@@ -447,6 +448,8 @@ enum InspectorRoute: Hashable {
             hasher.combine(4); hasher.combine(item.id); hasher.combine(copy.id); hasher.combine(source?.id)
         case .abilityDetail(let ability):
             hasher.combine(5); hasher.combine(ability.id)
+        case .powerDetail(let power):
+            hasher.combine(6); hasher.combine(power.id)
         }
     }
 
@@ -460,17 +463,10 @@ enum InspectorRoute: Hashable {
         case (.itemCopyDetail(let itemA, let copyA, let sourceA), .itemCopyDetail(let itemB, let copyB, let sourceB)):
             return itemA.id == itemB.id && copyA.id == copyB.id && sourceA?.id == sourceB?.id
         case (.abilityDetail(let a), .abilityDetail(let b)): return a.id == b.id
+        case (.powerDetail(let a), .powerDetail(let b)): return a.id == b.id
         default: return false
         }
     }
-}
-
-enum InspectorTab: String, CaseIterable, Identifiable {
-    case character = "角色"
-    case ability = "能力"
-    case item = "物品"
-    case storyTag = "標籤"
-    var id: String { rawValue }
 }
 
 // MARK: - 1. 設定集根視圖
@@ -481,18 +477,27 @@ struct InspectorRootView: View {
     let focusRequestID: UUID
     let settingsDestination: EditorSettingsDestination?
     let settingsRequestID: UUID
+    let planningRecordReference: PlanningRecordSourceReference?
+    let planningRecordRequestID: UUID
     let onSelectSection: ((Section) -> Void)?
     let onOpenStoryTag: ((StoryTag) -> Void)?
-    @State private var selectedTab: InspectorTab = .character
+    @State private var selectedTab: SidebarSettingKey = .character
+    @State private var showingSidebarSettings = false
     @State private var route: InspectorRoute = .list
+    @Environment(V5SettingsStore.self) private var settingsStore
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Environment(ItemCopyStore.self) private var copyStore
+    @Environment(\.modelContext) private var modelContext
 
-    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), settingsDestination: EditorSettingsDestination? = nil, settingsRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil, onOpenStoryTag: ((StoryTag) -> Void)? = nil) {
+    init(book: Book, currentSection: Section? = nil, focusedCharacter: Character? = nil, focusRequestID: UUID = UUID(), settingsDestination: EditorSettingsDestination? = nil, settingsRequestID: UUID = UUID(), planningRecordReference: PlanningRecordSourceReference? = nil, planningRecordRequestID: UUID = UUID(), onSelectSection: ((Section) -> Void)? = nil, onOpenStoryTag: ((StoryTag) -> Void)? = nil) {
         self.book = book
         self.currentSection = currentSection
         self.focusedCharacter = focusedCharacter
         self.focusRequestID = focusRequestID
         self.settingsDestination = settingsDestination
         self.settingsRequestID = settingsRequestID
+        self.planningRecordReference = planningRecordReference
+        self.planningRecordRequestID = planningRecordRequestID
         self.onSelectSection = onSelectSection
         self.onOpenStoryTag = onOpenStoryTag
     }
@@ -503,13 +508,29 @@ struct InspectorRootView: View {
                 WritingReferenceSummaryView(book: book, section: currentSection)
             }
             if route == .list {
-                Picker("設定種類", selection: $selectedTab) {
-                    Text("角色").tag(InspectorTab.character)
-                    Text("能力").tag(InspectorTab.ability)
-                    Text("物品").tag(InspectorTab.item)
-                    Text("標籤").tag(InspectorTab.storyTag)
+                Group {
+                    if visibleSidebarKeys.isEmpty {
+                        HStack {
+                            Text("目前沒有顯示中的設定集").foregroundStyle(.secondary)
+                            Spacer()
+                            Button("管理設定集") { showingSidebarSettings = true }
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            Picker("設定種類", selection: $selectedTab) {
+                                ForEach(visibleSidebarKeys) { key in
+                                    Text(key.title).tag(key)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            Button { showingSidebarSettings = true } label: {
+                                Image(systemName: "slider.horizontal.3")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("管理設定集顯示")
+                        }
+                    }
                 }
-                .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
@@ -518,7 +539,9 @@ struct InspectorRootView: View {
 
             switch route {
             case .list:
-                if selectedTab == .character {
+                if visibleSidebarKeys.isEmpty {
+                    ContentUnavailableView("尚未顯示設定集", systemImage: "sidebar.right", description: Text("使用上方的管理設定集重新加入項目。"))
+                } else if activeSidebarKey == .character {
                     CharacterListContainerView(
                         book: book,
                         currentSection: currentSection,
@@ -526,17 +549,25 @@ struct InspectorRootView: View {
                         onSelect: { navigate(to: .detail($0)) },
                         onCreated: { navigate(to: .detail($0)) }
                     )
-                } else if selectedTab == .ability {
+                } else if activeSidebarKey == .ability {
                     AbilityListContainerView(book: book, onOpen: { navigate(to: .abilityDetail($0)) })
-                } else if selectedTab == .item {
+                } else if activeSidebarKey == .power {
+                    PowerListView(book: book, onOpen: { navigate(to: .powerDetail($0)) })
+                } else if activeSidebarKey == .item {
                     ItemListContainerView(
                         book: book,
                         currentSection: currentSection,
                         onSelectSection: onSelectSection,
                         onOpen: { navigate(to: .itemDetail($0, nil)) }
                     )
-                } else {
+                } else if activeSidebarKey == .storyTag {
                     StoryTagListView(book: book, onOpen: onOpenStoryTag)
+                } else if activeSidebarKey == .place {
+                    PlaceListView(book: book)
+                } else if activeSidebarKey == .worldTerm {
+                    WorldTermListView(book: book)
+                } else {
+                    ContentUnavailableView("設定集項目已隱藏", systemImage: "eye.slash")
                 }
             case .detail(let character):
                 CharacterDetailView(
@@ -573,13 +604,37 @@ struct InspectorRootView: View {
                 )
             case .abilityDetail(let ability):
                 AbilityDetailView(ability: ability, book: book, onBack: { navigate(to: .list) }, onOpenCharacter: { navigate(to: .detail($0)) })
+            case .powerDetail(let power):
+                PowerDetailView(power: power, book: book, onBack: { navigate(to: .list) })
             }
+        }
+        .sheet(isPresented: $showingSidebarSettings) {
+            SidebarSettingsManagerView(book: book)
+        }
+        .task {
+            settingsStore.ensureDefaults(for: book.id)
+            selectedTab = activeSidebarKey
+        }
+        .onChange(of: visibleSidebarKeys) { _, keys in
+            selectedTab = SidebarSettingCatalog.resolvedSelection(selectedTab, visibleKeys: keys)
         }
         .onAppear { showFocusedCharacter() }
         .onChange(of: focusedCharacter?.id) { _, _ in showFocusedCharacter() }
         .onChange(of: focusRequestID) { _, _ in showFocusedCharacter() }
         .onAppear { showRequestedSettings() }
         .onChange(of: settingsRequestID) { _, _ in showRequestedSettings() }
+        .onAppear { showRequestedPlanningRecord() }
+        .onChange(of: planningRecordRequestID) { _, _ in showRequestedPlanningRecord() }
+    }
+
+    private var visibleSidebarKeys: [SidebarSettingKey] {
+        let rows = settingsStore.sidebarRows(for: book.id)
+        let keys = SidebarSettingCatalog.visibleKeys(rows: rows)
+        return keys
+    }
+
+    private var activeSidebarKey: SidebarSettingKey {
+        SidebarSettingCatalog.resolvedSelection(selectedTab, visibleKeys: visibleSidebarKeys)
     }
 
     private func showFocusedCharacter() {
@@ -596,8 +651,70 @@ struct InspectorRootView: View {
             selectedTab = .item
         case .ability:
             selectedTab = .ability
-        case .organization:
-            selectedTab = .character
+        }
+    }
+
+    private func showRequestedPlanningRecord() {
+        guard let reference = planningRecordReference else { return }
+        do {
+            switch reference.kind {
+            case .organizationJoin, .organizationIdentity:
+                break
+            case .appearance:
+                if let source = try modelContext.fetch(FetchDescriptor<CharacterAppearance>()).first(where: { $0.id == reference.id }),
+                   let character = source.character {
+                    selectedTab = .character
+                    navigate(to: .detail(character))
+                }
+            case .psychology:
+                if let source = try modelContext.fetch(FetchDescriptor<CharacterPsychology>()).first(where: { $0.id == reference.id }),
+                   let character = source.character {
+                    selectedTab = .character
+                    navigate(to: .detail(character))
+                }
+            case .characterItemHistory:
+                if let owner = try modelContext.fetch(FetchDescriptor<CharacterItem>()).first(where: {
+                    $0.history.contains { $0.id == reference.id }
+                }), let character = owner.character {
+                    selectedTab = .character
+                    navigate(to: .detail(character))
+                }
+            case .itemHistory:
+                if let item = try modelContext.fetch(FetchDescriptor<Item>()).first(where: {
+                    $0.histories.contains { $0.id == reference.id }
+                }) {
+                    selectedTab = .item
+                    navigate(to: .itemDetail(item, nil))
+                }
+            case .itemCopyHistory:
+                if let history = copyStore.histories.first(where: { $0.id == reference.id }),
+                   let copy = copyStore.copies.first(where: { $0.id == history.copyID }),
+                   let item = try modelContext.fetch(FetchDescriptor<Item>()).first(where: { $0.id == copy.itemID }) {
+                    selectedTab = .item
+                    navigate(to: .itemCopyDetail(item, copy, nil))
+                }
+            case .relationshipHistory:
+                if let relationship = try modelContext.fetch(FetchDescriptor<CharacterRelationship>()).first(where: {
+                    $0.history.contains { $0.id == reference.id }
+                }), let character = relationship.sourceCharacter {
+                    selectedTab = .character
+                    navigate(to: .detail(character))
+                }
+            case .abilityHistory:
+                if let history = abilityStore.histories.first(where: { $0.id == reference.id }),
+                   let connection = abilityStore.connections.first(where: { $0.id == history.connectionID }),
+                   let ability = try modelContext.fetch(FetchDescriptor<CharacterAbility>()).first(where: { $0.id == connection.abilityID }) {
+                    selectedTab = .ability
+                    navigate(to: .abilityDetail(ability))
+                } else if let ability = try modelContext.fetch(FetchDescriptor<CharacterAbility>()).first(where: {
+                    $0.history.contains { $0.id == reference.id }
+                }) {
+                    selectedTab = .ability
+                    navigate(to: .abilityDetail(ability))
+                }
+            }
+        } catch {
+            route = .list
         }
     }
 
@@ -1052,7 +1169,7 @@ private struct ItemCopyDetailView: View {
                     }
                     HStack(spacing: 8) {
                         Text("時間定位").font(.caption).foregroundStyle(.secondary)
-                        CharacterNodePicker(book: book, node: Binding(get: { history.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { history.nodeID = $0?.id; history.updatedAt = Date(); copyStore.save() }))
+                        CharacterNodePicker(book: book, node: Binding(get: { history.nodeID.flatMap { id in allNodes.first { $0.id == id } } }, set: { history.nodeID = $0?.id; history.updatedAt = Date(); copyStore.save() }), sourceReference: .init(kind: .itemCopyHistory, id: history.id))
                     }
                     Menu {
                         ForEach(allCharacters.filter { $0.book?.id == book.id }) { character in
@@ -1668,7 +1785,6 @@ struct CharacterDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allProfiles: [CharacterProfile]
     @Query private var allAliases: [CharacterAlias]
-    @Query private var allMemberships: [CharacterOrganization]
     @Query private var allAbilities: [CharacterAbility]
     @Query private var allAppearances: [CharacterAppearance]
     @Query private var allPsychologies: [CharacterPsychology]
@@ -1685,7 +1801,6 @@ struct CharacterDetailView: View {
     }
 
     private var aliases: [CharacterAlias] { allAliases.filter { $0.character?.id == character.id } }
-    private var memberships: [CharacterOrganization] { allMemberships.filter { $0.character?.id == character.id } }
     private var abilities: [CharacterAbility] { allAbilities.filter { $0.character?.id == character.id } }
     private var appearances: [CharacterAppearance] { allAppearances.filter { $0.character?.id == character.id } }
     private var psychologies: [CharacterPsychology] { allPsychologies.filter { $0.character?.id == character.id } }
@@ -1788,10 +1903,6 @@ struct CharacterDetailView: View {
                         CharacterAliasSectionView(character: character) { alias, oldName, newName in
                             commitAliasNameChange(alias, from: oldName, to: newName)
                         }
-                    }
-
-                    detailSection("組織", systemImage: "building.2", summary: compactSummary(memberships.compactMap { $0.organization?.name })) {
-                        CharacterOrganizationSectionView(character: character, book: book)
                     }
 
                     detailSection("能力", systemImage: "sparkles", summary: compactSummary(abilities.map(\.name))) {

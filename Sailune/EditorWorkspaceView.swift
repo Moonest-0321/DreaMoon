@@ -45,6 +45,8 @@ struct EditorWorkspaceView: View {
     @State private var characterFocusRequestID = UUID()
     @State private var settingsDestination: EditorSettingsDestination?
     @State private var settingsRequestID = UUID()
+    @State private var planningRecordReference: PlanningRecordSourceReference?
+    @State private var planningRecordRequestID = UUID()
     @State private var isShowingPlanningWorkspace = false
     @State private var hasLoadedPlanningWorkspace = false
     @State private var writingColumnVisibility: NavigationSplitViewVisibility = .automatic
@@ -93,7 +95,8 @@ struct EditorWorkspaceView: View {
                 BookPlanningWorkspaceView(
                     book: book,
                     onOpenOutlineItem: openOutlineItem,
-                    onOpenTimelineSection: openTimelineSection
+                    onOpenTimelineSection: openTimelineSection,
+                    onOpenPlanningRecord: openPlanningRecord
                 )
                     .opacity(isShowingPlanningWorkspace ? 1 : 0)
                     .allowsHitTesting(isShowingPlanningWorkspace)
@@ -111,6 +114,8 @@ struct EditorWorkspaceView: View {
                 focusRequestID: characterFocusRequestID,
                 settingsDestination: settingsDestination,
                 settingsRequestID: settingsRequestID,
+                planningRecordReference: planningRecordReference,
+                planningRecordRequestID: planningRecordRequestID,
                 onSelectSection: { section in
                     bridge.flushPendingSave()
                     selectedSection = section
@@ -230,6 +235,16 @@ struct EditorWorkspaceView: View {
         isShowingPlanningWorkspace = false
         columnVisibility = writingColumnVisibility
         selectedSection = section
+    }
+
+    private func openPlanningRecord(_ reference: PlanningRecordSourceReference) {
+        isShowingPlanningWorkspace = false
+        columnVisibility = writingColumnVisibility
+        focusedCharacter = nil
+        settingsDestination = nil
+        planningRecordReference = reference
+        planningRecordRequestID = UUID()
+        setInspectorPresented(true)
     }
 
     private func perform(_ command: PaletteCommand) {

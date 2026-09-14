@@ -6,7 +6,7 @@ import AppKit
 @MainActor
 final class V42OutlineTests: XCTestCase {
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -593,7 +593,7 @@ final class V42OutlineTests: XCTestCase {
             stageID = stage.id
         }
 
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
         let container = try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -1299,7 +1299,7 @@ final class V42OutlineTests: XCTestCase {
         XCTAssertFalse(excerpt.contains("\n"))
     }
 
-    func testStoryPlanningV5MigratesToV6WithoutChangingExistingOutlineData() throws {
+    func testStoryPlanningV5MigratesToCurrentSchemaWithoutChangingExistingOutlineData() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("story-v5-v6-\(UUID().uuidString).store")
         defer { removeStoreFiles(at: url) }
@@ -1320,7 +1320,7 @@ final class V42OutlineTests: XCTestCase {
             try context.save()
         }
 
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
         let reopened = try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,
@@ -1330,6 +1330,172 @@ final class V42OutlineTests: XCTestCase {
 
         XCTAssertEqual(store.items(bookID: bookID).map(\.id), [itemID])
         XCTAssertTrue(store.timelineEventCardMetadata.isEmpty)
+    }
+
+    func testStoryPlanningV6MigratesToV7WithEmptyRecordMetadata() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("story-v6-v7-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: url) }
+        let bookID = UUID()
+        let eventID = UUID()
+        do {
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: StoryPlanningMigrationPlan.self,
+                configurations: [ModelConfiguration(schema: schema, url: url)]
+            )
+            container.mainContext.insert(TimelineEventCardMetadata(eventID: eventID, bookID: bookID))
+            try container.mainContext.save()
+        }
+
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
+        let reopened = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryPlanningMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: url)]
+        )
+        let store = try StoryPlanningStore(container: reopened)
+
+        XCTAssertEqual(store.timelineMetadata(eventID: eventID)?.bookID, bookID)
+        XCTAssertTrue(store.planningRecordMetadata.isEmpty)
+    }
+
+    func testRecordPlacementIsPerSourceAndRepeatedSaveDoesNotDuplicateMetadata() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let sourceID = UUID()
+        let line = try store.createStoryLine(bookID: bookID, kind: .main, title: "主線")
+        let stage = try store.createStage(storyLine: line, title: "第一幕")
+
+        let first = try store.setRecordPlacement(
+            sourceKind: .appearance,
+            sourceID: sourceID,
+            bookID: bookID,
+            storyLineID: line.id,
+            stageID: stage.id
+        )
+        let second = try store.setRecordPlacement(
+            sourceKind: .appearance,
+            sourceID: sourceID,
+            bookID: bookID,
+            storyLineID: line.id,
+            stageID: nil
+        )
+
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(store.planningRecordMetadata.count, 1)
+        XCTAssertEqual(second.storyLineID, line.id)
+        XCTAssertNil(second.stageID)
+
+        _ = try store.setRecordPlacement(
+            sourceKind: .psychology,
+            sourceID: sourceID,
+            bookID: bookID,
+            storyLineID: line.id,
+            stageID: stage.id
+        )
+        XCTAssertEqual(store.planningRecordMetadata.count, 2)
+    }
+
+    func testRecordMetadataCleanupDeletesMissingSourceAndClearsInvalidPlacement() throws {
+        let store = try StoryPlanningStore(container: makePlanningContainer())
+        let bookID = UUID()
+        let retainedSourceID = UUID()
+        let removedSourceID = UUID()
+        let line = try store.createStoryLine(bookID: bookID, kind: .main, title: "主線")
+        let stage = try store.createStage(storyLine: line, title: "轉折")
+        _ = try store.setRecordPlacement(sourceKind: .itemHistory, sourceID: retainedSourceID, bookID: bookID, storyLineID: line.id, stageID: stage.id)
+        _ = try store.setRecordPlacement(sourceKind: .appearance, sourceID: removedSourceID, bookID: bookID, storyLineID: line.id, stageID: stage.id)
+
+        try store.deleteStoryLine(line)
+        try store.removeOrphanedRecordMetadata(validSourceKeys: [
+            PlanningRecordSourceKind.itemHistory.sourceKey(id: retainedSourceID)
+        ])
+
+        let retained = try XCTUnwrap(store.recordMetadata(sourceKind: .itemHistory, sourceID: retainedSourceID))
+        XCTAssertNil(retained.storyLineID)
+        XCTAssertNil(retained.stageID)
+        XCTAssertNil(store.recordMetadata(sourceKind: .appearance, sourceID: removedSourceID))
+    }
+
+    func testPlanningRecordProjectsByDateSectionAndMasterVisibilityWithoutCopyingContent() throws {
+        let mainSchema = Schema(versionedSchema: NovelWriterSchemaV5.self)
+        let mainContainer = try ModelContainer(
+            for: mainSchema,
+            configurations: [ModelConfiguration(schema: mainSchema, isStoredInMemoryOnly: true)]
+        )
+        let abilitySchema = Schema(versionedSchema: AbilityProgressSchemaV1.self)
+        let abilityStore = try AbilityProgressStore(container: ModelContainer(
+            for: abilitySchema,
+            configurations: [ModelConfiguration(schema: abilitySchema, isStoredInMemoryOnly: true)]
+        ))
+        let copySchema = Schema(versionedSchema: ItemCopySchemaV1.self)
+        let copyStore = try ItemCopyStore(container: ModelContainer(
+            for: copySchema,
+            configurations: [ModelConfiguration(schema: copySchema, isStoredInMemoryOnly: true)]
+        ))
+        let planningStore = try StoryPlanningStore(container: makePlanningContainer())
+        let context = mainContainer.mainContext
+        let book = Book(title: "投影測試", author: "作者")
+        let volume = Volume(title: "第一卷", book: book)
+        let section = Section(title: "第一節", content: AttributedString("正文"), volume: volume)
+        let timeline = Timeline(name: "主時間軸", isPrimary: true)
+        let node = Node(year: 12, month: 3, day: 4)
+        let character = Character(realName: "露娜", book: book)
+        let appearance = CharacterAppearance(kind: .outfit, descriptionText: "銀色斗篷", node: node, character: character)
+        volume.sections = [section]
+        book.volumes = [volume]
+        timeline.book = book
+        book.timelines = [timeline]
+        node.timeline = timeline
+        node.section = section
+        timeline.nodes = [node]
+        context.insert(book)
+        context.insert(volume)
+        context.insert(section)
+        context.insert(timeline)
+        context.insert(node)
+        context.insert(character)
+        context.insert(appearance)
+        try context.save()
+        let line = try planningStore.createStoryLine(bookID: book.id, kind: .main, title: "主線")
+        _ = try planningStore.setRecordPlacement(
+            sourceKind: .appearance,
+            sourceID: appearance.id,
+            bookID: book.id,
+            storyLineID: line.id,
+            stageID: nil
+        )
+
+        var records = try PlanningRecordProjectionBuilder.build(
+            book: book,
+            context: context,
+            abilityStore: abilityStore,
+            copyStore: copyStore,
+            planningStore: planningStore
+        )
+        let projected = try XCTUnwrap(records.first { $0.sourceID == appearance.id })
+        XCTAssertEqual(projected.timelineID, timeline.id)
+        XCTAssertEqual(projected.sectionID, section.id)
+        XCTAssertEqual(projected.storyLineID, line.id)
+        XCTAssertEqual(projected.detail, "銀色斗篷")
+
+        node.year = 0
+        records = try PlanningRecordProjectionBuilder.build(book: book, context: context, abilityStore: abilityStore, copyStore: copyStore, planningStore: planningStore)
+        XCTAssertEqual(records.first { $0.sourceID == appearance.id }?.sectionID, section.id)
+        XCTAssertTrue(TimelineDateProjection.cells(
+            nodes: [node],
+            events: [],
+            planningRecords: records,
+            primary: true,
+            granularity: .day
+        ).isEmpty)
+
+        node.isVisible = false
+        records = try PlanningRecordProjectionBuilder.build(book: book, context: context, abilityStore: abilityStore, copyStore: copyStore, planningStore: planningStore)
+        XCTAssertFalse(records.contains { $0.sourceID == appearance.id })
+        XCTAssertEqual(appearance.descriptionText, "銀色斗篷")
     }
 
     func testTimelineCardBecomesUnwrittenWhenOutlineSourceIsDeleted() throws {

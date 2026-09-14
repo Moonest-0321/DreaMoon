@@ -4,7 +4,7 @@ import SwiftData
 @main
 struct SailuneApp: App {
     private enum StartupState {
-        case ready(ModelContainer, ItemCopyStore, AbilityProgressStore, StoryPlanningStore)
+        case ready(ModelContainer, V5SettingsStore, ItemCopyStore, AbilityProgressStore, StoryPlanningStore)
         case failed(String)
     }
 
@@ -17,13 +17,21 @@ struct SailuneApp: App {
         }
     }
     
-    // V5 uses a separate store so schema failures never mutate an older store.
-    private static var storeURL: URL {
+    // The released main store remains on its existing schema. V5 setting
+    // additions use a separate store so they cannot migrate unrelated data.
+    private static let storeURL: URL = {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         if let overridePath = environment["SAILUNE_TEST_STORE_URL"],
            !overridePath.isEmpty {
             return URL(fileURLWithPath: overridePath)
+        }
+        // Hosted XCTest launches App.init too. Never let that initialization
+        // open or clean the author's production stores.
+        if environment["XCTestConfigurationFilePath"] != nil ||
+            NSClassFromString("XCTestCase") != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("Sailune-test-host-\(UUID().uuidString).store")
         }
         #endif
         let fileManager = FileManager.default
@@ -32,7 +40,7 @@ struct SailuneApp: App {
             try? fileManager.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
         }
         return appSupportURL.appendingPathComponent("Sailune-v5.store")
-    }
+    }()
 
     private static var legacyV3StoreURL: URL {
         storeURL.deletingLastPathComponent().appendingPathComponent("Sailune-v3.store")
@@ -40,6 +48,12 @@ struct SailuneApp: App {
 
     private static var legacyV2StoreURL: URL {
         storeURL.deletingLastPathComponent().appendingPathComponent("Sailune.store")
+    }
+
+    private static var v5SettingsStoreURL: URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        return storeURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName)-settings.store")
     }
 
     /// Copy data deliberately lives outside the released V5 store. The name is
@@ -68,14 +82,14 @@ struct SailuneApp: App {
 
     init() {
         do {
-            let (container, copyStore, abilityStore, planningStore) = try Self.makeModelContainer()
-            startupState = .ready(container, copyStore, abilityStore, planningStore)
+            let (container, settingsStore, copyStore, abilityStore, planningStore) = try Self.makeModelContainer()
+            startupState = .ready(container, settingsStore, copyStore, abilityStore, planningStore)
         } catch {
             startupState = .failed(error.localizedDescription)
         }
     }
 
-    private static func makeModelContainer() throws -> (ModelContainer, ItemCopyStore, AbilityProgressStore, StoryPlanningStore) {
+    private static func makeModelContainer() throws -> (ModelContainer, V5SettingsStore, ItemCopyStore, AbilityProgressStore, StoryPlanningStore) {
         // Open the released schema before V5. SwiftData caches model metadata
         // for shared top-level model types, so reversing this order makes it
         // attempt to open the V3 store with V5's expanded model graph.
@@ -104,6 +118,23 @@ struct SailuneApp: App {
             try PersistentStoreRepair.run(in: container.mainContext)
         } catch {
             throw StartupStageError(stage: "書籍懸空資料修復失敗", underlying: error)
+        }
+        do {
+            try V5DataCleanup.removeLegacyOrganizations(in: container.mainContext)
+        } catch {
+            throw StartupStageError(stage: "V5 舊組織資料清理失敗", underlying: error)
+        }
+        let settingsStore: V5SettingsStore
+        do {
+            let schema = Schema(versionedSchema: V5SettingsSchemaV3.self)
+            let settingsContainer = try ModelContainer(
+                for: schema,
+                migrationPlan: V5SettingsMigrationPlan.self,
+                configurations: [ModelConfiguration(schema: schema, url: v5SettingsStoreURL)]
+            )
+            settingsStore = V5SettingsStore(container: settingsContainer)
+        } catch {
+            throw StartupStageError(stage: "V5 設定集與勢力資料庫載入失敗", underlying: error)
         }
         do {
             try V4DataBackfill.migrateLegacyPsychology(in: container.mainContext)
@@ -164,7 +195,7 @@ struct SailuneApp: App {
         } catch { throw StartupStageError(stage: "能力進度資料庫載入失敗", underlying: error) }
         let planningStore: StoryPlanningStore
         do {
-            let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+            let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
             let planningContainer = try ModelContainer(
                 for: schema,
                 migrationPlan: StoryPlanningMigrationPlan.self,
@@ -172,11 +203,16 @@ struct SailuneApp: App {
             )
             planningStore = try StoryPlanningStore(container: planningContainer)
         } catch { throw StartupStageError(stage: "故事規劃資料庫載入失敗", underlying: error) }
+        do {
+            try planningStore.removeLegacyOrganizationMetadata()
+        } catch {
+            throw StartupStageError(stage: "V5 舊組織規劃資料清理失敗", underlying: error)
+        }
         CrossStoreDeletionCoordinator.reconcileBestEffort(
             in: container.mainContext,
             planningStore: planningStore
         )
-        return (container, copyStore, abilityStore, planningStore)
+        return (container, settingsStore, copyStore, abilityStore, planningStore)
     }
 
     private static func errorDetails(_ error: Error) -> String {
@@ -217,8 +253,8 @@ struct SailuneApp: App {
     var body: some Scene {
         WindowGroup {
             switch startupState {
-            case .ready(let container, let copyStore, let abilityStore, let planningStore):
-                SailuneRootView(container: container, copyStore: copyStore, abilityStore: abilityStore, planningStore: planningStore)
+            case .ready(let container, let settingsStore, let copyStore, let abilityStore, let planningStore):
+                SailuneRootView(container: container, settingsStore: settingsStore, copyStore: copyStore, abilityStore: abilityStore, planningStore: planningStore)
             case .failed(let message):
                 DatabaseStartupFailureView(message: message)
             }
@@ -228,6 +264,7 @@ struct SailuneApp: App {
 
 private struct SailuneRootView: View {
     let container: ModelContainer
+    @Bindable var settingsStore: V5SettingsStore
     @Bindable var copyStore: ItemCopyStore
     @Bindable var abilityStore: AbilityProgressStore
     @Bindable var planningStore: StoryPlanningStore
@@ -235,6 +272,7 @@ private struct SailuneRootView: View {
     var body: some View {
         ContentView()
             .modelContainer(container)
+            .environment(settingsStore)
             .environment(copyStore)
             .environment(abilityStore)
             .environment(planningStore)
@@ -243,12 +281,25 @@ private struct SailuneRootView: View {
             } message: {
                 Text(copyStore.persistenceErrorMessage ?? "未知錯誤")
             }
+            .alert("設定集無法儲存", isPresented: settingsPersistenceErrorBinding) {
+                Button("好") { settingsStore.clearPersistenceError() }
+            } message: {
+                Text(settingsStore.persistenceErrorMessage ?? "未知錯誤")
+            }
     }
 
     private var persistenceErrorBinding: Binding<Bool> {
         Binding(
             get: { copyStore.persistenceErrorMessage != nil },
             set: { if !$0 { copyStore.clearPersistenceError() } }
+        )
+    }
+
+
+    private var settingsPersistenceErrorBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.persistenceErrorMessage != nil },
+            set: { if !$0 { settingsStore.clearPersistenceError() } }
         )
     }
 }

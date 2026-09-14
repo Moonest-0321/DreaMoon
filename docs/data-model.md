@@ -1,65 +1,83 @@
 # 資料模型與關聯
 
-## 主資料庫（產品 schema V5）
+> 依 2026-09-14 V5 實作與現行 schema、store 操作整理。
 
-主要關聯為：
+## Store 邊界
 
-`Book → Volume → Section`
+| Store | Schema／主要模型 | 連結方式 |
+|---|---|---|
+| `Sailune-v5.store` | `NovelWriterSchemaV5`：Book、Volume、Section、Character、Ability、Item、Timeline、Node、Event 與舊 Organization 相容型別 | SwiftData relationship；V5 不升級此 store schema |
+| `Sailune-v5-settings.store` | `V5SettingsSchemaV3`：BookSidebarSetting、PowerLevel、PowerUnit、PowerSubordination、Place、WorldTerm | 只以 `bookID`、層級 UUID 與勢力 UUID 連結，不持有其他主資料 |
+| `Sailune-v5-item-copies.store` | ItemCopy、ItemCopyHolding、ItemCopyHistory | `bookID`、`itemID`、`characterID`、`copyID` |
+| `Sailune-v5-item-copy-level-selections.store` | ItemCopyLevelSelection | `copyID`、`levelID` |
+| `Sailune-v5-ability-progress.store` | AbilityProgressRecord／History | `bookID`、`abilityID`、`characterID`、`nodeID` |
+| `Sailune-v5-story-planning.store` | `StoryPlanningSchemaV7`：V6 全部模型加上 PlanningRecordMetadata | `bookID`、`sectionID`、`eventID`、`outlineItemID`、來源種類與來源 UUID 等 |
 
-`Book → Character → (Alias / Organization / Ability / Appearance / Psychology / Item / Relationship)`
+Book 封面不在 SwiftData，另存於 Application Support 的 `Sailune/Covers` PNG 檔。
 
-`Book → Timeline → Node → Event`
+## 主關聯
 
-`Book → Item → ItemLevel / ItemHistory`
+```text
+Book
+├─ Volume ─ Section（AttributedString 正文）
+├─ Character
+│  ├─ Alias / Profile / Appearance / Psychology
+│  ├─ CharacterAbility / History
+│  ├─ CharacterItem / History
+│  └─ Relationship / Kinship / History
+├─ Item ─ ItemLevel / ItemHistory
+└─ Timeline ─ Node ─ Event
+                 └─ Character 關聯與可選 Section 來源
 
-### 刪除規則摘要
+PowerLevel（bookID、由高至低 sortOrder）
+└─ PowerUnit（bookID、levelID → PowerLevel、簡介、高層管理員、其他名單、勢力關係、政治、宗教）
+   └─ PowerSubordination：lowerPowerID → upperPowerID（只保存直接隸屬）
 
-- Book 刪除 Volume、Character、Timeline 等所屬資料。
-- Volume 刪除其 Sections。
-- Character 的設定關聯依模型與刪除服務處理；正文文字保留，角色連結解除。
-- Item 刪除 ItemLevel、ItemHistory 及角色持有關聯。
-- Node 的事件關聯使用 cascade；刪除釘子會刪除所屬事件，正文 Section 保留。刪除服務亦清除相關歷史定位，並非保留事件。
+BookSidebarSetting（bookID）→ 顯示項目、可見性、排序
+Place / WorldTerm（bookID）→ V5 基礎設定資料
+```
 
-## 獨立資料庫
+## 故事規劃關聯
 
-- `Sailune-v5-item-copies.store`：`ItemCopy`、`ItemCopyHolding`、`ItemCopyHistory`。
-- `Sailune-v5-item-copy-level-selections.store`：副本目前手動選擇的等級。
-- `Sailune-v5-ability-progress.store`：能力進度相關資料。
-- `Sailune-v5-story-planning.store`：`StoryPlanningSchemaV6`，包含既有故事規劃模型、`OutlineStageStartDetail` 與 `TimelineEventCardMetadata`。
-
-獨立 store 的資料以穩定 UUID（例如 `itemID`、`copyID`、`characterID`、`sectionID`）互相連結；它們不是 SwiftData 的直接跨 store relationship。
+```text
+BookPlanningProfile ─ bookID
+StoryTag ─ bookID + sectionID + 文字錨點
+ChapterAnnotation ─ bookID + sectionID
+OutlineStoryLine ─ OutlineStage ─ OutlineItem
+                              ├─ OutlineItemAnchor（正文來源，最多一筆）
+                              └─ OutlineItemPlacement（手動安置，最多一筆）
+OutlineStage ─ OutlineStageStartAnchor + OutlineStageStartDetail
+TimelineEventCardMetadata ─ eventID + 可選 outlineItemID
+```
 
 ## 重要不變條件
 
-- UUID 在匯入、遷移與回填後必須保持不變。
-- `sortOrder` 只負責同一父層內的顯示排序，不應被當作永久識別碼。
-- ItemLevel 目前以 `itemID` 連結，不新增脆弱的 SwiftData inverse relationship。
-- `StoryTag`（僅伏筆／修改）及 `OutlineItemAnchor` 都以「原文字＋UTF-16 offset」保存來源，正文變更後以相同規則重新解析。
-- V4.4.81 在正文成功保存後，以實際文字候選檢查同節 `StoryTag`：伏筆／修改的 `anchorText` 完全找不到時刪除該 tag。此規則不同於 `OutlineItemAnchor` 的節首草稿降級，因 StoryTag 沒有需要獨立保留的大綱內容。
-- `OutlineItemAnchor.anchorText == ""` 且 `anchorOffset == 0` 表示原錨定文字已消失、來源降級至原節次開頭；此時 anchor 與 `sectionID` 保留，對應項目改為草稿。它不是手動項目或待安置資料，後續檢查也不得重複降級。
-- 副本目前等級選擇不自動改寫父物品設定。
-- V4.2 全書規劃以 `bookID` 連回主 store；`storyLineID` 與可選 `stageID` 維持故事線、階段和項目的穩定連結。
-- V4.2 至 V4.4.2a 敘事大綱與時間軸共用 `OutlineItem`；V4.4.3 時間軸接回主 store 的 Timeline／Era／Node／Event。敘事大綱仍讀寫原 OutlineItem，不自動轉換或複製資料，也不新增 schema。
-- `OutlineItemAnchor.outlineItemID` 是唯一值，因此一筆大綱項目最多一個正文來源；手動建立項目可沒有來源。
-- `OutlineStageStartAnchor.stageID` 是唯一值；它以幕（`Volume`）與節次（`Section`）UUID 加上名稱快照保存主線階段起點。來源結構被刪除時，階段保留並顯示快照與刪除標記。
-- `OutlineItemPlacement.outlineItemID` 是唯一值；手動項目可為待安置、幕首、接在項目後或幕末。掛點刪除時保留項目並改為待安置，不自動猜測新位置。
-- `OutlineItemStatus.occurred` 的已發布 raw value 保持「已發生」，UI 顯示為「已完成」；只有帶 `OutlineItemAnchor` 的正文來源項目可以使用。舊手動已發生資料保留並提示作者調整。
-- 刪除 `OutlineItem` 時一併刪除其 anchor；刪除 `OutlineStoryLine` 時級聯其階段、項目與所有相關 anchors，均不得改動正文。
-- `OutlineItem.sortOrder` 是沒有有效正文來源時的手動後備排序；有來源時，卷／節順序與重新解析後的 UTF-16 offset 優先，同值再以建立時間與 UUID 穩定排序。
-- 主線階段依其有效開始節次排序；項目在階段內依幕首、正文位置及其掛接項目、幕末、待安置排序。`sortOrder` 只作相同語意位置的穩定後備，沒有 UI 輸入。
-- 主線階段只允許建立在 `.main` 故事線；此不變條件由 `StoryPlanningStore` 驗證。
-- 同一本書只允許一條 `.main` 故事線；多段主線使用 `OutlineStage`，而不是建立第二條主線。
-- 刪除 `OutlineStage` 時一併刪除所屬 `OutlineItem` 與其 `OutlineItemAnchor`，正文內容不變；刪除後通知編輯器重新載入紅色正文標記。項目只能手動移往同一主線的階段或未分階段。
-- `BookPlanningProfile.backgroundText` 相容保存故事背景引導與其他背景；非結構化舊值一律視為其他背景，避免遺失既有文字。
-- `OutlineTimelineLayout` 是執行期間的唯讀投影，不是 SwiftData 模型：欄位來自目前書籍的幕／節次順序，泳道來自故事線，卡片仍指向原本的 `OutlineItem`。V4.4.1 的 `StageBand` 只投影有效主線階段的起訖欄位；無法解析的位置只進入 `pendingItems`，失效階段不起帶，兩者都不會回寫或猜測安置資料。
-- StoryPlanning schema V5 新增 `OutlineStageStartDetail`，以 `stageID` 一對一補充 V4 階段錨點的定位粒度（卷次／節次／幕標題）、幕標題快照及 offset。沒有 detail 的 V4 舊錨點維持節次語意；V4 模型本身不變。
-- StoryPlanning schema V6 新增 `TimelineEventCardMetadata`，以唯一 `eventID` 連至主 store Event，並以可選 `outlineItemID` 連至敘事大綱；它保存 `bookID`、節錄模式、手動節錄與更新時間，不建立跨 store SwiftData relationship。
-- Event 的標題、詳情、Node、Section 與角色仍由主 store 擁有。metadata 與有效 OutlineItemAnchor 共同決定正文來源；anchor 的 sectionID 會回填 Event.section，供卷節顯示與跳轉。
-- 刪除 Event 後清理對應 metadata；刪除 OutlineItem 不跨 store 刪 Event，卡片改顯示來源失效。刪除 Node／Timeline 仍依主 store cascade 刪 Event，再以冪等清理移除孤立 metadata。
-- V4.4.8 的跨 store 刪除一律先保存主 store，再清理 StoryPlanning 附屬資料。Book 刪除會以 `bookID` 清除該書所有規劃模型及間接附屬模型；任何其他書籍不得受影響。
-- 一致性修復只依主 store 現存的 Book／Event UUID 清除缺失書籍的規劃資料與缺失事件的 metadata。缺失 OutlineItem 來源不構成刪除依據，Event 與 metadata 會保留並呈現來源失效。
+- UUID 是跨 store、遷移與回填的穩定識別；`sortOrder` 只負責同父層顯示順序。
+- 同一本書最多一條主線；主線可有多個階段。階段只屬主線。
+- 一筆大綱項目最多一個正文來源；手動項目可沒有來源。
+- 只有有正文來源的大綱項目可呈現「已完成」；手動項目使用背景、草稿或預定。
+- 伏筆／修改標籤和大綱來源都以原文加 UTF-16 offset 解析最近候選，但失效結果不同：標籤刪除；大綱保留、退到原節開頭並轉草稿。
+- 手動大綱安置可為待安置、階段首、某項目後或階段末。目標失效時保留內容並回待安置，不猜新位置。
+- StoryPlanning V6 的 event metadata 只補充主 store Event；它不擁有事件。刪除 OutlineItem 不刪 Event，缺來源時卡片顯示來源失效。
+- StoryPlanning V7 的 `PlanningRecordMetadata` 只保存每筆設定時間序的故事線與可選階段；標題、摘要、世界日期和節次仍以原始來源及 Node 為唯一來源。同一 Node 可供多筆來源共用，不承擔故事線歸屬。
+- 物品副本是共用 Item 的獨立實例；副本目前等級不改寫父 Item 定義。
+- 產品 V5 只保存目前勢力與直接隸屬，不建立角色／勢力、物品／勢力或正文／勢力關聯；舊 Organization 資料啟動時清除。
+- 每本書首次建立設定配置時預設兩個可改名層級「層級 1／層級 2」；勢力先指定層級才可建立隸屬。下級層級的 `sortOrder` 必須大於上級，允許跨級、多上級與多下級。
+- 高層管理員、其他名單、勢力關係、政治與宗教在 V5 第一版都是勢力自身的自由文字，不建立角色或其他設定資料的外部連結。
+- 勢力改層或層級重新排序若會使既有連線反向或同級，整項操作失敗並保留原層級、原順序與全部連線。
+- 設定集隱藏只改變導航，不刪除設定資料；預設顯示角色、勢力、物品、能力、標籤，地點與世界條目可選加入。
 
-## 待改善的模型風險
+## 刪除語意
 
-- 多個獨立 store 沒有共同交易邊界；目前以「主資料先保存、附屬清理可延後、啟動時冪等修復」收斂刪除失敗，但仍不等同完整備份或復原能力。
-- 部分模型同時存在現行資料與舊版遷移資料，新增欄位時必須先更新 schema 快照與匯入測試。
+- `PersistentModelDeletion` 明確解除 Node／Event 與角色歷史、設定歷史或 Section 的引用，再刪除 Book、Character、Item、Event、Node、Timeline、Section 或 Volume。
+- `CrossStoreDeletionCoordinator` 對 Book、Event、Node、Timeline 採「先保存主 store，再清理 StoryPlanning」；附屬清理失敗可稍後冪等重試。
+- 刪除勢力會刪除以它為端點的直接隸屬；已被勢力使用的層級不可刪除。刪除書籍時會一併刪除該書的層級與 settings 資料。
+- 啟動與時間軸載入會按現存 Book／Event UUID 清除孤立規劃資料；缺 OutlineItem 不會使 Event 或 metadata 被刪除。
+- 現行 UI 仍有 Volume／Section 與角色事件直接刪除入口，未完整套用上述集中語意；詳見 `consistency-audit.md`。
+
+## 模型風險
+
+- 六個 store 無共同 transaction，任何新增跨域關係都要定義保存順序、失敗狀態、修復與測試。
+- 伏筆目前沒有回收狀態或回收來源，不能從既有 StoryTag 推導「未回收」。
+- 物品正文引用是名稱掃描；重新命名或同名物品無穩定識別保證。
+- 備份必須同時包含六個 store 及封面檔，不能只複製主 store。

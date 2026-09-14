@@ -260,6 +260,7 @@ struct AddGeneralRelationshipSheet: View {
     @State private var reverseDirection = false
     @State private var note = ""
     @State private var node: Node?
+    @State private var historyID = UUID()
 
     @Query private var allRelationships: [CharacterRelationship]
 
@@ -291,7 +292,11 @@ struct AddGeneralRelationshipSheet: View {
                 TextField("簡述", text: $note, axis: .vertical)
                 HStack {
                     Text("時間")
-                    CharacterNodePicker(book: book, node: $node)
+                    CharacterNodePicker(
+                        book: book,
+                        node: $node,
+                        sourceReference: .init(kind: .relationshipHistory, id: historyID)
+                    )
                 }
             }
             HStack {
@@ -313,7 +318,7 @@ struct AddGeneralRelationshipSheet: View {
         let source = reverseDirection ? selected : center
         let target = reverseDirection ? center : selected
         let relationship = CharacterRelationship(type: relationshipName, note: note, sourceCharacter: source, targetCharacter: target)
-        let history = RelationshipHistory(type: relationshipName, note: note, node: node, relationship: relationship)
+        let history = RelationshipHistory(id: historyID, type: relationshipName, note: note, node: node, relationship: relationship)
         relationship.history.append(history)
         modelContext.insert(relationship)
         modelContext.insert(history)

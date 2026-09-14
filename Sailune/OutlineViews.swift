@@ -158,6 +158,17 @@ struct BookPlanningWorkspaceView: View {
     let book: Book
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
     var onOpenTimelineSection: ((Section) -> Void)? = nil
+    var onOpenPlanningRecord: ((PlanningRecordSourceReference) -> Void)? = nil
+    @Environment(\.modelContext) private var modelContext
+    @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Environment(ItemCopyStore.self) private var copyStore
+    @Query private var planningAbilities: [CharacterAbility]
+    @Query private var planningAppearances: [CharacterAppearance]
+    @Query private var planningPsychologies: [CharacterPsychology]
+    @Query private var planningCharacterItems: [CharacterItem]
+    @Query private var planningItems: [Item]
+    @Query private var planningRelationships: [CharacterRelationship]
     @State private var selectedTab: BookPlanningWorkspaceTab = .narrative
 
     var body: some View {
@@ -180,16 +191,33 @@ struct BookPlanningWorkspaceView: View {
 
             switch selectedTab {
             case .narrative:
-                NarrativeOutlineTimelineView(book: book, onOpenOutlineItem: onOpenOutlineItem)
+                NarrativeOutlineTimelineView(
+                    book: book,
+                    onOpenOutlineItem: onOpenOutlineItem,
+                    onOpenPlanningRecord: onOpenPlanningRecord
+                )
             case .timeline:
                 TimelinePanelView(
                     book: book,
                     allowsWideLayout: true,
-                    onOpenSection: onOpenTimelineSection
+                    onOpenSection: onOpenTimelineSection,
+                    onOpenPlanningRecord: onOpenPlanningRecord
                 )
             }
         }
         .background(Color.appBackground)
+        .task {
+            do {
+                let validKeys = try PlanningRecordProjectionBuilder.allSourceKeys(
+                    context: modelContext,
+                    abilityStore: abilityStore,
+                    copyStore: copyStore
+                )
+                try planningStore.removeOrphanedRecordMetadata(validSourceKeys: validKeys)
+            } catch {
+                // 投影仍可安全顯示；一致性修復會在下次開啟工作區重試。
+            }
+        }
     }
 }
 
@@ -202,6 +230,7 @@ private enum OutlineStructureBoardMode {
 private struct NarrativeOutlineTimelineView: View {
     let book: Book
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    var onOpenPlanningRecord: ((PlanningRecordSourceReference) -> Void)? = nil
     @State private var showingOutlineManager = false
     @State private var showingCreateTimelineEvent = false
     @State private var showCreationSuccess = false
@@ -243,7 +272,8 @@ private struct NarrativeOutlineTimelineView: View {
                 book: book,
                 mode: .narrative,
                 selectedItemID: $selectedOutlineItemID,
-                onOpenOutlineItem: onOpenOutlineItem
+                onOpenOutlineItem: onOpenOutlineItem,
+                onOpenPlanningRecord: onOpenPlanningRecord
             )
         }
         .sheet(isPresented: $showingOutlineManager) {
@@ -567,13 +597,27 @@ private struct OutlineStructureBoardView: View {
     let mode: OutlineStructureBoardMode
     @Binding var selectedItemID: UUID?
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
+    var onOpenPlanningRecord: ((PlanningRecordSourceReference) -> Void)? = nil
     @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Environment(ItemCopyStore.self) private var copyStore
     @State private var errorMessage: String?
     @State private var narrativeRowHeights: [String: CGFloat] = [:]
     @State private var cachedNarrativeLayout: OutlineTimelineLayout?
 
     private let laneWidth: CGFloat = 160
     private let columnWidth: CGFloat = 220
+
+    private var planningRecords: [PlanningRecordProjection] {
+        (try? PlanningRecordProjectionBuilder.build(
+            book: book,
+            context: modelContext,
+            abilityStore: abilityStore,
+            copyStore: copyStore,
+            planningStore: planningStore
+        )) ?? []
+    }
 
     var body: some View {
         let itemsByID = Dictionary(uniqueKeysWithValues: planningStore.items(bookID: book.id).map { ($0.id, $0) })
@@ -886,6 +930,16 @@ private struct OutlineStructureBoardView: View {
                                     )
                                 }
                             }
+                            if mode == .narrative,
+                               columns.first(where: { $0.sectionID == column.sectionID })?.id == column.id {
+                                ForEach(planningRecords.filter {
+                                    $0.sectionID == column.sectionID && $0.storyLineID == lane.storyLineID
+                                }) { record in
+                                    PlanningRecordCardView(record: record) {
+                                        onOpenPlanningRecord?(.init(kind: record.sourceKind, id: record.sourceID))
+                                    }
+                                }
+                            }
                         }
                         .padding(7)
                         .frame(width: columnWidth, alignment: .topLeading)
@@ -982,6 +1036,35 @@ private struct OutlineStructureBoardView: View {
                     .strokeBorder(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [5]))
             )
             .padding(.top, 14)
+        }
+        if mode == .narrative {
+            let validLineIDs = Set(lanes.map(\.storyLineID))
+            let unclassified = planningRecords.filter {
+                $0.sectionID != nil && ($0.storyLineID == nil || !validLineIDs.contains($0.storyLineID!))
+            }
+            if !unclassified.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("未分類時間序", systemImage: "tray.full")
+                        .font(.subheadline.weight(.semibold))
+                    Text("這些既有時間序已有節次，但尚未指定故事線。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LazyHStack(alignment: .top, spacing: 8) {
+                        ForEach(unclassified) { record in
+                            PlanningRecordCardView(record: record) {
+                                onOpenPlanningRecord?(.init(kind: record.sourceKind, id: record.sourceID))
+                            }
+                                .frame(width: columnWidth - 20)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [5]))
+                )
+                .padding(.top, 14)
+            }
         }
     }
 }

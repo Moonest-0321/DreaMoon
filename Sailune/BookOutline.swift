@@ -46,9 +46,16 @@ enum StoryPlanningSchemaV6: VersionedSchema {
     static var models: [any PersistentModel.Type] { StoryPlanningSchemaV5.models + [TimelineEventCardMetadata.self] }
 }
 
+/// V7 stores only per-record narrative classification. The source record,
+/// timestamp, section and display content remain in their owning stores.
+enum StoryPlanningSchemaV7: VersionedSchema {
+    static var versionIdentifier = Schema.Version(7, 0, 0)
+    static var models: [any PersistentModel.Type] { StoryPlanningSchemaV6.models + [PlanningRecordMetadata.self] }
+}
+
 enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self, StoryPlanningSchemaV5.self, StoryPlanningSchemaV6.self]
+        [StoryPlanningSchemaV1.self, StoryPlanningSchemaV2.self, StoryPlanningSchemaV3.self, StoryPlanningSchemaV4.self, StoryPlanningSchemaV5.self, StoryPlanningSchemaV6.self, StoryPlanningSchemaV7.self]
     }
 
     static var stages: [MigrationStage] {
@@ -57,8 +64,60 @@ enum StoryPlanningMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: StoryPlanningSchemaV2.self, toVersion: StoryPlanningSchemaV3.self),
             .lightweight(fromVersion: StoryPlanningSchemaV3.self, toVersion: StoryPlanningSchemaV4.self),
             .lightweight(fromVersion: StoryPlanningSchemaV4.self, toVersion: StoryPlanningSchemaV5.self),
-            .lightweight(fromVersion: StoryPlanningSchemaV5.self, toVersion: StoryPlanningSchemaV6.self)
+            .lightweight(fromVersion: StoryPlanningSchemaV5.self, toVersion: StoryPlanningSchemaV6.self),
+            .lightweight(fromVersion: StoryPlanningSchemaV6.self, toVersion: StoryPlanningSchemaV7.self)
         ]
+    }
+}
+
+enum PlanningRecordSourceKind: String, CaseIterable, Codable, Hashable {
+    case organizationJoin
+    case organizationIdentity
+    case abilityHistory
+    case appearance
+    case psychology
+    case characterItemHistory
+    case itemHistory
+    case itemCopyHistory
+    case relationshipHistory
+
+    func sourceKey(id: UUID) -> String { "\(rawValue):\(id.uuidString.lowercased())" }
+}
+
+/// Cross-store narrative classification for one setting-history record.
+/// Content and location are deliberately not copied into StoryPlanning.
+@Model
+final class PlanningRecordMetadata {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var sourceKey: String
+    var sourceKindRawValue: String
+    var sourceID: UUID
+    var bookID: UUID
+    var storyLineID: UUID?
+    var stageID: UUID?
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        sourceKind: PlanningRecordSourceKind,
+        sourceID: UUID,
+        bookID: UUID,
+        storyLineID: UUID? = nil,
+        stageID: UUID? = nil,
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.sourceKey = sourceKind.sourceKey(id: sourceID)
+        self.sourceKindRawValue = sourceKind.rawValue
+        self.sourceID = sourceID
+        self.bookID = bookID
+        self.storyLineID = storyLineID
+        self.stageID = stageID
+        self.updatedAt = updatedAt
+    }
+
+    var sourceKind: PlanningRecordSourceKind? {
+        PlanningRecordSourceKind(rawValue: sourceKindRawValue)
     }
 }
 

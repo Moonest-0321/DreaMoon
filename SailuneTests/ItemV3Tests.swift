@@ -53,8 +53,8 @@ final class ItemV3Tests: XCTestCase {
 
         let menu = textView.menu(for: contextMenuEvent())
         XCTAssertEqual(
-            Array(menu?.items.dropFirst(2).prefix(7).map(\.title) ?? []),
-            ["敘事大綱", "修改", "草稿", "角色", "物品", "能力", "組織"]
+            Array(menu?.items.dropFirst(2).prefix(6).map(\.title) ?? []),
+            ["敘事大綱", "修改", "草稿", "角色", "物品", "能力"]
         )
         XCTAssertEqual(menu?.items[2].representedObject as? String, StoryTagKind.main.rawValue)
         XCTAssertEqual(menu?.items[3].representedObject as? String, StoryTagKind.revision.rawValue)
@@ -367,7 +367,7 @@ final class ItemV3Tests: XCTestCase {
     }
 
     private func makePlanningContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: StoryPlanningSchemaV6.self)
+        let schema = Schema(versionedSchema: StoryPlanningSchemaV7.self)
         return try ModelContainer(
             for: schema,
             migrationPlan: StoryPlanningMigrationPlan.self,

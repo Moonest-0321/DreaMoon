@@ -35,6 +35,8 @@ struct WorkspaceInspectorView: View {
     var focusRequestID = UUID()
     var settingsDestination: EditorSettingsDestination? = nil
     var settingsRequestID = UUID()
+    var planningRecordReference: PlanningRecordSourceReference? = nil
+    var planningRecordRequestID = UUID()
     var onSelectSection: ((Section) -> Void)? = nil
     var onOpenStoryTag: ((StoryTag) -> Void)? = nil
     var onOpenOutlineItem: ((OutlineItem, OutlineItemAnchor) -> Void)? = nil
@@ -62,6 +64,8 @@ struct WorkspaceInspectorView: View {
                     focusRequestID: focusRequestID,
                     settingsDestination: settingsDestination,
                     settingsRequestID: settingsRequestID,
+                    planningRecordReference: planningRecordReference,
+                    planningRecordRequestID: planningRecordRequestID,
                     onSelectSection: onSelectSection,
                     onOpenStoryTag: onOpenStoryTag
                 )
@@ -284,7 +288,40 @@ struct TimelineCell: Identifiable {
     let repMonth: Int?
     let repDay: Int?
     let events: [Event]
+    let planningRecords: [PlanningRecordProjection]
     var label: String = ""
+
+    init(
+        id: String,
+        kind: CellKind,
+        ordinal: Int,
+        eraID: UUID?,
+        eraHex: String,
+        eraName: String,
+        era: Era?,
+        nodes: [Node],
+        repYear: Int,
+        repMonth: Int?,
+        repDay: Int?,
+        events: [Event],
+        planningRecords: [PlanningRecordProjection] = [],
+        label: String = ""
+    ) {
+        self.id = id
+        self.kind = kind
+        self.ordinal = ordinal
+        self.eraID = eraID
+        self.eraHex = eraHex
+        self.eraName = eraName
+        self.era = era
+        self.nodes = nodes
+        self.repYear = repYear
+        self.repMonth = repMonth
+        self.repDay = repDay
+        self.events = events
+        self.planningRecords = planningRecords
+        self.label = label
+    }
 }
 
 struct TimelineEraGroup: Identifiable {
@@ -300,6 +337,7 @@ struct TimelineSlot: Identifiable {
     let id: String
     let cell: TimelineCell
     let event: Event?
+    let planningRecord: PlanningRecordProjection?
 }
 
 @MainActor
@@ -327,12 +365,14 @@ private final class CellAccum {
     let repMonth: Int?
     let repDay: Int?
     var events: [Event]
+    var planningRecords: [PlanningRecordProjection]
     init(kind: CellKind, ordinal: Int, eraID: UUID?, eraHex: String, eraName: String,
-         era: Era?, nodes: [Node], ry: Int, rm: Int?, rd: Int?, events: [Event]) {
+         era: Era?, nodes: [Node], ry: Int, rm: Int?, rd: Int?, events: [Event], planningRecords: [PlanningRecordProjection]) {
         self.kind = kind; self.ordinal = ordinal; self.eraID = eraID
         self.eraHex = eraHex; self.eraName = eraName
         self.era = era; self.nodes = nodes; self.nodeIDs = Set(nodes.map(\.id))
         self.repYear = ry; self.repMonth = rm; self.repDay = rd; self.events = events
+        self.planningRecords = planningRecords
     }
 }
 
@@ -354,14 +394,23 @@ struct TimelinePanelView: View {
     let book: Book
     let allowsWideLayout: Bool
     var onOpenSection: ((Section) -> Void)?
+    var onOpenPlanningRecord: ((PlanningRecordSourceReference) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @Environment(StoryPlanningStore.self) private var planningStore
+    @Environment(AbilityProgressStore.self) private var abilityStore
+    @Environment(ItemCopyStore.self) private var copyStore
 
     @Query private var allTimelines: [Timeline]
     @Query private var allNodes: [Node]
     @Query private var allEras: [Era]
     @Query private var allEvents: [Event]
     @Query private var allCharacters: [Character]
+    @Query private var planningAbilities: [CharacterAbility]
+    @Query private var planningAppearances: [CharacterAppearance]
+    @Query private var planningPsychologies: [CharacterPsychology]
+    @Query private var planningCharacterItems: [CharacterItem]
+    @Query private var planningItems: [Item]
+    @Query private var planningRelationships: [CharacterRelationship]
 
     @State private var selectedTimelineID: UUID? = nil
     @State private var granularity: SailuneTimelineGranularity = .month
@@ -395,10 +444,16 @@ struct TimelinePanelView: View {
     @State private var pendingDeleteEvent: Event?
     @State private var showingCreateEvent = false
 
-    init(book: Book, allowsWideLayout: Bool = false, onOpenSection: ((Section) -> Void)? = nil) {
+    init(
+        book: Book,
+        allowsWideLayout: Bool = false,
+        onOpenSection: ((Section) -> Void)? = nil,
+        onOpenPlanningRecord: ((PlanningRecordSourceReference) -> Void)? = nil
+    ) {
         self.book = book
         self.allowsWideLayout = allowsWideLayout
         self.onOpenSection = onOpenSection
+        self.onOpenPlanningRecord = onOpenPlanningRecord
         let bookID = book.id
         _allTimelines = Query(filter: #Predicate<Timeline> { $0.book?.id == bookID })
         // SwiftData cannot translate nested optional relationship paths such as
@@ -749,6 +804,8 @@ struct TimelinePanelView: View {
             Group {
                 if let event = slot.event {
                     timelineCard(event)
+                } else if let record = slot.planningRecord {
+                    planningRecordCard(record)
                 } else {
                     Text("尚無事件")
                         .font(.caption)
@@ -775,6 +832,12 @@ struct TimelinePanelView: View {
             onOpen: { open(event) },
             onDelete: { pendingDeleteEvent = event }
         )
+    }
+
+    private func planningRecordCard(_ record: PlanningRecordProjection) -> some View {
+        PlanningRecordCardView(record: record) {
+            onOpenPlanningRecord?(.init(kind: record.sourceKind, id: record.sourceID))
+        }
     }
 
     private func performDeleteEvent(_ event: Event) {
@@ -838,7 +901,7 @@ struct TimelinePanelView: View {
                             .frame(width: 12)
                         Text(cell.label).font(.subheadline.weight(.semibold))
                         Spacer()
-                        Text("\(cell.events.count)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(cell.events.count + cell.planningRecords.count)").font(.caption).foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
                 }
@@ -850,7 +913,7 @@ struct TimelinePanelView: View {
             }
             if !collapsed {
                 VStack(alignment: .leading, spacing: 3) {
-                    if cell.events.isEmpty && addingEventToCell != cell.id {
+                    if cell.events.isEmpty && cell.planningRecords.isEmpty && addingEventToCell != cell.id {
                         Text("尚無事件").font(.callout).foregroundStyle(.secondary).padding(.leading, 18)
                     } else {
                         ForEach(cell.events, id: \.id) { event in
@@ -870,6 +933,9 @@ struct TimelinePanelView: View {
                             .buttonStyle(.plain)
                             .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
                             .help(event.title.isEmpty ? "未命名事件" : event.title)
+                        }
+                        ForEach(cell.planningRecords) { record in
+                            planningRecordCard(record)
                         }
                     }
                     if addingEventToCell == cell.id {
@@ -986,8 +1052,8 @@ struct TimelinePanelView: View {
                         .font(.system(.body, design: .serif))
                         .fontWeight(cell.kind == .year ? .semibold : .regular)
                     Spacer(minLength: 4)
-                    if !cell.events.isEmpty {
-                        Text("\(cell.events.count)")
+                    if !cell.events.isEmpty || !cell.planningRecords.isEmpty {
+                        Text("\(cell.events.count + cell.planningRecords.count)")
                             .font(.caption2).monospacedDigit()
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Color.accentColor.opacity(0.15))
@@ -1012,9 +1078,12 @@ struct TimelinePanelView: View {
     private func drillDown(_ cell: TimelineCell) -> some View {
         let groups = groupedEvents(cell.events)
         VStack(alignment: .leading, spacing: 6) {
-            if groups.isEmpty && addingEventToCell != cell.id {
+            if groups.isEmpty && cell.planningRecords.isEmpty && addingEventToCell != cell.id {
                 Text("尚無事件").font(.caption).foregroundStyle(.tertiary).padding(.leading, 4)
             } else {
+                ForEach(cell.planningRecords) { record in
+                    planningRecordCard(record)
+                }
                 ForEach(groups) { g in
                     let collapsed = collapsedCharGroups.contains(g.id)
                     VStack(alignment: .leading, spacing: 3) {
@@ -1246,7 +1315,23 @@ struct TimelinePanelView: View {
     }
 
     private func buildCells() -> [TimelineCell] {
-        TimelineDateProjection.cells(nodes: visibleNodes, events: allEvents, primary: isPrimarySelected, granularity: granularity)
+        TimelineDateProjection.cells(
+            nodes: visibleNodes,
+            events: allEvents,
+            planningRecords: planningRecordProjections,
+            primary: isPrimarySelected,
+            granularity: granularity
+        )
+    }
+
+    private var planningRecordProjections: [PlanningRecordProjection] {
+        (try? PlanningRecordProjectionBuilder.build(
+            book: book,
+            context: modelContext,
+            abilityStore: abilityStore,
+            copyStore: copyStore,
+            planningStore: planningStore
+        )) ?? []
     }
 
     private func events(at node: Node) -> [Event] {
@@ -1266,16 +1351,28 @@ enum TimelineDateProjection {
                 if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
-            if orderedEvents.isEmpty {
-                return [TimelineSlot(id: "\(cell.id):empty", cell: cell, event: nil)]
+            let orderedRecords = cell.planningRecords.sorted {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.id < $1.id
+            }
+            if orderedEvents.isEmpty && orderedRecords.isEmpty {
+                return [TimelineSlot(id: "\(cell.id):empty", cell: cell, event: nil, planningRecord: nil)]
             }
             return orderedEvents.map { event in
-                TimelineSlot(id: "\(cell.id):\(event.id.uuidString)", cell: cell, event: event)
+                TimelineSlot(id: "\(cell.id):event:\(event.id.uuidString)", cell: cell, event: event, planningRecord: nil)
+            } + orderedRecords.map { record in
+                TimelineSlot(id: "\(cell.id):record:\(record.id)", cell: cell, event: nil, planningRecord: record)
             }
         }
     }
 
-    static func cells(nodes: [Node], events: [Event], primary: Bool, granularity: SailuneTimelineGranularity) -> [TimelineCell] {
+    static func cells(
+        nodes: [Node],
+        events: [Event],
+        planningRecords: [PlanningRecordProjection] = [],
+        primary: Bool,
+        granularity: SailuneTimelineGranularity
+    ) -> [TimelineCell] {
         var groups: [String: CellAccum] = [:]
         var order: [String] = []
 
@@ -1293,6 +1390,7 @@ enum TimelineDateProjection {
             let evs = primary
                 ? nodeEvents.filter { TimelineEngine.Visibility.isVisibleOnPrimaryAxis($0) }
                 : nodeEvents
+            let records = planningRecords.filter { $0.nodeID == n.id }
 
             var key: String
             let kind: CellKind
@@ -1315,12 +1413,13 @@ enum TimelineDateProjection {
             if let acc = groups[key] {
                 acc.ordinal = min(acc.ordinal, ord)
                 acc.events.append(contentsOf: evs)
+                acc.planningRecords.append(contentsOf: records)
                 if !acc.nodeIDs.contains(n.id) { acc.nodeIDs.insert(n.id); acc.nodes.append(n) }
                 if acc.era == nil { acc.era = n.era }
             } else {
                 groups[key] = CellAccum(kind: kind, ordinal: ord, eraID: eraID, eraHex: eraHex,
                                         eraName: eraName, era: n.era, nodes: [n],
-                                        ry: n.year, rm: n.month, rd: n.day, events: evs)
+                                        ry: n.year, rm: n.month, rd: n.day, events: evs, planningRecords: records)
                 order.append(key)
             }
         }
@@ -1329,7 +1428,8 @@ enum TimelineDateProjection {
             guard let g = groups[k] else { return nil }
             return TimelineCell(id: k, kind: g.kind, ordinal: g.ordinal, eraID: g.eraID,
                                 eraHex: g.eraHex, eraName: g.eraName, era: g.era, nodes: g.nodes,
-                                repYear: g.repYear, repMonth: g.repMonth, repDay: g.repDay, events: g.events)
+                                repYear: g.repYear, repMonth: g.repMonth, repDay: g.repDay,
+                                events: g.events, planningRecords: g.planningRecords)
         }
         cells.sort { $0.ordinal < $1.ordinal }
         assignLabels(&cells, granularity: granularity)
@@ -1498,6 +1598,38 @@ struct TimelineCardPresentation {
     let locationText: String
     let excerpt: String
     let accessibilityText: String
+}
+
+struct PlanningRecordCardView: View {
+    let record: PlanningRecordProjection
+    var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        Button {
+            onOpen?()
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(record.sourceBadge)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(record.title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(2)
+                Text(record.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .topLeading)
+            .padding(9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(onOpen == nil)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.accentColor.opacity(0.22)))
+        .help("\(record.sourceBadge)：\(record.title)")
+    }
 }
 
 private struct TimelineEventCardView: View {

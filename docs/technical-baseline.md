@@ -1,47 +1,31 @@
 # 技術基線紀錄
 
-> 紀錄日期：2026-09-01
->
-> 用途：作為後續 V4–V7 修改前後的可比較基準。
+> 核對日期：2026-09-13；本次為唯讀程式／設定稽核，未重新執行完整 Xcode 測試。
 
-## Git 狀態
+## Git
 
 - 分支：`main`
-- HEAD：`ae086e0`
-- 與 `origin/main`：同步
-- 工作樹：有使用者尚未提交的程式修改與文件新增；本次未覆蓋或回復。
+- HEAD：`4ed99bf`（`2026-09-13 V4.4.9`）
+- 稽核開始時工作樹乾淨；本工作單只更新文件。
 
 ## 專案設定
 
-- Xcode：26.6（Build 17F113）
-- Swift：5 language mode；目前工具鏈為 Apple Swift 6.3.3
-- 最低 macOS 部署版本：26.5
-- Targets：`Sailune`、`SailuneTests`
-- Scheme：`Sailune`
+- Targets：`Sailune`、`SailuneTests`；Scheme：`Sailune`。
+- Swift 5 language mode。
+- 最低 macOS deployment target：26.5。
+- App：`com.MooNest.Sailune`；Tests：`com.MooNest.SailuneTests`。
+- Xcode marketing version 1.0、build 1；這與文件中的產品 V4.2.1／開發 V4.4.9 尚未同步。
 
-## 驗證結果
+## 驗證證據
 
-### 專案識別
+- 目前測試原始碼共有 86 個 `test...` 方法。
+- 最近記錄的完整成功結果：2026-09-13，86 項 macOS 測試與無簽章 Release 建置通過。
+- 歷史測試報告只代表當時提交，不自動證明目前工作樹。
+- 受限環境若出現 SwiftData／Observation macro plugin malformed response，應在允許 Xcode plugin server 的環境重跑，不應因此改寫模型。
 
-- `xcodebuild -list -project Sailune.xcodeproj`：通過。
-- Xcode 能識別兩個 target、Debug／Release 組態與 Sailune scheme。
+## 發布前基線缺口
 
-### 測試／建置
-
-- 沙箱內執行仍會因 `sandbox-exec: sandbox_apply: Operation not permitted` 導致 SwiftData／Observation external macro plugin 回傳 malformed response。
-- 在允許 Xcode toolchain 正常啟動 plugin 的同一工作環境重跑後，Debug 與 Release macOS 組態建置成功。
-- 完整測試命令：`xcodebuild test -project Sailune.xcodeproj -scheme Sailune -destination 'platform=macOS' -derivedDataPath /tmp/SailuneDerivedData CODE_SIGNING_ALLOWED=NO`。
-- 結果：27 項測試全數通過；包含 19 項既有回歸與 8 項 V4.2 驗收／遷移測試。
-- 另以隔離 store 啟動 Debug 測試版；由於系統同時存在多個相同 bundle identifier 的 Sailune 執行個體，無法可靠辨識隔離視窗，因此沒有執行可能誤寫正式使用者資料的介面操作。
-
-## 基線限制
-
-- 沙箱權限不足時不能把 macro plugin 失敗誤判為程式編譯失敗；應在允許 plugin 執行的環境重跑。
-- 自動建置與測試已有綠色基線；發布前仍需完成正式簽章／封裝與人工 UI 流程檢查。
-- 任何程式修改仍需執行 `git diff --check`。
-
-## 後續恢復建議
-
-1. 自動化環境需允許 `/Applications/Xcode.app` 的 macro plugin server 執行。
-2. 發布前在 Xcode IDE 或正式簽章產物完成大綱底下的故事背景、故事線、敘事大綱與新時間軸人工冒煙測試。
-3. 若 macro 再度失敗，先記錄 sandbox 與 plugin server 錯誤，不要修改所有 `@Model` 宣告。
+1. 在目前 HEAD 重跑完整測試、Debug／Release 建置。
+2. 完成正式簽章、封裝與實機啟動。
+3. 同步 Xcode 產品版本與預定發布版本。
+4. 完成右鍵選單、共同 Undo／Redo、匯出與多 store 備份的人工流程驗證。

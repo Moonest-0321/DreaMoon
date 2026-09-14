@@ -41,7 +41,6 @@ enum CharacterReferenceSource: Equatable {
 enum EditorSettingsDestination: String {
     case item
     case ability
-    case organization
 }
 
 struct CharacterReference: Equatable {
@@ -327,7 +326,6 @@ final class SailuneTextView: CompositionAwareTextView {
         menu.addItem(characterMenuItem(selectedText: selectedText))
         menu.addItem(settingsMenuItem(title: "物品", destination: .item))
         menu.addItem(settingsMenuItem(title: "能力", destination: .ability))
-        menu.addItem(settingsMenuItem(title: "組織", destination: .organization))
         menu.addItem(NSMenuItem.separator())
         localizedWritingToolsItems().forEach(menu.addItem)
         return menu
